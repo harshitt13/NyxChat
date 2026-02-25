@@ -72,7 +72,7 @@ class SettingsScreen extends StatelessWidget {
                     GestureDetector(
                       onTap: () {
                         Clipboard.setData(
-                            ClipboardData(text: identity.bitChatId));
+                            ClipboardData(text: identity.nyxChatId));
                         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                           content: const Text('Nyx ID copied!'),
                           backgroundColor: AppTheme.accentGreen,
@@ -91,7 +91,7 @@ class SettingsScreen extends StatelessWidget {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(identity.bitChatId,
+                            Text(identity.nyxChatId,
                                 style: const TextStyle(
                                     color: AppTheme.accentBlue,
                                     fontSize: 14,
@@ -155,7 +155,7 @@ class SettingsScreen extends StatelessWidget {
                           icon: Icons.people_alt_rounded,
                           title: 'Connected Peers',
                           trailing: Text(
-                            '${peerService.peerList.where((p) => peerService.isPeerConnected(p.bitChatId)).length}',
+                            '${peerService.peerList.where((p) => peerService.isPeerConnected(p.nyxChatId)).length}',
                             style: const TextStyle(
                                 color: AppTheme.accentBlue,
                                 fontSize: 15,

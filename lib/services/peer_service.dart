@@ -58,12 +58,12 @@ class PeerService extends ChangeNotifier {
 
   /// Get list of connected peers (for group chat member selection)
   List<Peer> get connectedPeers =>
-      _peers.values.where((p) => isPeerConnected(p.bitChatId)).toList();
+      _peers.values.where((p) => isPeerConnected(p.nyxChatId)).toList();
 
   // ─── Network Start/Stop ───────────────────────────────────────
 
   Future<void> startNetwork({
-    required String bitChatId,
+    required String nyxChatId,
     required String displayName,
     required String publicKeyHex,
     required String signingPublicKeyHex,
@@ -71,20 +71,20 @@ class PeerService extends ChangeNotifier {
     // Load saved peers
     final savedPeers = await _storage.getPeers();
     for (final peer in savedPeers) {
-      _peers[peer.bitChatId] = peer;
+      _peers[peer.nyxChatId] = peer;
     }
 
     // Start P2P server
     await _server.start();
 
     _server.onNewConnection.listen((connection) {
-      _handleIncomingConnection(connection, bitChatId, displayName,
+      _handleIncomingConnection(connection, nyxChatId, displayName,
           publicKeyHex, signingPublicKeyHex);
     });
 
     // Start mDNS peer discovery (local)
     _discovery = PeerDiscovery(
-      bitChatId: bitChatId,
+      nyxChatId: nyxChatId,
       displayName: displayName,
       listeningPort: AppConstants.defaultPort,
     );
@@ -93,7 +93,7 @@ class PeerService extends ChangeNotifier {
     await _discovery!.startDiscovery();
 
     _discovery!.onPeerFound.listen((discovered) {
-      _handlePeerDiscovered(discovered, bitChatId, displayName,
+      _handlePeerDiscovered(discovered, nyxChatId, displayName,
           publicKeyHex, signingPublicKeyHex);
     });
 
@@ -106,12 +106,12 @@ class PeerService extends ChangeNotifier {
     debugPrint('[Network] Local network started');
 
     // Start BLE mesh (non-blocking, best-effort)
-    _startBle(bitChatId);
+    _startBle(nyxChatId);
   }
 
   // ─── BLE Mesh ────────────────────────────────────────────────
 
-  Future<void> _startBle(String bitChatId) async {
+  Future<void> _startBle(String nyxChatId) async {
     try {
       await _bleManager.init();
       if (!_bleManager.isSupported) {
@@ -120,7 +120,7 @@ class PeerService extends ChangeNotifier {
       }
 
       // Init mesh router
-      await _meshRouter.init(bitChatId);
+      await _meshRouter.init(nyxChatId);
 
       // Forward mesh packets via BLE broadcast
       _meshRouter.onForwardPacket = (packet) {
@@ -143,7 +143,7 @@ class PeerService extends ChangeNotifier {
       _bleManager.onPeerConnected = (blePeer) {
         if (blePeer.nyxId != null) {
           final peer = Peer(
-            bitChatId: blePeer.nyxId!,
+            nyxChatId: blePeer.nyxId!,
             displayName: blePeer.deviceName,
             publicKeyHex: '',
             ipAddress: 'ble://${blePeer.deviceId}',
@@ -152,7 +152,7 @@ class PeerService extends ChangeNotifier {
             lastSeen: DateTime.now(),
             transport: 'ble',
           );
-          _peers[peer.bitChatId] = peer;
+          _peers[peer.nyxChatId] = peer;
           _storage.savePeer(peer);
           notifyListeners();
 
@@ -175,7 +175,7 @@ class PeerService extends ChangeNotifier {
         }
       };
 
-      await _bleManager.start(bitChatId);
+      await _bleManager.start(nyxChatId);
       _isBleActive = true;
       notifyListeners();
       debugPrint('[BLE] Mesh started');
@@ -194,14 +194,14 @@ class PeerService extends ChangeNotifier {
 
   /// Start the DHT node for global P2P discovery
   Future<void> startDHT({
-    required String bitChatId,
+    required String nyxChatId,
     required String publicKeyHex,
     required String displayName,
     List<String>? bootstrapNodes,
   }) async {
     try {
       _dhtNode = DHTNode(
-        nodeId: bitChatId,
+        nodeId: nyxChatId,
         port: AppConstants.defaultPort,
         publicKeyHex: publicKeyHex,
         displayName: displayName,
@@ -241,7 +241,7 @@ class PeerService extends ChangeNotifier {
     final entry = await _dhtNode!.lookup(targetId);
     if (entry != null) {
       final peer = Peer(
-        bitChatId: entry.nodeId,
+        nyxChatId: entry.nodeId,
         displayName: entry.displayName,
         publicKeyHex: entry.publicKeyHex,
         ipAddress: entry.address,
@@ -250,7 +250,7 @@ class PeerService extends ChangeNotifier {
         lastSeen: entry.lastSeen,
         firstSeen: entry.lastSeen,
       );
-      _peers[peer.bitChatId] = peer;
+      _peers[peer.nyxChatId] = peer;
       notifyListeners();
       return peer;
     }
@@ -267,7 +267,7 @@ class PeerService extends ChangeNotifier {
     for (final entry in _dhtNode!.knownPeers) {
       if (!_peers.containsKey(entry.nodeId)) {
         _peers[entry.nodeId] = Peer(
-          bitChatId: entry.nodeId,
+          nyxChatId: entry.nodeId,
           displayName: entry.displayName,
           publicKeyHex: entry.publicKeyHex,
           ipAddress: entry.address,
@@ -285,7 +285,7 @@ class PeerService extends ChangeNotifier {
 
   void _handleIncomingConnection(
     PeerConnection connection,
-    String myBitChatId,
+    String myNyxChatId,
     String myDisplayName,
     String myPublicKeyHex,
     String mySigningPublicKeyHex,
@@ -294,7 +294,7 @@ class PeerService extends ChangeNotifier {
     sub = connection.onMessage.listen((msg) {
       if (msg.type == ProtocolMessageType.hello) {
         connection.send(ProtocolMessage.hello(
-          senderId: myBitChatId,
+          senderId: myNyxChatId,
           displayName: myDisplayName,
           publicKeyHex: myPublicKeyHex,
           signingPublicKeyHex: mySigningPublicKeyHex,
@@ -304,7 +304,7 @@ class PeerService extends ChangeNotifier {
         _client.registerIncomingConnection(connection);
 
         final peer = Peer(
-          bitChatId: msg.senderId,
+          nyxChatId: msg.senderId,
           displayName:
               msg.payload['displayName'] as String? ?? 'Unknown',
           publicKeyHex:
@@ -317,7 +317,7 @@ class PeerService extends ChangeNotifier {
           firstSeen: DateTime.now(),
         );
 
-        _peers[peer.bitChatId] = peer;
+        _peers[peer.nyxChatId] = peer;
         _storage.savePeer(peer);
         notifyListeners();
 
@@ -328,16 +328,16 @@ class PeerService extends ChangeNotifier {
 
   Future<void> _handlePeerDiscovered(
     DiscoveredPeer discovered,
-    String myBitChatId,
+    String myNyxChatId,
     String myDisplayName,
     String myPublicKeyHex,
     String mySigningPublicKeyHex,
   ) async {
-    if (_client.isPeerConnected(discovered.bitChatId)) return;
+    if (_client.isPeerConnected(discovered.nyxChatId)) return;
 
     try {
       final hello = ProtocolMessage.hello(
-        senderId: myBitChatId,
+        senderId: myNyxChatId,
         displayName: myDisplayName,
         publicKeyHex: myPublicKeyHex,
         signingPublicKeyHex: mySigningPublicKeyHex,
@@ -351,7 +351,7 @@ class PeerService extends ChangeNotifier {
       );
 
       final peer = Peer(
-        bitChatId: discovered.bitChatId,
+        nyxChatId: discovered.nyxChatId,
         displayName:
             connection.peerDisplayName ?? discovered.displayName,
         publicKeyHex: connection.peerPublicKeyHex ?? '',
@@ -362,14 +362,14 @@ class PeerService extends ChangeNotifier {
         firstSeen: DateTime.now(),
       );
 
-      _peers[peer.bitChatId] = peer;
+      _peers[peer.nyxChatId] = peer;
       await _storage.savePeer(peer);
       notifyListeners();
     } catch (e) {
       debugPrint('Failed to connect to discovered peer: $e');
 
       final peer = Peer(
-        bitChatId: discovered.bitChatId,
+        nyxChatId: discovered.nyxChatId,
         displayName: discovered.displayName,
         publicKeyHex: '',
         ipAddress: discovered.ipAddress,
@@ -377,7 +377,7 @@ class PeerService extends ChangeNotifier {
         status: PeerStatus.discovered,
         lastSeen: DateTime.now(),
       );
-      _peers[peer.bitChatId] = peer;
+      _peers[peer.nyxChatId] = peer;
       notifyListeners();
     }
   }
@@ -394,14 +394,14 @@ class PeerService extends ChangeNotifier {
   Future<bool> connectToPeer({
     required String address,
     required int port,
-    required String myBitChatId,
+    required String myNyxChatId,
     required String myDisplayName,
     required String myPublicKeyHex,
     required String mySigningPublicKeyHex,
   }) async {
     try {
       final hello = ProtocolMessage.hello(
-        senderId: myBitChatId,
+        senderId: myNyxChatId,
         displayName: myDisplayName,
         publicKeyHex: myPublicKeyHex,
         signingPublicKeyHex: mySigningPublicKeyHex,
@@ -423,7 +423,7 @@ class PeerService extends ChangeNotifier {
   /// Connect to a DHT-discovered peer
   Future<bool> connectToDHTPeer({
     required String peerId,
-    required String myBitChatId,
+    required String myNyxChatId,
     required String myDisplayName,
     required String myPublicKeyHex,
     required String mySigningPublicKeyHex,
@@ -434,7 +434,7 @@ class PeerService extends ChangeNotifier {
     return connectToPeer(
       address: peer.ipAddress,
       port: peer.port,
-      myBitChatId: myBitChatId,
+      myNyxChatId: myNyxChatId,
       myDisplayName: myDisplayName,
       myPublicKeyHex: myPublicKeyHex,
       mySigningPublicKeyHex: mySigningPublicKeyHex,

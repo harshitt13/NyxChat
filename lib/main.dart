@@ -23,7 +23,7 @@ void main() async {
   final p2pClient = P2PClient();
   final p2pServer = P2PServer(
     port: AppConstants.defaultPort,
-    bitChatId: '',
+    nyxChatId: '',
   );
   final bleManager = BleManager();
 

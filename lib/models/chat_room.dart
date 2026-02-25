@@ -4,14 +4,14 @@ import 'message.dart';
 enum ChatRoomType { direct, group }
 
 class GroupMember {
-  final String bitChatId;
+  final String nyxChatId;
   final String displayName;
   final String publicKeyHex;
   final bool isAdmin;
   final DateTime joinedAt;
 
   GroupMember({
-    required this.bitChatId,
+    required this.nyxChatId,
     required this.displayName,
     required this.publicKeyHex,
     this.isAdmin = false,
@@ -19,7 +19,7 @@ class GroupMember {
   });
 
   Map<String, dynamic> toJson() => {
-    'bitChatId': bitChatId,
+    'nyxChatId': nyxChatId,
     'displayName': displayName,
     'publicKeyHex': publicKeyHex,
     'isAdmin': isAdmin,
@@ -27,7 +27,7 @@ class GroupMember {
   };
 
   factory GroupMember.fromJson(Map<String, dynamic> json) => GroupMember(
-    bitChatId: json['bitChatId'] as String,
+    nyxChatId: json['nyxChatId'] as String,
     displayName: json['displayName'] as String,
     publicKeyHex: json['publicKeyHex'] as String,
     isAdmin: json['isAdmin'] as bool? ?? false,

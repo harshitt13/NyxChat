@@ -49,7 +49,7 @@ class ChatService extends ChangeNotifier {
 
   // ─── Initialization ────────────────────────────────────────────
 
-  Future<void> init(String myBitChatId) async {
+  Future<void> init(String myNyxChatId) async {
     final rooms = await _storage.getChatRooms();
     for (final room in rooms) {
       _chatRooms[room.id] = room;
@@ -58,7 +58,7 @@ class ChatService extends ChangeNotifier {
     }
 
     _server.onNewConnection.listen((connection) {
-      _setupConnectionListener(connection, myBitChatId);
+      _setupConnectionListener(connection, myNyxChatId);
     });
 
     notifyListeners();
@@ -66,27 +66,27 @@ class ChatService extends ChangeNotifier {
 
   void _setupConnectionListener(
     PeerConnection connection,
-    String myBitChatId,
+    String myNyxChatId,
   ) {
     connection.onMessage.listen((message) async {
       switch (message.type) {
         case ProtocolMessageType.message:
-          await _handleIncomingMessage(message, connection, myBitChatId);
+          await _handleIncomingMessage(message, connection, myNyxChatId);
           break;
         case ProtocolMessageType.groupMessage:
-          await _handleGroupMessage(message, connection, myBitChatId);
+          await _handleGroupMessage(message, connection, myNyxChatId);
           break;
         case ProtocolMessageType.groupCreate:
-          await _handleGroupCreate(message, connection, myBitChatId);
+          await _handleGroupCreate(message, connection, myNyxChatId);
           break;
         case ProtocolMessageType.groupInvite:
-          await _handleGroupInvite(message, connection, myBitChatId);
+          await _handleGroupInvite(message, connection, myNyxChatId);
           break;
         case ProtocolMessageType.reaction:
-          await _handleReaction(message, myBitChatId);
+          await _handleReaction(message, myNyxChatId);
           break;
         case ProtocolMessageType.fileTransfer:
-          await _handleFileTransfer(message, connection, myBitChatId);
+          await _handleFileTransfer(message, connection, myNyxChatId);
           break;
         case ProtocolMessageType.keyRotation:
           await _handleKeyRotation(message);
@@ -102,7 +102,7 @@ class ChatService extends ChangeNotifier {
   Future<void> _handleIncomingMessage(
     ProtocolMessage protocol,
     PeerConnection connection,
-    String myBitChatId,
+    String myNyxChatId,
   ) async {
     try {
       final encryptedContent =
@@ -151,7 +151,7 @@ class ChatService extends ChangeNotifier {
       final msg = ChatMessage(
         id: protocol.messageId ?? _uuid.v4(),
         senderId: senderId,
-        receiverId: myBitChatId,
+        receiverId: myNyxChatId,
         content: content,
         timestamp: protocol.timestamp,
         status: MessageStatus.delivered,
@@ -177,11 +177,11 @@ class ChatService extends ChangeNotifier {
 
       // Check if key rotation needed (forward secrecy)
       if (_sessionKeyManager.shouldRotate(senderId)) {
-        await _initiateKeyRotation(senderId, myBitChatId);
+        await _initiateKeyRotation(senderId, myNyxChatId);
       }
 
       connection.send(ProtocolMessage.ack(
-        senderId: myBitChatId,
+        senderId: myNyxChatId,
         messageId: msg.id,
       ));
     } catch (e) {
@@ -195,7 +195,7 @@ class ChatService extends ChangeNotifier {
     required String roomId,
     required String peerId,
     required String content,
-    required String myBitChatId,
+    required String myNyxChatId,
     required String peerPublicKeyHex,
     MessageType messageType = MessageType.text,
   }) async {
@@ -238,14 +238,14 @@ class ChatService extends ChangeNotifier {
       // Create protocol message
       final protocol = isGroup
           ? ProtocolMessage.groupMessage(
-              senderId: myBitChatId,
+              senderId: myNyxChatId,
               groupId: roomId,
               encryptedContent: encryptedContent,
               messageId: messageId,
               messageType: messageType.name,
             )
           : ProtocolMessage.chatMessage(
-              senderId: myBitChatId,
+              senderId: myNyxChatId,
               receiverId: peerId,
               encryptedContent: encryptedContent,
               messageId: messageId,
@@ -254,7 +254,7 @@ class ChatService extends ChangeNotifier {
 
       final msg = ChatMessage(
         id: messageId,
-        senderId: myBitChatId,
+        senderId: myNyxChatId,
         receiverId: peerId,
         content: content,
         timestamp: DateTime.now(),
@@ -279,9 +279,9 @@ class ChatService extends ChangeNotifier {
       if (isGroup && room != null) {
         // Send to all group members
         for (final member in room.members) {
-          if (member.bitChatId != myBitChatId &&
-              _client.isPeerConnected(member.bitChatId)) {
-            _client.sendToPeer(member.bitChatId, protocol);
+          if (member.nyxChatId != myNyxChatId &&
+              _client.isPeerConnected(member.nyxChatId)) {
+            _client.sendToPeer(member.nyxChatId, protocol);
             sent = true;
           }
         }
@@ -311,7 +311,7 @@ class ChatService extends ChangeNotifier {
   Future<ChatRoom> createGroupChat({
     required String groupName,
     required List<GroupMember> members,
-    required String myBitChatId,
+    required String myNyxChatId,
     String? description,
   }) async {
     final groupId = _uuid.v4();
@@ -333,7 +333,7 @@ class ChatService extends ChangeNotifier {
     // Add system message
     final systemMsg = ChatMessage(
       id: _uuid.v4(),
-      senderId: myBitChatId,
+      senderId: myNyxChatId,
       receiverId: groupId,
       content: 'Group "$groupName" created',
       timestamp: DateTime.now(),
@@ -346,12 +346,12 @@ class ChatService extends ChangeNotifier {
 
     // Notify all members
     for (final member in members) {
-      if (member.bitChatId != myBitChatId &&
-          _client.isPeerConnected(member.bitChatId)) {
+      if (member.nyxChatId != myNyxChatId &&
+          _client.isPeerConnected(member.nyxChatId)) {
         _client.sendToPeer(
-          member.bitChatId,
+          member.nyxChatId,
           ProtocolMessage.groupInvite(
-            senderId: myBitChatId,
+            senderId: myNyxChatId,
             groupId: groupId,
             groupName: groupName,
             members: members.map((m) => m.toJson()).toList(),
@@ -367,15 +367,15 @@ class ChatService extends ChangeNotifier {
   Future<void> _handleGroupCreate(
     ProtocolMessage msg,
     PeerConnection connection,
-    String myBitChatId,
+    String myNyxChatId,
   ) async {
-    await _handleGroupInvite(msg, connection, myBitChatId);
+    await _handleGroupInvite(msg, connection, myNyxChatId);
   }
 
   Future<void> _handleGroupInvite(
     ProtocolMessage msg,
     PeerConnection connection,
-    String myBitChatId,
+    String myNyxChatId,
   ) async {
     try {
       final groupId = msg.payload['groupId'] as String;
@@ -424,7 +424,7 @@ class ChatService extends ChangeNotifier {
   Future<void> _handleGroupMessage(
     ProtocolMessage protocol,
     PeerConnection connection,
-    String myBitChatId,
+    String myNyxChatId,
   ) async {
     try {
       final groupId = protocol.payload['groupId'] as String;
@@ -495,7 +495,7 @@ class ChatService extends ChangeNotifier {
     required String roomId,
     required String messageId,
     required String emoji,
-    required String myBitChatId,
+    required String myNyxChatId,
   }) async {
     final msgs = _messages[roomId];
     if (msgs == null) return;
@@ -504,16 +504,16 @@ class ChatService extends ChangeNotifier {
     if (idx == -1) return;
 
     final msg = msgs[idx];
-    final existing = msg.reactions.where((r) => r.userId == myBitChatId);
+    final existing = msg.reactions.where((r) => r.userId == myNyxChatId);
     final hasReaction =
         existing.isNotEmpty && existing.first.emoji == emoji;
 
     ChatMessage updatedMsg;
     if (hasReaction) {
-      updatedMsg = msg.removeReaction(myBitChatId);
+      updatedMsg = msg.removeReaction(myNyxChatId);
     } else {
       updatedMsg = msg.addReaction(MessageReaction(
-        userId: myBitChatId,
+        userId: myNyxChatId,
         emoji: emoji,
         timestamp: DateTime.now(),
       ));
@@ -528,7 +528,7 @@ class ChatService extends ChangeNotifier {
     if (room == null) return;
 
     final protocol = ProtocolMessage.reaction(
-      senderId: myBitChatId,
+      senderId: myNyxChatId,
       targetMessageId: messageId,
       emoji: emoji,
       roomId: roomId,
@@ -537,9 +537,9 @@ class ChatService extends ChangeNotifier {
 
     if (room.isGroup) {
       for (final member in room.members) {
-        if (member.bitChatId != myBitChatId &&
-            _client.isPeerConnected(member.bitChatId)) {
-          _client.sendToPeer(member.bitChatId, protocol);
+        if (member.nyxChatId != myNyxChatId &&
+            _client.isPeerConnected(member.nyxChatId)) {
+          _client.sendToPeer(member.nyxChatId, protocol);
         }
       }
     } else if (_client.isPeerConnected(room.peerId)) {
@@ -548,7 +548,7 @@ class ChatService extends ChangeNotifier {
   }
 
   Future<void> _handleReaction(
-      ProtocolMessage protocol, String myBitChatId) async {
+      ProtocolMessage protocol, String myNyxChatId) async {
     try {
       final targetId = protocol.messageId ?? '';
       final emoji = protocol.payload['emoji'] as String;
@@ -589,7 +589,7 @@ class ChatService extends ChangeNotifier {
     required String roomId,
     required String peerId,
     required String filePath,
-    required String myBitChatId,
+    required String myNyxChatId,
     required String peerPublicKeyHex,
   }) async {
     try {
@@ -639,7 +639,7 @@ class ChatService extends ChangeNotifier {
 
       final msg = ChatMessage(
         id: messageId,
-        senderId: myBitChatId,
+        senderId: myNyxChatId,
         receiverId: peerId,
         content: '📎 $fileName',
         timestamp: DateTime.now(),
@@ -657,7 +657,7 @@ class ChatService extends ChangeNotifier {
 
       // Send via protocol
       final protocol = ProtocolMessage.fileTransfer(
-        senderId: myBitChatId,
+        senderId: myNyxChatId,
         receiverId: peerId,
         messageId: messageId,
         fileName: fileName,
@@ -699,7 +699,7 @@ class ChatService extends ChangeNotifier {
   Future<void> _handleFileTransfer(
     ProtocolMessage protocol,
     PeerConnection connection,
-    String myBitChatId,
+    String myNyxChatId,
   ) async {
     try {
       final fileName = protocol.payload['fileName'] as String;
@@ -733,8 +733,8 @@ class ChatService extends ChangeNotifier {
 
       // Save file locally
       final dir = await getApplicationDocumentsDirectory();
-      final savePath = '${dir.path}/bitchat_files/$fileName';
-      final saveDir = Directory('${dir.path}/bitchat_files');
+      final savePath = '${dir.path}/nyxchat_files/$fileName';
+      final saveDir = Directory('${dir.path}/nyxchat_files');
       if (!await saveDir.exists()) {
         await saveDir.create(recursive: true);
       }
@@ -757,7 +757,7 @@ class ChatService extends ChangeNotifier {
       final msg = ChatMessage(
         id: protocol.messageId ?? _uuid.v4(),
         senderId: protocol.senderId,
-        receiverId: myBitChatId,
+        receiverId: myNyxChatId,
         content: '📎 $fileName',
         timestamp: protocol.timestamp,
         status: MessageStatus.delivered,
@@ -785,7 +785,7 @@ class ChatService extends ChangeNotifier {
       notifyListeners();
 
       connection.send(ProtocolMessage.ack(
-        senderId: myBitChatId,
+        senderId: myNyxChatId,
         messageId: msg.id,
       ));
     } catch (e) {
@@ -796,13 +796,13 @@ class ChatService extends ChangeNotifier {
   // ─── Forward Secrecy: Key Rotation ─────────────────────────────
 
   Future<void> _initiateKeyRotation(
-      String peerId, String myBitChatId) async {
+      String peerId, String myNyxChatId) async {
     try {
       final rotationData =
           await _sessionKeyManager.initiateKeyRotation(peerId);
 
       final protocol = ProtocolMessage.keyRotation(
-        senderId: myBitChatId,
+        senderId: myNyxChatId,
         newPublicKeyHex: rotationData.newPublicKeyHex,
         sessionId: rotationData.sessionId,
       );
@@ -911,8 +911,8 @@ class ChatService extends ChangeNotifier {
     }
   }
 
-  void listenToConnection(PeerConnection connection, String myBitChatId) {
-    _setupConnectionListener(connection, myBitChatId);
+  void listenToConnection(PeerConnection connection, String myNyxChatId) {
+    _setupConnectionListener(connection, myNyxChatId);
   }
 
   // ─── Helpers ──────────────────────────────────────────────────

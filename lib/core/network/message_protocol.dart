@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-/// Wire protocol for BitChat P2P communication.
+/// Wire protocol for NyxChat P2P communication.
 /// Messages are JSON-encoded with a type field.
 enum ProtocolMessageType {
   hello,         // Initial handshake

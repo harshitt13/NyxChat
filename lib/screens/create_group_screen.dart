@@ -61,7 +61,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
     // Build member list including self
     final members = <GroupMember>[
       GroupMember(
-        bitChatId: identity.bitChatId,
+        nyxChatId: identity.nyxChatId,
         displayName: identity.displayName,
         publicKeyHex: identity.publicKeyHex,
         isAdmin: true,
@@ -73,7 +73,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
       final peer = peerService.peers[peerId];
       if (peer != null) {
         members.add(GroupMember(
-          bitChatId: peer.bitChatId,
+          nyxChatId: peer.nyxChatId,
           displayName: peer.displayName,
           publicKeyHex: peer.publicKeyHex,
           joinedAt: DateTime.now(),
@@ -84,7 +84,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
     final room = await chatService.createGroupChat(
       groupName: _nameController.text.trim(),
       members: members,
-      myBitChatId: identity.bitChatId,
+      myNyxChatId: identity.nyxChatId,
       description: _descriptionController.text.trim().isNotEmpty
           ? _descriptionController.text.trim()
           : null,
@@ -251,15 +251,15 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                   itemBuilder: (_, i) {
                     final peer = connectedPeers[i];
                     final isSelected =
-                        _selectedPeerIds.contains(peer.bitChatId);
+                        _selectedPeerIds.contains(peer.nyxChatId);
 
                     return ListTile(
                       onTap: () {
                         setState(() {
                           if (isSelected) {
-                            _selectedPeerIds.remove(peer.bitChatId);
+                            _selectedPeerIds.remove(peer.nyxChatId);
                           } else {
-                            _selectedPeerIds.add(peer.bitChatId);
+                            _selectedPeerIds.add(peer.nyxChatId);
                           }
                         });
                       },
@@ -294,7 +294,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                               color: AppTheme.textPrimary,
                               fontSize: 15,
                               fontWeight: FontWeight.w500)),
-                      subtitle: Text(peer.bitChatId,
+                      subtitle: Text(peer.nyxChatId,
                           style: const TextStyle(
                               color: AppTheme.textMuted,
                               fontSize: 12,

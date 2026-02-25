@@ -51,14 +51,14 @@ class _ChatListScreenState extends State<ChatListScreen>
 
       // Start network
       await peerService.startNetwork(
-        bitChatId: id.bitChatId,
+        nyxChatId: id.nyxChatId,
         displayName: id.displayName,
         publicKeyHex: pubKey,
         signingPublicKeyHex: signPubKey,
       );
 
       // Init chat service
-      await chatService.init(id.bitChatId);
+      await chatService.init(id.nyxChatId);
     }
   }
 

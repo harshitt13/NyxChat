@@ -5,10 +5,10 @@ import 'package:convert/convert.dart';
 /// Manages cryptographic key generation, storage, and retrieval.
 /// Uses X25519 for key exchange and Ed25519 for signing.
 class KeyManager {
-  static const _storageKeyExchangePrivate = 'bitchat_kx_private';
-  static const _storageKeyExchangePublic = 'bitchat_kx_public';
-  static const _storageSigningPrivate = 'bitchat_sign_private';
-  static const _storageSigningPublic = 'bitchat_sign_public';
+  static const _storageKeyExchangePrivate = 'nyxchat_kx_private';
+  static const _storageKeyExchangePublic = 'nyxchat_kx_public';
+  static const _storageSigningPrivate = 'nyxchat_sign_private';
+  static const _storageSigningPublic = 'nyxchat_sign_public';
 
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
   final X25519 _keyExchangeAlgo = X25519();

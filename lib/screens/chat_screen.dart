@@ -64,7 +64,7 @@ class _ChatScreenState extends State<ChatScreen> {
           roomId: widget.room.id,
           peerId: widget.room.peerId,
           content: text,
-          myBitChatId: identity.bitChatId,
+          myNyxChatId: identity.nyxChatId,
           peerPublicKeyHex: widget.room.peerPublicKeyHex,
         );
 
@@ -87,7 +87,7 @@ class _ChatScreenState extends State<ChatScreen> {
               roomId: widget.room.id,
               peerId: widget.room.peerId,
               filePath: filePath,
-              myBitChatId: identity.bitChatId,
+              myNyxChatId: identity.nyxChatId,
               peerPublicKeyHex: widget.room.peerPublicKeyHex,
             );
 
@@ -124,7 +124,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       roomId: widget.room.id,
                       messageId: message.id,
                       emoji: emoji,
-                      myBitChatId: identity.bitChatId,
+                      myNyxChatId: identity.nyxChatId,
                     );
                 Navigator.pop(ctx);
               },
@@ -310,7 +310,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
         WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
 
-        final myId = context.read<IdentityService>().identity?.bitChatId ?? '';
+        final myId = context.read<IdentityService>().identity?.nyxChatId ?? '';
 
         return ListView.builder(
           controller: _scrollController,

@@ -8,7 +8,7 @@ import 'message_protocol.dart';
 class P2PServer {
   ServerSocket? _serverSocket;
   final int port;
-  final String bitChatId;
+  final String nyxChatId;
 
   final StreamController<PeerConnection> _connectionController =
       StreamController<PeerConnection>.broadcast();
@@ -18,7 +18,7 @@ class P2PServer {
   List<PeerConnection> get activeConnections =>
       List.unmodifiable(_activeConnections);
 
-  P2PServer({required this.port, required this.bitChatId});
+  P2PServer({required this.port, required this.nyxChatId});
 
   /// Start listening for incoming connections
   Future<void> start() async {
@@ -28,7 +28,7 @@ class P2PServer {
         port,
         shared: true,
       );
-      debugPrint('BitChat P2P Server listening on port $port');
+      debugPrint('NyxChat P2P Server listening on port $port');
 
       _serverSocket!.listen(
         _handleIncomingConnection,
@@ -66,7 +66,7 @@ class P2PServer {
     _activeConnections.clear();
     await _serverSocket?.close();
     _serverSocket = null;
-    debugPrint('BitChat P2P Server stopped');
+    debugPrint('NyxChat P2P Server stopped');
   }
 
   bool get isRunning => _serverSocket != null;

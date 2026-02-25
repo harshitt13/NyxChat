@@ -4,7 +4,7 @@ class AppConstants {
   static const String appVersion = '1.0.0';
 
   // Networking
-  static const String serviceType = '_bitchat._tcp';
+  static const String serviceType = '_nyxchat._tcp';
   static const String serviceName = 'NyxChat';
   static const int defaultPort = 42420;
   static const int maxMessageSize = 65536; // 64KB
@@ -13,7 +13,7 @@ class AppConstants {
 
   // Crypto
   static const int keyLength = 32; // 256-bit keys
-  static const String keyStoragePrefix = 'bitchat_';
+  static const String keyStoragePrefix = 'nyxchat_';
 
   // Storage
   static const String messagesBox = 'messages';

@@ -1,4 +1,4 @@
-package com.bitchat.bitchat
+package com.nyxchat.nyxchat
 
 import android.os.Bundle
 import android.view.WindowManager
@@ -14,3 +14,4 @@ class MainActivity : FlutterActivity() {
         )
     }
 }
+

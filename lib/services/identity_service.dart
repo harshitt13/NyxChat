@@ -14,7 +14,7 @@ class IdentityService extends ChangeNotifier {
 
   UserIdentity? get identity => _identity;
   bool get hasIdentity => _identity != null;
-  String get bitChatId => _identity?.bitChatId ?? '';
+  String get nyxChatId => _identity?.nyxChatId ?? '';
   String get displayName => _identity?.displayName ?? '';
 
   /// Initialize: Load existing identity or return null
@@ -46,7 +46,7 @@ class IdentityService extends ChangeNotifier {
     final signingPublicKeyHex = await _keyManager.getSigningPublicKeyHex();
 
     final identity = UserIdentity(
-      bitChatId: UserIdentity.generateBitChatId(publicKeyHex),
+      nyxChatId: UserIdentity.generateNyxChatId(publicKeyHex),
       displayName: displayName,
       publicKeyHex: publicKeyHex,
       signingPublicKeyHex: signingPublicKeyHex,
@@ -58,7 +58,7 @@ class IdentityService extends ChangeNotifier {
     _identity = identity;
     notifyListeners();
 
-    debugPrint('Identity generated: ${identity.bitChatId}');
+    debugPrint('Identity generated: ${identity.nyxChatId}');
     return identity;
   }
 

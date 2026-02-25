@@ -3,7 +3,7 @@ import 'dart:convert';
 enum PeerStatus { discovered, connecting, connected, disconnected }
 
 class Peer {
-  final String bitChatId;
+  final String nyxChatId;
   final String displayName;
   final String publicKeyHex;
   final String ipAddress;
@@ -14,7 +14,7 @@ class Peer {
   final String transport; // 'wifi' or 'ble'
 
   Peer({
-    required this.bitChatId,
+    required this.nyxChatId,
     required this.displayName,
     required this.publicKeyHex,
     required this.ipAddress,
@@ -26,7 +26,7 @@ class Peer {
   });
 
   Peer copyWith({
-    String? bitChatId,
+    String? nyxChatId,
     String? displayName,
     String? publicKeyHex,
     String? ipAddress,
@@ -37,7 +37,7 @@ class Peer {
     String? transport,
   }) {
     return Peer(
-      bitChatId: bitChatId ?? this.bitChatId,
+      nyxChatId: nyxChatId ?? this.nyxChatId,
       displayName: displayName ?? this.displayName,
       publicKeyHex: publicKeyHex ?? this.publicKeyHex,
       ipAddress: ipAddress ?? this.ipAddress,
@@ -54,7 +54,7 @@ class Peer {
       DateTime.now().difference(lastSeen).inMinutes < 2;
 
   Map<String, dynamic> toJson() => {
-    'bitChatId': bitChatId,
+    'nyxChatId': nyxChatId,
     'displayName': displayName,
     'publicKeyHex': publicKeyHex,
     'ipAddress': ipAddress,
@@ -66,7 +66,7 @@ class Peer {
   };
 
   factory Peer.fromJson(Map<String, dynamic> json) => Peer(
-    bitChatId: json['bitChatId'] as String,
+    nyxChatId: json['nyxChatId'] as String,
     displayName: json['displayName'] as String,
     publicKeyHex: json['publicKeyHex'] as String,
     ipAddress: json['ipAddress'] as String,
@@ -92,8 +92,8 @@ class Peer {
       identical(this, other) ||
       other is Peer &&
           runtimeType == other.runtimeType &&
-          bitChatId == other.bitChatId;
+          nyxChatId == other.nyxChatId;
 
   @override
-  int get hashCode => bitChatId.hashCode;
+  int get hashCode => nyxChatId.hashCode;
 }

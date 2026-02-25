@@ -326,7 +326,7 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
   }
 
   Widget _buildPeerCard(Peer peer, PeerService peerService) {
-    final connected = peerService.isPeerConnected(peer.bitChatId);
+    final connected = peerService.isPeerConnected(peer.nyxChatId);
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(14),
@@ -372,7 +372,7 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
                       fontSize: 15,
                       fontWeight: FontWeight.w600)),
               const SizedBox(height: 3),
-              Text(peer.bitChatId,
+              Text(peer.nyxChatId,
                   style: const TextStyle(
                       color: AppTheme.textMuted,
                       fontSize: 12,
@@ -496,7 +496,7 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
   Future<void> _startChat(Peer peer) async {
     final chatService = context.read<ChatService>();
     final room = await chatService.getOrCreateRoom(
-      peerId: peer.bitChatId,
+      peerId: peer.nyxChatId,
       peerDisplayName: peer.displayName,
       peerPublicKeyHex: peer.publicKeyHex,
     );
@@ -524,7 +524,7 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
     final signPubKey = await idSvc.getSigningPublicKeyHex();
     final ok = await peerSvc.connectToPeer(
       address: ip, port: port,
-      myBitChatId: idSvc.bitChatId, myDisplayName: idSvc.displayName,
+      myNyxChatId: idSvc.nyxChatId, myDisplayName: idSvc.displayName,
       myPublicKeyHex: pubKey, mySigningPublicKeyHex: signPubKey,
     );
     if (mounted) {
@@ -719,7 +719,7 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
     final pubKey = await idSvc.getPublicKeyHex();
 
     await peerSvc.startDHT(
-      bitChatId: idSvc.bitChatId,
+      nyxChatId: idSvc.nyxChatId,
       publicKeyHex: pubKey,
       displayName: idSvc.displayName,
     );

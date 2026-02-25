@@ -8,7 +8,7 @@ class PeerDiscovery {
   BonsoirBroadcast? _broadcast;
   BonsoirDiscovery? _discovery;
 
-  final String bitChatId;
+  final String nyxChatId;
   final String displayName;
   final int listeningPort;
 
@@ -27,7 +27,7 @@ class PeerDiscovery {
   bool _isDiscovering = false;
 
   PeerDiscovery({
-    required this.bitChatId,
+    required this.nyxChatId,
     required this.displayName,
     required this.listeningPort,
   });
@@ -37,11 +37,11 @@ class PeerDiscovery {
     if (_isBroadcasting) return;
 
     final service = BonsoirService(
-      name: '$displayName-$bitChatId',
+      name: '$displayName-$nyxChatId',
       type: AppConstants.serviceType,
       port: listeningPort,
       attributes: {
-        'bitChatId': bitChatId,
+        'nyxChatId': nyxChatId,
         'displayName': displayName,
         'version': AppConstants.protocolVersion,
       },
@@ -51,7 +51,7 @@ class PeerDiscovery {
     await _broadcast!.ready;
     await _broadcast!.start();
     _isBroadcasting = true;
-    debugPrint('Broadcasting BitChat service: ${service.name}');
+    debugPrint('Broadcasting NyxChat service: ${service.name}');
   }
 
   /// Start discovering peers on the network
@@ -95,30 +95,30 @@ class PeerDiscovery {
   }
 
   void _processResolvedService(ResolvedBonsoirService service) {
-    final peerBitChatId = service.attributes['bitChatId'];
+    final peerNyxChatId = service.attributes['nyxChatId'];
     final peerName = service.attributes['displayName'] ?? 'Unknown';
 
     // Don't discover ourselves
-    if (peerBitChatId == null || peerBitChatId == bitChatId) return;
+    if (peerNyxChatId == null || peerNyxChatId == nyxChatId) return;
 
     final peer = DiscoveredPeer(
-      bitChatId: peerBitChatId,
+      nyxChatId: peerNyxChatId,
       displayName: peerName,
       ipAddress: service.host ?? '',
       port: service.port,
     );
 
-    _discoveredPeers[peerBitChatId] = peer;
+    _discoveredPeers[peerNyxChatId] = peer;
     _peerFoundController.add(peer);
     debugPrint(
-      'Peer discovered: $peerName ($peerBitChatId) at ${peer.ipAddress}:${peer.port}',
+      'Peer discovered: $peerName ($peerNyxChatId) at ${peer.ipAddress}:${peer.port}',
     );
   }
 
   void _handleServiceLost(BonsoirDiscoveryEvent event) {
     final lostService = event.service;
     if (lostService != null) {
-      final peerId = lostService.attributes['bitChatId'];
+      final peerId = lostService.attributes['nyxChatId'];
       if (peerId != null) {
         _discoveredPeers.remove(peerId);
         _peerLostController.add(peerId);
@@ -147,13 +147,13 @@ class PeerDiscovery {
 
 /// Represents a discovered peer on the network
 class DiscoveredPeer {
-  final String bitChatId;
+  final String nyxChatId;
   final String displayName;
   final String ipAddress;
   final int port;
 
   DiscoveredPeer({
-    required this.bitChatId,
+    required this.nyxChatId,
     required this.displayName,
     required this.ipAddress,
     required this.port,

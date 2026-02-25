@@ -1,27 +1,27 @@
 import 'dart:convert';
 
 class UserIdentity {
-  final String bitChatId;
+  final String nyxChatId;
   final String displayName;
   final String publicKeyHex;
   final String signingPublicKeyHex;
   final DateTime createdAt;
 
   UserIdentity({
-    required this.bitChatId,
+    required this.nyxChatId,
     required this.displayName,
     required this.publicKeyHex,
     required this.signingPublicKeyHex,
     required this.createdAt,
   });
 
-  /// Generate a short BitChat ID from the public key
-  static String generateBitChatId(String publicKeyHex) {
+  /// Generate a short NyxChat ID from the public key
+  static String generateNyxChatId(String publicKeyHex) {
     final prefix = publicKeyHex.substring(0, 4).toUpperCase();
     final suffix = publicKeyHex
         .substring(publicKeyHex.length - 4)
         .toUpperCase();
-    return 'BC-$prefix...$suffix';
+    return 'NC-$prefix...$suffix';
   }
 
   /// Generate an avatar color from the public key
@@ -44,14 +44,14 @@ class UserIdentity {
   }
 
   UserIdentity copyWith({
-    String? bitChatId,
+    String? nyxChatId,
     String? displayName,
     String? publicKeyHex,
     String? signingPublicKeyHex,
     DateTime? createdAt,
   }) {
     return UserIdentity(
-      bitChatId: bitChatId ?? this.bitChatId,
+      nyxChatId: nyxChatId ?? this.nyxChatId,
       displayName: displayName ?? this.displayName,
       publicKeyHex: publicKeyHex ?? this.publicKeyHex,
       signingPublicKeyHex: signingPublicKeyHex ?? this.signingPublicKeyHex,
@@ -60,7 +60,7 @@ class UserIdentity {
   }
 
   Map<String, dynamic> toJson() => {
-    'bitChatId': bitChatId,
+    'nyxChatId': nyxChatId,
     'displayName': displayName,
     'publicKeyHex': publicKeyHex,
     'signingPublicKeyHex': signingPublicKeyHex,
@@ -68,7 +68,7 @@ class UserIdentity {
   };
 
   factory UserIdentity.fromJson(Map<String, dynamic> json) => UserIdentity(
-    bitChatId: json['bitChatId'] as String,
+    nyxChatId: json['nyxChatId'] as String,
     displayName: json['displayName'] as String,
     publicKeyHex: json['publicKeyHex'] as String,
     signingPublicKeyHex: json['signingPublicKeyHex'] as String,
@@ -81,5 +81,5 @@ class UserIdentity {
       UserIdentity.fromJson(jsonDecode(data) as Map<String, dynamic>);
 
   @override
-  String toString() => 'UserIdentity($bitChatId, $displayName)';
+  String toString() => 'UserIdentity($nyxChatId, $displayName)';
 }

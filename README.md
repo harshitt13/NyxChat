@@ -231,8 +231,8 @@ NyxChat uses **mDNS/DNS-SD** via the Bonsoir library for zero-configuration loca
 
 **How it works:**
 
-1. On startup, the app **broadcasts** a service of type `_bitchat._tcp` on port `42420`
-2. The broadcast includes the user's `bitChatId`, `displayName`, and `protocolVersion` as TXT attributes
+1. On startup, the app **broadcasts** a service of type `_nyxchat._tcp` on port `42420`
+2. The broadcast includes the user's `nyxChatId`, `displayName`, and `protocolVersion` as TXT attributes
 3. Simultaneously, it **discovers** other NyxChat nodes broadcasting the same service type
 4. When a peer is resolved, a TCP connection is established for direct P2P messaging
 
@@ -242,8 +242,8 @@ sequenceDiagram
     participant Network as Local Network
     participant B as Device B
 
-    A->>Network: Broadcast _bitchat._tcp<br/>port=42420, id=alice
-    B->>Network: Broadcast _bitchat._tcp<br/>port=42420, id=bob
+    A->>Network: Broadcast _nyxchat._tcp<br/>port=42420, id=alice
+    B->>Network: Broadcast _nyxchat._tcp<br/>port=42420, id=bob
 
     Network-->>A: Service Found: bob
     Network-->>B: Service Found: alice
@@ -334,7 +334,7 @@ flowchart TD
 - **Routing table** of up to 20 entries with automatic pruning of stale entries (1-hour expiry)
 - **Periodic refresh** every 5 minutes
 - **Bootstrap nodes** for initial network entry
-- **Announcement** includes `bitChatId`, `publicKeyHex`, `displayName`, IP address, and port
+- **Announcement** includes `nyxChatId`, `publicKeyHex`, `displayName`, IP address, and port
 
 ### Internet Relay (Optional)
 
@@ -382,7 +382,7 @@ flowchart LR
 flowchart TD
     A[User Creates Identity] --> B[Generate X25519<br/>Key Pair]
     B --> C[Generate Ed25519<br/>Signing Key Pair]
-    C --> D[Derive BitChat ID<br/>SHA-256 of Public Key]
+    C --> D[Derive NyxChat ID<br/>SHA-256 of Public Key]
     D --> E[Store Keys in<br/>Flutter Secure Storage]
 
     F[Peer Connection] --> G[Exchange Public Keys]
@@ -708,7 +708,7 @@ sequenceDiagram
 ```mermaid
 erDiagram
     UserIdentity {
-        string bitChatId PK
+        string nyxChatId PK
         string displayName
         string publicKeyHex
         string signingPublicKeyHex
@@ -740,7 +740,7 @@ erDiagram
     }
 
     GroupMember {
-        string bitChatId FK
+        string nyxChatId FK
         string displayName
         string publicKeyHex
         bool isAdmin
@@ -763,7 +763,7 @@ erDiagram
     }
 
     Peer {
-        string bitChatId PK
+        string nyxChatId PK
         string displayName
         string publicKeyHex
         string ipAddress

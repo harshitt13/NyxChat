@@ -106,7 +106,7 @@ class LocalStorage {
   // ─── Peers ────────────────────────────────────────────────────
 
   Future<void> savePeer(Peer peer) async {
-    await _peersBox.put(peer.bitChatId, peer.encode());
+    await _peersBox.put(peer.nyxChatId, peer.encode());
   }
 
   Future<List<Peer>> getPeers() async {
@@ -120,8 +120,8 @@ class LocalStorage {
     return peers;
   }
 
-  Future<Peer?> getPeer(String bitChatId) async {
-    final data = _peersBox.get(bitChatId);
+  Future<Peer?> getPeer(String nyxChatId) async {
+    final data = _peersBox.get(nyxChatId);
     if (data == null) return null;
     return Peer.decode(data);
   }

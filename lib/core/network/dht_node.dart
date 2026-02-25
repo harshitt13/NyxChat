@@ -9,7 +9,7 @@ import 'message_protocol.dart';
 /// global P2P peer discovery beyond the local network.
 ///
 /// Each node maintains a routing table of known peers and
-/// can look up peers by their BitChat ID. Peers are found
+/// can look up peers by their NyxChat ID. Peers are found
 /// by forwarding lookup requests through the network.
 class DHTNode extends ChangeNotifier {
   final String nodeId;
@@ -100,7 +100,7 @@ class DHTNode extends ChangeNotifier {
     await _announceToBootstrap();
   }
 
-  /// Look up a peer by their BitChat ID
+  /// Look up a peer by their NyxChat ID
   Future<DHTEntry?> lookup(String targetId) async {
     // Check local routing table first
     if (_routingTable.containsKey(targetId)) {
