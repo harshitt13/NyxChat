@@ -70,20 +70,20 @@ Every message is protected with **end-to-end encryption (E2EE)** using modern cr
 
 | Category | Feature | Description |
 |----------|---------|-------------|
-| 🔒 **Encryption** | E2EE (AES-256-GCM) | All messages encrypted end-to-end |
-| 🔑 **Key Exchange** | X25519 ECDH | Elliptic-curve Diffie-Hellman key agreement |
-| 🔄 **Forward Secrecy** | Session Key Rotation | Per-session keys; compromised key can't decrypt past messages |
-| 📡 **Networking** | Multi-Transport | Wi-Fi/LAN, BLE mesh, DHT, and optional relay |
-| 🌐 **Discovery** | mDNS/DNS-SD | Zero-config local peer discovery via Bonsoir |
-| 📶 **Offline Mesh** | BLE GATT | Communicate without Wi-Fi or internet |
-| 🗺️ **Geo Channels** | Geohash-based | Anonymous location-aware group messaging |
-| 💬 **Chat** | Full-featured | Text, files, images, reactions, replies, groups |
-| 🛡️ **Privacy** | Dummy Traffic | Makes real traffic indistinguishable from noise |
-| ⏱️ **Privacy** | Disappearing Messages | Auto-delete after configurable duration |
-| 🚨 **Privacy** | Panic Wipe | Instant, irreversible destruction of all data |
-| 🕶️ **Privacy** | Stealth Mode | Reduced network footprint |
-| 🕐 **Privacy** | Anti-Timing | Random delays to prevent traffic analysis |
-| 💾 **Storage** | Local-Only | Hive DB + Flutter Secure Storage; no cloud |
+| **Encryption** | E2EE (AES-256-GCM) | All messages encrypted end-to-end |
+| **Key Exchange** | X25519 ECDH | Elliptic-curve Diffie-Hellman key agreement |
+| **Forward Secrecy** | Session Key Rotation | Per-session keys; compromised key can't decrypt past messages |
+| **Networking** | Multi-Transport | Wi-Fi/LAN, BLE mesh, DHT, and optional relay |
+| **Discovery** | mDNS/DNS-SD | Zero-config local peer discovery via Bonsoir |
+| **Offline Mesh** | BLE GATT | Communicate without Wi-Fi or internet |
+| **Geo Channels** | Geohash-based | Anonymous location-aware group messaging |
+| **Chat** | Full-featured | Text, files, images, reactions, replies, groups |
+| **Privacy** | Dummy Traffic | Makes real traffic indistinguishable from noise |
+| **Privacy** | Disappearing Messages | Auto-delete after configurable duration |
+| **Privacy** | Panic Wipe | Instant, irreversible destruction of all data |
+| **Privacy** | Stealth Mode | Reduced network footprint |
+| **Privacy** | Anti-Timing | Random delays to prevent traffic analysis |
+| **Storage** | Local-Only | Hive DB + Flutter Secure Storage; no cloud |
 
 ---
 
@@ -468,7 +468,7 @@ NyxChat uses the **Spray-and-Wait** delay-tolerant networking protocol for mesh 
 
 ```mermaid
 flowchart TD
-    subgraph Spray["📡 Spray Phase"]
+    subgraph Spray["Spray Phase"]
         A[Sender creates<br/>message packet] --> B[Send L copies to<br/>L distinct peers]
         B --> C[Peer 1 gets copy]
         B --> D[Peer 2 gets copy]
