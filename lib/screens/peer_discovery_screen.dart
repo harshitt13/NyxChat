@@ -66,6 +66,8 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildScanningSection(),
+            const SizedBox(height: 20),
+            _buildBleSection(),
             const SizedBox(height: 28),
             _buildDiscoveredPeers(),
             const SizedBox(height: 28),
@@ -134,6 +136,134 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
                   fontSize: 12)),
         ],
       ),
+    );
+  }
+
+  Widget _buildBleSection() {
+    return Consumer<PeerService>(
+      builder: (context, peerService, _) {
+        final bleManager = peerService.bleManager;
+        return Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppTheme.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: peerService.isBleActive
+                  ? AppTheme.accentBlue.withValues(alpha: 0.15)
+                  : Colors.white.withValues(alpha: 0.04),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.bluetooth_rounded,
+                    size: 18,
+                    color: peerService.isBleActive
+                        ? AppTheme.accentBlue
+                        : AppTheme.textMuted,
+                  ),
+                  const SizedBox(width: 8),
+                  const Text('BLE Mesh',
+                      style: TextStyle(
+                        color: AppTheme.textPrimary,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      )),
+                  const Spacer(),
+                  if (peerService.isBleActive && bleManager.isScanning)
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 10, height: 10,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            color: AppTheme.accentBlue.withValues(alpha: 0.5),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          '${bleManager.nearbyCount} nearby',
+                          style: TextStyle(
+                            color: AppTheme.textMuted.withValues(alpha: 0.7),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  if (!peerService.isBleSupported)
+                    Text('Not available',
+                        style: TextStyle(
+                          color: AppTheme.textMuted.withValues(alpha: 0.5),
+                          fontSize: 12,
+                        )),
+                ],
+              ),
+              if (peerService.isBleActive &&
+                  bleManager.discoveredPeers.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                ...bleManager.discoveredPeers.map((blePeer) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 6, height: 6,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: blePeer.isConnected
+                                  ? AppTheme.accentGreen
+                                  : AppTheme.textMuted,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              blePeer.nyxId ?? blePeer.deviceName,
+                              style: const TextStyle(
+                                color: AppTheme.textSecondary,
+                                fontSize: 13,
+                                fontFamily: 'monospace',
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          Text(
+                            '${blePeer.rssi} dBm',
+                            style: TextStyle(
+                              color: AppTheme.textMuted.withValues(alpha: 0.5),
+                              fontSize: 11,
+                            ),
+                          ),
+                          if (!blePeer.isConnected) ...[
+                            const SizedBox(width: 8),
+                            GestureDetector(
+                              onTap: () => bleManager.connectToPeer(blePeer),
+                              child: const Icon(Icons.link_rounded,
+                                  size: 16, color: AppTheme.accentBlue),
+                            ),
+                          ],
+                        ],
+                      ),
+                    )),
+              ],
+              if (!peerService.isBleActive && peerService.isBleSupported) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'BLE mesh starts automatically with the network',
+                  style: TextStyle(
+                    color: AppTheme.textMuted.withValues(alpha: 0.5),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
     );
   }
 

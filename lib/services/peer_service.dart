@@ -6,6 +6,10 @@ import '../core/network/p2p_client.dart';
 import '../core/network/p2p_server.dart';
 import '../core/network/peer_discovery.dart';
 import '../core/network/dht_node.dart';
+import '../core/network/ble_manager.dart';
+import '../core/mesh/mesh_router.dart';
+import '../core/mesh/mesh_store.dart';
+import '../core/mesh/mesh_packet.dart';
 import '../core/storage/local_storage.dart';
 import '../models/peer.dart';
 
@@ -15,28 +19,42 @@ class PeerService extends ChangeNotifier {
   final LocalStorage _storage;
   final P2PClient _client;
   final P2PServer _server;
+  final BleManager _bleManager;
+  final MeshStore _meshStore = MeshStore();
+  late final MeshRouter _meshRouter;
 
   PeerDiscovery? _discovery;
   DHTNode? _dhtNode;
   final Map<String, Peer> _peers = {};
   bool _isNetworkActive = false;
   bool _isDHTActive = false;
+  bool _isBleActive = false;
 
   PeerService({
     required LocalStorage storage,
     required P2PClient client,
     required P2PServer server,
+    required BleManager bleManager,
   })  : _storage = storage,
         _client = client,
-        _server = server;
+        _server = server,
+        _bleManager = bleManager {
+    _meshRouter = MeshRouter(store: _meshStore);
+  }
 
   Map<String, Peer> get peers => Map.unmodifiable(_peers);
   List<Peer> get peerList => _peers.values.toList();
   bool get isNetworkActive => _isNetworkActive;
   bool get isDHTActive => _isDHTActive;
+  bool get isBleActive => _isBleActive;
+  bool get isBleSupported => _bleManager.isSupported;
+  BleManager get bleManager => _bleManager;
+  MeshRouter get meshRouter => _meshRouter;
+  MeshStore get meshStore => _meshStore;
   P2PClient get client => _client;
   P2PServer get server => _server;
   DHTNode? get dhtNode => _dhtNode;
+  int get nearbyBleCount => _bleManager.nearbyCount;
 
   /// Get list of connected peers (for group chat member selection)
   List<Peer> get connectedPeers =>
@@ -86,6 +104,90 @@ class PeerService extends ChangeNotifier {
     _isNetworkActive = true;
     notifyListeners();
     debugPrint('[Network] Local network started');
+
+    // Start BLE mesh (non-blocking, best-effort)
+    _startBle(bitChatId);
+  }
+
+  // ─── BLE Mesh ────────────────────────────────────────────────
+
+  Future<void> _startBle(String bitChatId) async {
+    try {
+      await _bleManager.init();
+      if (!_bleManager.isSupported) {
+        debugPrint('[BLE] Not supported, skipping');
+        return;
+      }
+
+      // Init mesh router
+      await _meshRouter.init(bitChatId);
+
+      // Forward mesh packets via BLE broadcast
+      _meshRouter.onForwardPacket = (packet) {
+        _bleManager.broadcast({
+          'type': 'mesh_packet',
+          'packet': packet.toJson(),
+        });
+      };
+
+      // Handle incoming BLE messages for mesh routing
+      _bleManager.onMessageReceived = (blePeer, message) {
+        if (message['type'] == 'mesh_packet' && message['packet'] != null) {
+          final packet = MeshPacket.fromJson(
+              message['packet'] as Map<String, dynamic>);
+          _meshRouter.handlePacket(packet);
+        }
+      };
+
+      // Register BLE peer events
+      _bleManager.onPeerConnected = (blePeer) {
+        if (blePeer.nyxId != null) {
+          final peer = Peer(
+            bitChatId: blePeer.nyxId!,
+            displayName: blePeer.deviceName,
+            publicKeyHex: '',
+            ipAddress: 'ble://${blePeer.deviceId}',
+            port: 0,
+            status: PeerStatus.connected,
+            lastSeen: DateTime.now(),
+            transport: 'ble',
+          );
+          _peers[peer.bitChatId] = peer;
+          _storage.savePeer(peer);
+          notifyListeners();
+
+          // Exchange stored mesh packets with new peer
+          final packets = _meshRouter.getPacketsForNewPeer();
+          for (final packet in packets) {
+            _bleManager.sendMessage(blePeer, {
+              'type': 'mesh_packet',
+              'packet': packet.toJson(),
+            });
+          }
+        }
+      };
+
+      _bleManager.onPeerDisconnected = (blePeer) {
+        if (blePeer.nyxId != null && _peers.containsKey(blePeer.nyxId)) {
+          _peers[blePeer.nyxId!] = _peers[blePeer.nyxId!]!
+              .copyWith(status: PeerStatus.disconnected);
+          notifyListeners();
+        }
+      };
+
+      await _bleManager.start(bitChatId);
+      _isBleActive = true;
+      notifyListeners();
+      debugPrint('[BLE] Mesh started');
+    } catch (e) {
+      debugPrint('[BLE] Start error: $e');
+    }
+  }
+
+  Future<void> stopBle() async {
+    await _bleManager.stop();
+    _isBleActive = false;
+    notifyListeners();
   }
 
   // ─── DHT Global Network ──────────────────────────────────────
@@ -347,6 +449,7 @@ class PeerService extends ChangeNotifier {
   Future<void> stopNetwork() async {
     await _discovery?.stop();
     await stopDHT();
+    await stopBle();
     await _client.disconnectAll();
     await _server.stop();
     _isNetworkActive = false;

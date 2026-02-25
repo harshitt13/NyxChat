@@ -11,6 +11,7 @@ class Peer {
   final PeerStatus status;
   final DateTime lastSeen;
   final DateTime? firstSeen;
+  final String transport; // 'wifi' or 'ble'
 
   Peer({
     required this.bitChatId,
@@ -21,6 +22,7 @@ class Peer {
     this.status = PeerStatus.discovered,
     required this.lastSeen,
     this.firstSeen,
+    this.transport = 'wifi',
   });
 
   Peer copyWith({
@@ -32,6 +34,7 @@ class Peer {
     PeerStatus? status,
     DateTime? lastSeen,
     DateTime? firstSeen,
+    String? transport,
   }) {
     return Peer(
       bitChatId: bitChatId ?? this.bitChatId,
@@ -42,6 +45,7 @@ class Peer {
       status: status ?? this.status,
       lastSeen: lastSeen ?? this.lastSeen,
       firstSeen: firstSeen ?? this.firstSeen,
+      transport: transport ?? this.transport,
     );
   }
 
@@ -58,6 +62,7 @@ class Peer {
     'status': status.name,
     'lastSeen': lastSeen.toIso8601String(),
     'firstSeen': firstSeen?.toIso8601String(),
+    'transport': transport,
   };
 
   factory Peer.fromJson(Map<String, dynamic> json) => Peer(
@@ -74,6 +79,7 @@ class Peer {
     firstSeen: json['firstSeen'] != null
         ? DateTime.parse(json['firstSeen'] as String)
         : null,
+    transport: (json['transport'] as String?) ?? 'wifi',
   );
 
   String encode() => jsonEncode(toJson());

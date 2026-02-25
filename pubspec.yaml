@@ -29,6 +29,11 @@ dependencies:
   bonsoir: ^5.1.2
   uuid: ^4.5.1
 
+  # BLE Mesh & Relay
+  flutter_blue_plus: ^1.35.2
+  permission_handler: ^11.3.1
+  web_socket_channel: ^3.0.2
+
   # UI
   shimmer: ^3.0.0
   flutter_animate: ^4.5.2
@@ -40,6 +45,15 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "favicon.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "#000000"
+  adaptive_icon_foreground: "favicon.png"
 
 flutter:
   uses-material-design: true

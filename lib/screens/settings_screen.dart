@@ -269,6 +269,139 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
+              // BLE Mesh
+              const Text('BLE Mesh',
+                  style: TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1)),
+              const SizedBox(height: 10),
+              Consumer<PeerService>(
+                builder: (_, peerService, __) {
+                  return Container(
+                    decoration: AppTheme.glassDecoration(
+                        opacity: 0.04, borderRadius: 14),
+                    child: Column(
+                      children: [
+                        _settingsTile(
+                          icon: Icons.bluetooth_rounded,
+                          title: 'BLE Status',
+                          trailing: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: peerService.isBleActive
+                                  ? AppTheme.accentBlue.withValues(alpha: 0.15)
+                                  : AppTheme.surfaceLight,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              peerService.isBleActive
+                                  ? 'Active'
+                                  : peerService.isBleSupported
+                                      ? 'Ready'
+                                      : 'Not available',
+                              style: TextStyle(
+                                color: peerService.isBleActive
+                                    ? AppTheme.accentBlue
+                                    : AppTheme.textMuted,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                        _divider(),
+                        _settingsTile(
+                          icon: Icons.hub_rounded,
+                          title: 'Mesh Packets Stored',
+                          trailing: Text(
+                            '${peerService.meshStore.packetCount}',
+                            style: const TextStyle(
+                                color: AppTheme.textSecondary,
+                                fontSize: 14,
+                                fontFamily: 'monospace'),
+                          ),
+                        ),
+                        _divider(),
+                        _settingsTile(
+                          icon: Icons.alt_route_rounded,
+                          title: 'Forwarded / Delivered',
+                          trailing: Text(
+                            '${peerService.meshRouter.totalForwarded} / ${peerService.meshRouter.totalDelivered}',
+                            style: const TextStyle(
+                                color: AppTheme.textSecondary,
+                                fontSize: 14,
+                                fontFamily: 'monospace'),
+                          ),
+                        ),
+                        _divider(),
+                        _settingsTile(
+                          icon: Icons.near_me_rounded,
+                          title: 'Nearby BLE Nodes',
+                          trailing: Text(
+                            '${peerService.nearbyBleCount}',
+                            style: const TextStyle(
+                                color: AppTheme.accentBlue,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 24),
+              // Privacy
+              const Text('Privacy',
+                  style: TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1)),
+              const SizedBox(height: 10),
+              Container(
+                decoration: AppTheme.glassDecoration(
+                    opacity: 0.04, borderRadius: 14),
+                child: Column(
+                  children: [
+                    _settingsTile(
+                      icon: Icons.shield_rounded,
+                      title: 'Data Collection',
+                      trailing: const Text('Zero',
+                          style: TextStyle(
+                              color: AppTheme.accentGreen,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600)),
+                    ),
+                    _divider(),
+                    _settingsTile(
+                      icon: Icons.location_off_rounded,
+                      title: 'Location Tracking',
+                      trailing: const Text('None',
+                          style: TextStyle(
+                              color: AppTheme.accentGreen,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600)),
+                    ),
+                    _divider(),
+                    _settingsTile(
+                      icon: Icons.hub_outlined,
+                      title: 'Mesh Routing',
+                      subtitle: 'Anonymous hash-based addressing',
+                    ),
+                    _divider(),
+                    _settingsTile(
+                      icon: Icons.timer_rounded,
+                      title: 'Anti-Timing',
+                      subtitle: 'Random delays on mesh forwarding',
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
               // About
               const Text('About',
                   style: TextStyle(
