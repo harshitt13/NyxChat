@@ -1,6 +1,6 @@
-<p align="center">
-    <img src="favicon.png" width="120" alt="NyxChat Logo" style="border-radius: 50%;" />
-</p>
+<div align="center">
+  <img src="favicon.png" width="120" height="120" style="border-radius:50%">
+</div>
 
 <h1 align="center">NyxChat</h1>
 
