@@ -57,6 +57,7 @@
 **NyxChat** is a fully decentralized, peer-to-peer encrypted messaging application built with Flutter. Unlike conventional messengers (WhatsApp, Signal, Telegram) that rely on central servers for message relay and user registration, NyxChat operates with **zero server infrastructure**.
 
 Messages are delivered directly between devices via:
+
 1. **Wi-Fi/LAN** — automatic peer discovery on the same network using mDNS
 2. **Bluetooth Low Energy (BLE)** — infrastructure-free mesh networking for offline environments
 3. **DHT** — global peer discovery across networks
@@ -229,6 +230,7 @@ graph TD
 NyxChat uses **mDNS/DNS-SD** via the Bonsoir library for zero-configuration local network discovery.
 
 **How it works:**
+
 1. On startup, the app **broadcasts** a service of type `_bitchat._tcp` on port `42420`
 2. The broadcast includes the user's `bitChatId`, `displayName`, and `protocolVersion` as TXT attributes
 3. Simultaneously, it **discovers** other NyxChat nodes broadcasting the same service type
@@ -296,6 +298,7 @@ flowchart TD
 ```
 
 **Key Design Decisions:**
+
 - **Cyclic Scanning** — 15-second scan windows with 5-second pauses to conserve battery
 - **Data Chunking** — Messages are split into MTU-sized chunks for reliable transfer over GATT
 - **Reconnection** — Automatic reconnection on disconnect with peer state preservation
@@ -326,6 +329,7 @@ flowchart TD
 ```
 
 **DHT Features:**
+
 - **XOR-based distance metric** for efficient routing
 - **Routing table** of up to 20 entries with automatic pruning of stale entries (1-hour expiry)
 - **Periodic refresh** every 5 minutes
@@ -361,6 +365,7 @@ flowchart LR
 ```
 
 **Relay Properties:**
+
 - **Disabled by default** — user must explicitly opt in
 - **E2EE maintained** — relay only handles opaque encrypted blobs
 - **Anonymous addressing** — uses SHA-256 hashes, not plaintext IDs
@@ -548,6 +553,7 @@ flowchart TD
 ```
 
 **MeshStore** provides:
+
 - **Persistent queue** with maximum 100 stored packets
 - **Deduplication** via seen-packet-ID tracking (last 500 IDs)
 - **Statistics** — stored count, seen count, delivered count
@@ -578,6 +584,7 @@ flowchart TD
 ```
 
 **Key Properties:**
+
 - Location is **never transmitted** — only processed locally to compute the geohash
 - Users in the same geohash cell **share a derived channel key**
 - Messages are **anonymous** — identified only by sender hash
@@ -903,6 +910,7 @@ flutter build apk --release
 | `ACCESS_FINE_LOCATION` | BLE scanning (Android requirement) + Geohash |
 | `INTERNET` | Optional relay server connectivity |
 | `READ_EXTERNAL_STORAGE` | File sharing |
+| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | Keeps DHT and mesh services running in the background |
 
 ---
 

@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
 import '../services/identity_service.dart';
@@ -85,43 +87,47 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
     return Center(
       child: Column(
         children: [
-          AnimatedBuilder(
-            animation: _scanController,
-            builder: (context, child) {
-              return Stack(
-                alignment: Alignment.center,
-                children: [
-                  ...List.generate(3, (i) {
-                    final p = (_scanController.value + i * 0.33) % 1.0;
-                    return Container(
-                      width: 80 + (p * 40),
-                      height: 80 + (p * 40),
+          SizedBox(
+            width: 120,
+            height: 120,
+            child: AnimatedBuilder(
+              animation: _scanController,
+              builder: (context, child) {
+                return Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    ...List.generate(3, (i) {
+                      final p = (_scanController.value + i * 0.33) % 1.0;
+                      return Container(
+                        width: 80 + (p * 40),
+                        height: 80 + (p * 40),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white
+                                .withValues(alpha: 0.06 * (1 - p)),
+                            width: 0.5,
+                          ),
+                        ),
+                      );
+                    }),
+                    Container(
+                      width: 56,
+                      height: 56,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
+                        color: AppTheme.surface,
                         border: Border.all(
-                          color: Colors.white
-                              .withValues(alpha: 0.06 * (1 - p)),
-                          width: 0.5,
+                          color: Colors.white.withValues(alpha: 0.06),
                         ),
                       ),
-                    );
-                  }),
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: AppTheme.surface,
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.06),
-                      ),
+                      child: Icon(Icons.radar_rounded,
+                          color: AppTheme.textMuted, size: 24),
                     ),
-                    child: Icon(Icons.radar_rounded,
-                        color: AppTheme.textMuted, size: 24),
-                  ),
-                ],
-              );
-            },
+                  ],
+                );
+              },
+            ),
           ),
           const SizedBox(height: 16),
           const Text('Scanning local network',
@@ -650,6 +656,17 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
                 ),
               ),
             ),
+            const SizedBox(height: 6),
+            Text(
+              'A bootstrap node is an existing peer in the DHT network '
+              'that helps your device discover other peers. Enter the '
+              'IP:Port of a known node to join the global network.',
+              style: TextStyle(
+                color: AppTheme.textMuted.withValues(alpha: 0.6),
+                fontSize: 11,
+                height: 1.4,
+              ),
+            ),
             const SizedBox(height: 14),
 
             // Peer Lookup
@@ -658,7 +675,7 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
               style: const TextStyle(
                   color: AppTheme.textPrimary, fontFamily: 'monospace'),
               decoration: InputDecoration(
-                hintText: 'Enter Nyx ID',
+                hintText: 'Enter Nyx ID (e.g. BC-1A2B...C3D4)',
                 labelText: 'Look Up Peer',
                 labelStyle: const TextStyle(color: AppTheme.textSecondary),
                 filled: true,
@@ -676,6 +693,17 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
                           color: AppTheme.accentBlue),
                   onPressed: _isLookingUp ? null : _lookupDHTPeer,
                 ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Search for a specific peer by their Nyx ID. The DHT '
+              'network will query other nodes to find the peer\'s '
+              'current IP address and connect you directly.',
+              style: TextStyle(
+                color: AppTheme.textMuted.withValues(alpha: 0.6),
+                fontSize: 11,
+                height: 1.4,
               ),
             ),
           ],
@@ -696,6 +724,61 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
       displayName: idSvc.displayName,
     );
     if (mounted) setState(() => _isDHTStarting = false);
+
+    // Prompt user to disable battery optimization for background DHT
+    if (mounted && Platform.isAndroid) {
+      _promptBatteryOptimization();
+    }
+  }
+
+  Future<void> _promptBatteryOptimization() async {
+    final status = await Permission.ignoreBatteryOptimizations.status;
+    if (status.isGranted) return;
+
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          'Disable Battery Optimization',
+          style: TextStyle(
+            color: AppTheme.textPrimary,
+            fontSize: 17,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        content: const Text(
+          'DHT needs to run in the background to keep you discoverable '
+          'by other peers. Please disable battery optimization for NyxChat '
+          'so the system does not kill the DHT service when the app is '
+          'in the background.',
+          style: TextStyle(
+            color: AppTheme.textSecondary,
+            fontSize: 13,
+            height: 1.5,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Later',
+                style: TextStyle(color: AppTheme.textMuted)),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await Permission.ignoreBatteryOptimizations.request();
+            },
+            child: const Text('Disable Optimization',
+                style: TextStyle(
+                    color: AppTheme.accentBlue,
+                    fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _stopDHT() async {
