@@ -26,6 +26,7 @@
 ## Table of Contents
 
 - [Overview](#overview)
+- [Demo Video](#demo-video)
 - [Key Features](#key-features)
 - [System Architecture](#system-architecture)
 - [Networking Layer](#networking-layer)
@@ -64,6 +65,10 @@ Messages are delivered directly between devices via:
 4. **Optional Internet Relay** — encrypted bridge between disconnected networks
 
 Every message is protected with **end-to-end encryption (E2EE)** using modern cryptographic primitives (X25519 + AES-256-GCM), and the system is designed so that even mesh relay nodes and optional internet relays **cannot read message content** or **identify participants**.
+
+---
+
+Watch the architecture teardown/explanation on YouTube: https://youtu.be/moDl9fvTJ2E
 
 ---
 
