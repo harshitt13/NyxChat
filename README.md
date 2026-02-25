@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="favicon.png" width="120" alt="NyxChat Logo" />
+    <img src="favicon.png" width="120" alt="NyxChat Logo" style="border-radius: 50%;" />
 </p>
 
 <h1 align="center">NyxChat</h1>
