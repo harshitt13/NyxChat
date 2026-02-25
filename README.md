@@ -1,24 +1,33 @@
-<div align="center">
-  <img src="favicon.png" width="120" height="120" style="border-radius:50%">
-</div>
+<p align="center">
+  <a href="https://github.com/your-username/NyxChat">
+    <img src="favicon.png" width="100" height="100" style="border-radius: 50%;" align="center" />
+  </a>
+</p>
 
 <h1 align="center">NyxChat</h1>
 
 <p align="center">
   <strong>Decentralized · Encrypted · Serverless · Mesh-Networked</strong>
+  <br />
+  <i>Secure P2P communication, even without internet access.</i>
 </p>
 
 <p align="center">
-  A privacy-first peer-to-peer messaging application that operates without central servers, using BLE mesh networking and end-to-end encryption to enable secure communication even without internet access.
+  <img src="https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter&style=flat-square" alt="Flutter" />
+  <img src="https://img.shields.io/badge/Dart-3.11+-0175C2?logo=dart&style=flat-square" alt="Dart" />
+  <img src="https://img.shields.io/badge/Encryption-AES--256--GCM-green?style=flat-square" alt="Encryption" />
+  <img src="https://img.shields.io/badge/Key_Exchange-X25519-blue?style=flat-square" alt="Key Exchange" />
+  <img src="https://img.shields.io/badge/License-GPL--3.0-red?style=flat-square" alt="License" />
+  <img src="https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&style=flat-square" alt="Platform" />
+  <a href="https://youtu.be/moDl9fvTJ2E">
+    <img src="https://img.shields.io/badge/Watch-YouTube-FF0000?logo=youtube&style=flat-square" alt="Watch" />
+  </a>
 </p>
 
+---
+
 <p align="center">
-  <img src="https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter" alt="Flutter" />
-  <img src="https://img.shields.io/badge/Dart-3.11+-0175C2?logo=dart" alt="Dart" />
-  <img src="https://img.shields.io/badge/Encryption-AES--256--GCM-green" alt="Encryption" />
-  <img src="https://img.shields.io/badge/Key_Exchange-X25519-blue" alt="Key Exchange" />
-  <img src="https://img.shields.io/badge/License-GPL--3.0-red" alt="License" />
-  <img src="https://img.shields.io/badge/Platform-Android-3DDC84?logo=android" alt="Platform" />
+  NyxChat is a privacy-first peer-to-peer messaging application. By leveraging <b>BLE mesh networking</b> and <b>end-to-end encryption</b>, it eliminates the need for central servers, ensuring your data stays yours—even in off-grid environments.
 </p>
 
 ---
@@ -65,10 +74,6 @@ Messages are delivered directly between devices via:
 4. **Optional Internet Relay** — encrypted bridge between disconnected networks
 
 Every message is protected with **end-to-end encryption (E2EE)** using modern cryptographic primitives (X25519 + AES-256-GCM), and the system is designed so that even mesh relay nodes and optional internet relays **cannot read message content** or **identify participants**.
-
----
-
-Watch the architecture teardown/explanation on YouTube: https://youtu.be/moDl9fvTJ2E
 
 ---
 
