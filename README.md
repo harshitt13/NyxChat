@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/your-username/NyxChat">
+  <a href="https://github.com/harshitt13/NyxChat">
     <img src="favicon.png" width="100" height="100" style="border-radius: 50%;" align="center" />
   </a>
 </p>
