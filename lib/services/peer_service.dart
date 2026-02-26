@@ -218,6 +218,9 @@ class PeerService extends ChangeNotifier {
 
       // Announce ourselves
       await _dhtNode!.announce();
+      
+      // Persist state
+      await _storage.setDHTActive(true);
 
       notifyListeners();
       debugPrint('[DHT] Global network started');
@@ -231,6 +234,7 @@ class PeerService extends ChangeNotifier {
     await _dhtNode?.stop();
     _dhtNode = null;
     _isDHTActive = false;
+    await _storage.setDHTActive(false);
     notifyListeners();
   }
 

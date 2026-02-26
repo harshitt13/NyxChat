@@ -1,10 +1,13 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../theme/app_theme.dart';
 import '../services/identity_service.dart';
 import '../services/chat_service.dart';
 import '../services/peer_service.dart';
+import '../core/storage/local_storage.dart';
 import '../models/chat_room.dart';
 import 'chat_screen.dart';
 import 'peer_discovery_screen.dart';
@@ -44,6 +47,16 @@ class _ChatListScreenState extends State<ChatListScreen>
     final peerService = context.read<PeerService>();
     final chatService = context.read<ChatService>();
 
+    // Request permissions needed for networking and BLE discovery
+    if (Platform.isAndroid || Platform.isIOS) {
+      await [
+        Permission.locationWhenInUse,
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.bluetoothAdvertise,
+      ].request();
+    }
+
     if (identityService.hasIdentity) {
       final id = identityService.identity!;
       final pubKey = await identityService.getPublicKeyHex();
@@ -59,6 +72,16 @@ class _ChatListScreenState extends State<ChatListScreen>
 
       // Init chat service
       await chatService.init(id.nyxChatId);
+      
+      // Auto-start DHT if it was active in the previous session
+      final wasDHTActive = await context.read<LocalStorage>().isDHTActive();
+      if (wasDHTActive) {
+        await peerService.startDHT(
+          nyxChatId: id.nyxChatId,
+          publicKeyHex: pubKey,
+          displayName: id.displayName,
+        );
+      }
     }
   }
 

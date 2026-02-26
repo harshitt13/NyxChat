@@ -37,6 +37,14 @@ class LocalStorage {
     return UserIdentity.decode(data);
   }
 
+  Future<void> setDHTActive(bool isActive) async {
+    await _userBox.put('dhtActive', isActive ? 'true' : 'false');
+  }
+
+  Future<bool> isDHTActive() async {
+    return _userBox.get('dhtActive') == 'true';
+  }
+
   // ─── Messages ─────────────────────────────────────────────────
 
   Future<void> saveMessage(ChatMessage message) async {
