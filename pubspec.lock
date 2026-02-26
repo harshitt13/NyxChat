@@ -628,10 +628,10 @@ packages:
     dependency: "direct main"
     description:
       name: nearby_connections
-      sha256: "95fbc4fb01a199a02e6498b32800a89ea10e4e40b1e6ccae2033fe3e31453309"
+      sha256: "94d500bdb11f9a3db3b1cb2949ab438107e581f0142380efc17ecc8038e99369"
       url: "https://pub.dev"
     source: hosted
-    version: "3.3.1"
+    version: "4.3.0"
   nested:
     dependency: transitive
     description:

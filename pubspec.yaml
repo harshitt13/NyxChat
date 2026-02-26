@@ -40,7 +40,7 @@ dependencies:
   sensors_plus: ^5.0.1
   
   # High Bandwidth P2P Fallback (Wi-Fi Direct)
-  nearby_connections: ^3.1.2
+  nearby_connections: ^4.3.0
 
   # UI
   shimmer: ^3.0.0
