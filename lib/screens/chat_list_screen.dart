@@ -7,12 +7,12 @@ import '../theme/app_theme.dart';
 import '../services/identity_service.dart';
 import '../services/chat_service.dart';
 import '../services/peer_service.dart';
-import '../core/storage/local_storage.dart';
 import '../models/chat_room.dart';
 import 'chat_screen.dart';
 import 'peer_discovery_screen.dart';
 import 'create_group_screen.dart';
 import 'settings_screen.dart';
+import 'mesh_map_screen.dart';
 
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
@@ -61,6 +61,7 @@ class _ChatListScreenState extends State<ChatListScreen>
       final id = identityService.identity!;
       final pubKey = await identityService.getPublicKeyHex();
       final signPubKey = await identityService.getSigningPublicKeyHex();
+      final kyberPubKey = await identityService.getKyberPublicKeyHex();
 
       // Start network
       await peerService.startNetwork(
@@ -68,13 +69,14 @@ class _ChatListScreenState extends State<ChatListScreen>
         displayName: id.displayName,
         publicKeyHex: pubKey,
         signingPublicKeyHex: signPubKey,
+        kyberPublicKeyHex: kyberPubKey,
       );
 
       // Init chat service
       await chatService.init(id.nyxChatId);
       
       // Auto-start DHT if it was active in the previous session
-      final wasDHTActive = await context.read<LocalStorage>().isDHTActive();
+      final wasDHTActive = await peerService.wasDHTActive();
       if (wasDHTActive) {
         await peerService.startDHT(
           nyxChatId: id.nyxChatId,
@@ -153,7 +155,7 @@ class _ChatListScreenState extends State<ChatListScreen>
       ),
       actions: [
         Consumer<PeerService>(
-          builder: (_, peerService, __) {
+          builder: (_, peerService, _) {
             return Padding(
               padding: const EdgeInsets.only(right: 8),
               child: Row(
@@ -184,6 +186,17 @@ class _ChatListScreenState extends State<ChatListScreen>
               ),
             );
           },
+        ),
+        IconButton(
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const MeshMapScreen()),
+          ),
+          icon: const Icon(
+            Icons.hub_outlined,
+            color: AppTheme.textMuted,
+            size: 20,
+          ),
         ),
         IconButton(
           onPressed: () => Navigator.push(

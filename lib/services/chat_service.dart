@@ -4,12 +4,15 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:convert/convert.dart' as convert;
 import '../core/crypto/encryption_engine.dart';
 import '../core/crypto/key_manager.dart';
 import '../core/crypto/session_key_manager.dart';
+import '../core/crypto/hybrid_key_exchange.dart';
 import '../core/network/message_protocol.dart';
 import '../core/network/p2p_client.dart';
 import '../core/network/p2p_server.dart';
+import '../core/network/file_transfer_manager.dart';
 import '../core/storage/local_storage.dart';
 import '../models/message.dart';
 import '../models/chat_room.dart';
@@ -23,10 +26,16 @@ class ChatService extends ChangeNotifier {
   final KeyManager _keyManager;
   final EncryptionEngine _encryptionEngine = EncryptionEngine();
   final SessionKeyManager _sessionKeyManager = SessionKeyManager();
+  final FileTransferManager _fileTransferManager = FileTransferManager();
+  final HybridKeyExchange _hybridKex = HybridKeyExchange();
   final Uuid _uuid = const Uuid();
+
+  // Stores metadata from fileTransfer message until chunks complete
+  final Map<String, Map<String, dynamic>> _pendingFileMetadata = {};
 
   final Map<String, ChatRoom> _chatRooms = {};
   final Map<String, List<ChatMessage>> _messages = {};
+  bool _initialized = false;
 
   final StreamController<ChatMessage> _incomingMessageController =
       StreamController<ChatMessage>.broadcast();
@@ -50,6 +59,9 @@ class ChatService extends ChangeNotifier {
   // ─── Initialization ────────────────────────────────────────────
 
   Future<void> init(String myNyxChatId) async {
+    if (_initialized) return; // Guard: don't subscribe to listeners twice
+    _initialized = true;
+
     final rooms = await _storage.getChatRooms();
     for (final room in rooms) {
       _chatRooms[room.id] = room;
@@ -88,13 +100,47 @@ class ChatService extends ChangeNotifier {
         case ProtocolMessageType.fileTransfer:
           await _handleFileTransfer(message, connection, myNyxChatId);
           break;
-        case ProtocolMessageType.keyRotation:
-          await _handleKeyRotation(message);
+        case ProtocolMessageType.fileChunk:
+          await _handleFileChunk(message, connection, myNyxChatId);
           break;
         default:
           break;
       }
     });
+  }
+
+  // ─── Post-Quantum Hybrid Key Helpers ──────────────────────────
+
+  /// Resolve the Kyber shared secret for a connection.
+  /// - Responder: reads pre-computed secret from connection
+  /// - Initiator: decapsulates ciphertext using our Kyber private key
+  Future<Uint8List?> _resolveKyberSecret(PeerConnection connection) async {
+    try {
+      // Responder path: we already have the shared secret from encapsulation
+      if (connection.kyberSharedSecretHex != null &&
+          connection.kyberSharedSecretHex!.isNotEmpty) {
+        return Uint8List.fromList(
+            convert.hex.decode(connection.kyberSharedSecretHex!));
+      }
+
+      // Initiator path: decapsulate the ciphertext we received
+      if (connection.kyberCiphertextHex != null &&
+          connection.kyberCiphertextHex!.isNotEmpty &&
+          _keyManager.kyberKeyPair != null) {
+        final ciphertext = Uint8List.fromList(
+            convert.hex.decode(connection.kyberCiphertextHex!));
+        final secret = await _hybridKex.decapsulate(
+          ciphertext,
+          _keyManager.kyberKeyPair!.privateKey,
+        );
+        // Cache the result so we don't decapsulate again
+        connection.kyberSharedSecretHex = convert.hex.encode(secret);
+        return secret;
+      }
+    } catch (e) {
+      debugPrint('[PQC] Failed to resolve Kyber secret: $e');
+    }
+    return null; // Fallback: no PQC available, use ECDH only
   }
 
   // ─── Direct Message Handling ───────────────────────────────────
@@ -114,25 +160,26 @@ class ChatService extends ChangeNotifier {
         final peerPublicKeyHex = connection.peerPublicKeyHex;
         if (peerPublicKeyHex != null &&
             _keyManager.keyExchangeKeyPair != null) {
-          // Try session key first (forward secrecy)
-          final sessionSecret =
-              _sessionKeyManager.getSessionSecret(protocol.senderId);
-          if (sessionSecret != null) {
-            content = await _encryptionEngine.decryptMessage(
-              encryptedData: encryptedContent,
-              sharedSecret: sessionSecret,
-            );
-          } else {
-            final sharedSecret =
-                await _encryptionEngine.deriveSharedSecretFromHex(
-              ourKeyPair: _keyManager.keyExchangeKeyPair!,
-              theirPublicKeyHex: peerPublicKeyHex,
-            );
-            content = await _encryptionEngine.decryptMessage(
-              encryptedData: encryptedContent,
-              sharedSecret: sharedSecret,
+          
+          if (!_sessionKeyManager.hasSession(protocol.senderId)) {
+            final kyberSecret = await _resolveKyberSecret(connection);
+            await _sessionKeyManager.establishSession(
+              peerId: protocol.senderId,
+              peerPublicKeyHex: peerPublicKeyHex,
+              ourIdentityKeyPair: _keyManager.keyExchangeKeyPair!,
+              kyberSharedSecret: kyberSecret,
             );
           }
+
+          final messageKey = await _sessionKeyManager.getNextReceivingKeyAndStep(
+            peerId: protocol.senderId,
+            incomingDhPubKeyHex: protocol.dhPubKey ?? peerPublicKeyHex,
+          );
+
+          content = await _encryptionEngine.decryptMessage(
+            encryptedData: encryptedContent,
+            sharedSecret: messageKey,
+          );
         } else {
           content = encryptedContent;
         }
@@ -175,11 +222,6 @@ class ChatService extends ChangeNotifier {
       _incomingMessageController.add(msg);
       notifyListeners();
 
-      // Check if key rotation needed (forward secrecy)
-      if (_sessionKeyManager.shouldRotate(senderId)) {
-        await _initiateKeyRotation(senderId, myNyxChatId);
-      }
-
       connection.send(ProtocolMessage.ack(
         senderId: myNyxChatId,
         messageId: msg.id,
@@ -200,19 +242,18 @@ class ChatService extends ChangeNotifier {
     MessageType messageType = MessageType.text,
   }) async {
     try {
+      final messageId = _uuid.v4();
+      final room = _chatRooms[roomId];
+      final isGroup = room?.isGroup ?? false;
+
       String encryptedContent;
+      String? dhPubKey;
       try {
         if (_keyManager.keyExchangeKeyPair != null &&
             peerPublicKeyHex.isNotEmpty) {
-          // Use session key if available (forward secrecy)
-          final sessionSecret =
-              _sessionKeyManager.getSessionSecret(peerId);
-          if (sessionSecret != null) {
-            encryptedContent = await _encryptionEngine.encryptMessage(
-              plaintext: content,
-              sharedSecret: sessionSecret,
-            );
-          } else {
+          
+          if (isGroup) {
+            // Group messages use static ECDH (matching _handleGroupMessage decryption)
             final sharedSecret =
                 await _encryptionEngine.deriveSharedSecretFromHex(
               ourKeyPair: _keyManager.keyExchangeKeyPair!,
@@ -222,18 +263,36 @@ class ChatService extends ChangeNotifier {
               plaintext: content,
               sharedSecret: sharedSecret,
             );
+          } else {
+            // DM messages use Double Ratchet for forward secrecy
+            if (!_sessionKeyManager.hasSession(peerId)) {
+              final conn = _client.getConnection(peerId);
+              final kyberSecret = conn != null
+                  ? await _resolveKyberSecret(conn)
+                  : null;
+              await _sessionKeyManager.establishSession(
+                peerId: peerId,
+                peerPublicKeyHex: peerPublicKeyHex,
+                ourIdentityKeyPair: _keyManager.keyExchangeKeyPair!,
+                kyberSharedSecret: kyberSecret,
+              );
+            }
+
+            final ratchetStep = await _sessionKeyManager.getNextSendingKeyAndStep(peerId);
+            encryptedContent = await _encryptionEngine.encryptMessage(
+              plaintext: content,
+              sharedSecret: ratchetStep.messageKey,
+            );
+            dhPubKey = ratchetStep.dhPubKeyHex;
           }
         } else {
+          debugPrint('[Security] No encryption keys available — message will be unencrypted');
           encryptedContent = content;
         }
       } catch (e) {
-        debugPrint('Encryption failed, sending raw: $e');
-        encryptedContent = content;
+        debugPrint('[Security] Encryption FAILED: $e — aborting send');
+        return null;
       }
-
-      final messageId = _uuid.v4();
-      final room = _chatRooms[roomId];
-      final isGroup = room?.isGroup ?? false;
 
       // Create protocol message
       final protocol = isGroup
@@ -250,6 +309,7 @@ class ChatService extends ChangeNotifier {
               encryptedContent: encryptedContent,
               messageId: messageId,
               messageType: messageType.name,
+              dhPubKey: dhPubKey,
             );
 
       final msg = ChatMessage(
@@ -601,32 +661,46 @@ class ChatService extends ChangeNotifier {
       final mimeType = _getMimeType(fileName);
       final fileSize = bytes.length;
 
-      // Enforce max file size (10MB)
-      if (fileSize > 10 * 1024 * 1024) {
+      // Enforce max file size (100MB for chunks!)
+      if (fileSize > 100 * 1024 * 1024) {
         debugPrint('File too large: $fileSize bytes');
         return null;
       }
 
       // Encrypt file data
       String encryptedDataB64;
+      String? dhPubKey;
       final fileDataB64 = base64Encode(bytes);
       try {
         if (_keyManager.keyExchangeKeyPair != null &&
             peerPublicKeyHex.isNotEmpty) {
-          final sharedSecret =
-              await _encryptionEngine.deriveSharedSecretFromHex(
-            ourKeyPair: _keyManager.keyExchangeKeyPair!,
-            theirPublicKeyHex: peerPublicKeyHex,
-          );
+            
+          if (!_sessionKeyManager.hasSession(peerId)) {
+            final conn = _client.getConnection(peerId);
+            final kyberSecret = conn != null
+                ? await _resolveKyberSecret(conn)
+                : null;
+            await _sessionKeyManager.establishSession(
+              peerId: peerId,
+              peerPublicKeyHex: peerPublicKeyHex,
+              ourIdentityKeyPair: _keyManager.keyExchangeKeyPair!,
+              kyberSharedSecret: kyberSecret,
+            );
+          }
+
+          final ratchetStep = await _sessionKeyManager.getNextSendingKeyAndStep(peerId);
           encryptedDataB64 = await _encryptionEngine.encryptMessage(
             plaintext: fileDataB64,
-            sharedSecret: sharedSecret,
+            sharedSecret: ratchetStep.messageKey,
           );
+          dhPubKey = ratchetStep.dhPubKeyHex;
         } else {
+          debugPrint('[Security] No encryption keys for file — sending unencrypted');
           encryptedDataB64 = fileDataB64;
         }
       } catch (e) {
-        encryptedDataB64 = fileDataB64;
+        debugPrint('[Security] File encryption FAILED: $e — aborting send');
+        return null;
       }
 
       final messageId = _uuid.v4();
@@ -655,7 +729,6 @@ class ChatService extends ChangeNotifier {
       _messages[roomId] = [...(_messages[roomId] ?? []), msg];
       notifyListeners();
 
-      // Send via protocol
       final protocol = ProtocolMessage.fileTransfer(
         senderId: myNyxChatId,
         receiverId: peerId,
@@ -663,14 +736,27 @@ class ChatService extends ChangeNotifier {
         fileName: fileName,
         mimeType: mimeType,
         fileSize: fileSize,
-        encryptedDataB64: encryptedDataB64,
+        encryptedDataB64: "", // Metadata only
         groupId: _chatRooms[roomId]?.isGroup == true ? roomId : null,
+        dhPubKey: dhPubKey,
       );
 
       bool sent = false;
       if (_client.isPeerConnected(peerId)) {
         _client.sendToPeer(peerId, protocol);
         sent = true;
+        
+        // Chunk and stream the large payload
+        final payloadBytes = Uint8List.fromList(utf8.encode(encryptedDataB64));
+        final chunks = _fileTransferManager.sliceFile(messageId, payloadBytes);
+        for (final chunk in chunks) {
+            final chunkMsg = ProtocolMessage.fileChunk(
+                senderId: myNyxChatId,
+                receiverId: peerId,
+                chunkDataJson: chunk.toJson(),
+            );
+            _client.sendToPeer(peerId, chunkMsg);
+        }
       }
 
       final updatedMsg = msg.copyWith(
@@ -705,9 +791,52 @@ class ChatService extends ChangeNotifier {
       final fileName = protocol.payload['fileName'] as String;
       final mimeType = protocol.payload['mimeType'] as String;
       final fileSize = protocol.payload['fileSize'] as int;
-      final encryptedDataB64 =
-          protocol.payload['encryptedDataB64'] as String;
-      final groupId = protocol.payload['groupId'] as String?;
+      final messageId = protocol.messageId ?? '';
+
+      debugPrint('[FileTransfer] Receiving metadata for $fileName ($fileSize bytes). Awaiting chunks...');
+      
+      // Store metadata keyed by messageId so _handleFileChunk can retrieve it
+      _pendingFileMetadata[messageId] = {
+        'fileName': fileName,
+        'mimeType': mimeType,
+        'fileSize': fileSize,
+        'dhPubKey': protocol.dhPubKey,
+        'senderId': protocol.senderId,
+        'groupId': protocol.payload['groupId'],
+      };
+      
+      connection.send(ProtocolMessage.ack(
+        senderId: myNyxChatId,
+        messageId: messageId,
+      ));
+    } catch (e) {
+      debugPrint('Error handling file transfer metadata: $e');
+    }
+  }
+
+  Future<void> _handleFileChunk(
+    ProtocolMessage protocol,
+    PeerConnection connection,
+    String myNyxChatId,
+  ) async {
+    try {
+      final chunkJson = protocol.payload['chunk'] as Map<String, dynamic>;
+      final chunk = FileChunk.fromJson(chunkJson);
+      
+      final assembledBytes = _fileTransferManager.receiveChunk(chunk);
+      if (assembledBytes == null) return; // Still tracking...
+
+      // Transfer complete!
+      debugPrint('[FileTransfer] Chunk stream complete for file ${chunk.fileId}!');
+      final encryptedDataB64 = utf8.decode(assembledBytes);
+
+      // Retrieve metadata stored from the initial fileTransfer message
+      final metadata = _pendingFileMetadata.remove(chunk.fileId);
+      final fileName = (metadata?['fileName'] as String?) ?? 
+          'nyxchat_${DateTime.now().millisecondsSinceEpoch}.bin';
+      final mimeType = (metadata?['mimeType'] as String?) ?? 
+          'application/octet-stream';
+      final storedDhPubKey = metadata?['dhPubKey'] as String?;
 
       // Decrypt file data
       String fileDataB64;
@@ -715,19 +844,31 @@ class ChatService extends ChangeNotifier {
         final peerPublicKeyHex = connection.peerPublicKeyHex;
         if (peerPublicKeyHex != null &&
             _keyManager.keyExchangeKeyPair != null) {
-          final sharedSecret =
-              await _encryptionEngine.deriveSharedSecretFromHex(
-            ourKeyPair: _keyManager.keyExchangeKeyPair!,
-            theirPublicKeyHex: peerPublicKeyHex,
+          
+          if (!_sessionKeyManager.hasSession(protocol.senderId)) {
+            final kyberSecret = await _resolveKyberSecret(connection);
+            await _sessionKeyManager.establishSession(
+              peerId: protocol.senderId,
+              peerPublicKeyHex: peerPublicKeyHex,
+              ourIdentityKeyPair: _keyManager.keyExchangeKeyPair!,
+              kyberSharedSecret: kyberSecret,
+            );
+          }
+
+          final messageKey = await _sessionKeyManager.getNextReceivingKeyAndStep(
+            peerId: protocol.senderId,
+            incomingDhPubKeyHex: storedDhPubKey ?? peerPublicKeyHex,
           );
+
           fileDataB64 = await _encryptionEngine.decryptMessage(
             encryptedData: encryptedDataB64,
-            sharedSecret: sharedSecret,
+            sharedSecret: messageKey,
           );
         } else {
           fileDataB64 = encryptedDataB64;
         }
       } catch (e) {
+        debugPrint('[FileTransfer] Decryption failed, using raw data: $e');
         fileDataB64 = encryptedDataB64;
       }
 
@@ -741,7 +882,7 @@ class ChatService extends ChangeNotifier {
       await File(savePath).writeAsBytes(base64Decode(fileDataB64));
 
       // Determine room
-      final roomId = groupId ?? (await _getOrCreateRoom(
+      final roomId = (await _getOrCreateRoom(
         peerId: protocol.senderId,
         peerDisplayName: connection.peerDisplayName ?? 'Unknown',
         peerPublicKeyHex: connection.peerPublicKeyHex ?? '',
@@ -750,21 +891,19 @@ class ChatService extends ChangeNotifier {
       final attachment = FileAttachment(
         fileName: fileName,
         mimeType: mimeType,
-        fileSize: fileSize,
+        fileSize: assembledBytes.length,
         filePath: savePath,
       );
 
       final msg = ChatMessage(
-        id: protocol.messageId ?? _uuid.v4(),
+        id: chunk.fileId,
         senderId: protocol.senderId,
         receiverId: myNyxChatId,
         content: '📎 $fileName',
-        timestamp: protocol.timestamp,
+        timestamp: DateTime.now(),
         status: MessageStatus.delivered,
         roomId: roomId,
-        messageType: mimeType.startsWith('image/')
-            ? MessageType.image
-            : MessageType.file,
+        messageType: MessageType.file,
         attachment: attachment,
       );
 
@@ -784,56 +923,12 @@ class ChatService extends ChangeNotifier {
       _incomingMessageController.add(msg);
       notifyListeners();
 
-      connection.send(ProtocolMessage.ack(
-        senderId: myNyxChatId,
-        messageId: msg.id,
-      ));
     } catch (e) {
-      debugPrint('Error handling file transfer: $e');
+      debugPrint('Error handling file chunk: $e');
     }
   }
 
   // ─── Forward Secrecy: Key Rotation ─────────────────────────────
-
-  Future<void> _initiateKeyRotation(
-      String peerId, String myNyxChatId) async {
-    try {
-      final rotationData =
-          await _sessionKeyManager.initiateKeyRotation(peerId);
-
-      final protocol = ProtocolMessage.keyRotation(
-        senderId: myNyxChatId,
-        newPublicKeyHex: rotationData.newPublicKeyHex,
-        sessionId: rotationData.sessionId,
-      );
-
-      if (_client.isPeerConnected(peerId)) {
-        _client.sendToPeer(peerId, protocol);
-        debugPrint('[ForwardSecrecy] Key rotated for $peerId');
-      }
-    } catch (e) {
-      debugPrint('Key rotation failed: $e');
-    }
-  }
-
-  Future<void> _handleKeyRotation(ProtocolMessage protocol) async {
-    try {
-      final newPublicKeyHex =
-          protocol.payload['newPublicKeyHex'] as String;
-      final sessionId = protocol.payload['sessionId'] as int;
-
-      await _sessionKeyManager.handleKeyRotation(
-        peerId: protocol.senderId,
-        newPeerPublicKeyHex: newPublicKeyHex,
-        sessionId: sessionId,
-      );
-
-      debugPrint(
-          '[ForwardSecrecy] Received key rotation from ${protocol.senderId}');
-    } catch (e) {
-      debugPrint('Error handling key rotation: $e');
-    }
-  }
 
   /// Establish forward secrecy session with a peer
   Future<void> establishSession({
@@ -841,10 +936,15 @@ class ChatService extends ChangeNotifier {
     required String peerPublicKeyHex,
   }) async {
     if (_keyManager.keyExchangeKeyPair != null) {
+      final conn = _client.getConnection(peerId);
+      final kyberSecret = conn != null
+          ? await _resolveKyberSecret(conn)
+          : null;
       await _sessionKeyManager.establishSession(
         peerId: peerId,
         peerPublicKeyHex: peerPublicKeyHex,
         ourIdentityKeyPair: _keyManager.keyExchangeKeyPair!,
+        kyberSharedSecret: kyberSecret,
       );
     }
   }
@@ -932,5 +1032,12 @@ class ChatService extends ChangeNotifier {
       'zip': 'application/zip',
     };
     return mimeTypes[ext] ?? 'application/octet-stream';
+  }
+
+  @override
+  void dispose() {
+    _incomingMessageController.close();
+    _reactionController.close();
+    super.dispose();
   }
 }

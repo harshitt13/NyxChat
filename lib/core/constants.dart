@@ -1,7 +1,7 @@
 class AppConstants {
   // App Info
   static const String appName = 'NyxChat';
-  static const String appVersion = '1.0.0';
+  static const String appVersion = '2.0.0';
 
   // Networking
   static const String serviceType = '_nyxchat._tcp';

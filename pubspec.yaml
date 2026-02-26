@@ -1,7 +1,7 @@
 name: nyxchat
 description: "NyxChat — Decentralized P2P encrypted messaging"
 publish_to: 'none'
-version: 1.0.0+1
+version: 2.0.0+2
 
 environment:
   sdk: ^3.11.0
@@ -34,18 +34,35 @@ dependencies:
   permission_handler: ^11.3.1
   web_socket_channel: ^3.0.2
 
+  # Background & Hardware Sensors
+  flutter_background_service: 5.1.0
+  flutter_local_notifications: ^17.1.1
+  sensors_plus: ^5.0.1
+  
+  # High Bandwidth P2P Fallback (Wi-Fi Direct)
+  nearby_connections: ^3.1.2
+
   # UI
   shimmer: ^3.0.0
   flutter_animate: ^4.5.2
   animate_do: ^3.3.4
   intl: ^0.19.0
   file_picker: ^8.1.6
+  post_quantum: ^1.0.0-prerelease.8
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.3
+  flutter_native_splash: ^2.4.4
+
+flutter_native_splash:
+  color: "#000000"
+  image: "favicon.png"
+  android_12:
+    color: "#000000"
+    image: "favicon.png"
 
 flutter_launcher_icons:
   android: true

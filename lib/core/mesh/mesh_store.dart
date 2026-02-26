@@ -64,11 +64,11 @@ class MeshStore extends ChangeNotifier {
 
   /// Get all packets that should be forwarded to a new peer.
   /// Returns copies with decremented TTL.
-  List<MeshPacket> getForwardable() {
+  List<MeshPacket> getForwardable(String myHash) {
     _cleanup();
     return _packets.values
         .where((p) => p.canForward && !p.isExpired)
-        .map((p) => p.forward())
+        .map((p) => p.forward(myHash))
         .toList();
   }
 

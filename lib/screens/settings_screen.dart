@@ -4,6 +4,8 @@ import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
 import '../services/identity_service.dart';
 import '../services/peer_service.dart';
+import '../services/app_lock_service.dart';
+import 'password_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -117,7 +119,7 @@ class SettingsScreen extends StatelessWidget {
                       letterSpacing: 1)),
               const SizedBox(height: 10),
               Consumer<PeerService>(
-                builder: (_, peerService, __) {
+                builder: (_, peerService, _) {
                   return Container(
                     decoration: AppTheme.glassDecoration(
                         opacity: 0.04, borderRadius: 14),
@@ -278,7 +280,7 @@ class SettingsScreen extends StatelessWidget {
                       letterSpacing: 1)),
               const SizedBox(height: 10),
               Consumer<PeerService>(
-                builder: (_, peerService, __) {
+                builder: (_, peerService, _) {
                   return Container(
                     decoration: AppTheme.glassDecoration(
                         opacity: 0.04, borderRadius: 14),
@@ -402,6 +404,75 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
+              // Application Lock
+              const Text('Application Lock (Zero-Knowledge)',
+                  style: TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1)),
+              const SizedBox(height: 10),
+              Consumer<AppLockService>(
+                builder: (_, lockService, _) {
+                  return Container(
+                    decoration: AppTheme.glassDecoration(
+                        opacity: 0.04, borderRadius: 14),
+                     child: Column(
+                       children: [
+                         _settingsTile(
+                            icon: Icons.lock_rounded,
+                            title: 'Enable App Lock',
+                            subtitle: 'Encrypt databases with password',
+                            trailing: Switch(
+                              value: lockService.isLockEnabled,
+                              activeTrackColor: AppTheme.accentBlue,
+                              onChanged: (val) {
+                                if (val) {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                       builder: (_) => const PasswordScreen(isSetupMode: true),
+                                    )
+                                  );
+                                } else {
+                                  lockService.setLockEnabled(false);
+                                }
+                              }
+                            )
+                         ),
+                         if (lockService.isLockEnabled) ...[
+                           _divider(),
+                           _settingsTile(
+                              icon: Icons.password_rounded,
+                              title: 'Change App Password',
+                              subtitle: 'Derives new PBKDF2 Master Key',
+                              onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                       builder: (_) => const PasswordScreen(isSetupMode: true),
+                                    )
+                                  );
+                              }
+                           ),
+                           _divider(),
+                           _settingsTile(
+                              icon: Icons.delete_forever_rounded,
+                              title: 'Panic Wipe',
+                              subtitle: 'Wipe data after 5 failed attempts',
+                              trailing: Switch(
+                                value: lockService.wipeOnFailure,
+                                activeTrackColor: AppTheme.error,
+                                onChanged: (val) => lockService.setWipeOnFailure(val),
+                              )
+                           ),
+                         ]
+                       ]
+                     )
+                  );
+                }
+              ),
+              const SizedBox(height: 24),
               // About
               const Text('About',
                   style: TextStyle(
@@ -416,7 +487,7 @@ class SettingsScreen extends StatelessWidget {
                 child: _settingsTile(
                   icon: Icons.info_outline_rounded,
                   title: 'NyxChat',
-                  subtitle: 'v1.0.0 • Decentralized P2P Messaging',
+                  subtitle: 'v2.0.0 • Decentralized P2P Messaging',
                 ),
               ),
               const SizedBox(height: 40),

@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/io.dart';
+import '../network/tor_manager.dart';
 
 /// Optional internet relay client for cross-network mesh bridging.
 ///
@@ -16,6 +19,10 @@ class RelayClient extends ChangeNotifier {
   bool _isEnabled = false;
   String? _relayUrl;
   String? _mySubscriptionHash;
+  
+  // Pluggable Transports / Domain Fronting
+  bool _useDomainFronting = false;
+  final String _frontingDomain = 'ajax.googleapis.com'; // Innocent looking host
 
   // Stats
   int _messagesSent = 0;
@@ -31,9 +38,14 @@ class RelayClient extends ChangeNotifier {
   Function(Map<String, dynamic> data)? onRelayMessage;
 
   /// Enable relay and connect.
-  Future<void> enable(String url, String subscriptionHash) async {
+  Future<void> enable({
+    required String url,
+    required String subscriptionHash,
+    bool useDomainFronting = false,
+  }) async {
     _relayUrl = url;
     _mySubscriptionHash = subscriptionHash;
+    _useDomainFronting = useDomainFronting;
     _isEnabled = true;
     notifyListeners();
     await connect();
@@ -51,7 +63,29 @@ class RelayClient extends ChangeNotifier {
     if (!_isEnabled || _relayUrl == null) return;
 
     try {
-      _channel = WebSocketChannel.connect(Uri.parse(_relayUrl!));
+      final proxyClient = TorManager.createTorHttpClient();
+      
+      // Pluggable Transports: Domain Fronting
+      Map<String, dynamic>? customHeaders;
+      String targetUrl = _relayUrl!;
+      
+      if (_useDomainFronting) {
+        final originalUri = Uri.parse(_relayUrl!);
+        customHeaders = {
+          'Host': originalUri.host,
+        };
+        // Connect to the innocent fronting domain instead of the actual restricted relay IP
+        targetUrl = '${originalUri.scheme}://$_frontingDomain${originalUri.path}';
+        debugPrint('[Relay] Domain Fronting enabled. Tunneling through $_frontingDomain');
+      }
+
+      final ws = await WebSocket.connect(
+        targetUrl, 
+        customClient: proxyClient,
+        headers: customHeaders,
+      );
+      
+      _channel = IOWebSocketChannel(ws);
       await _channel!.ready;
 
       _isConnected = true;

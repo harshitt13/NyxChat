@@ -222,7 +222,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
           // Peer List
           Expanded(
             child: Consumer<PeerService>(
-              builder: (_, peerService, __) {
+              builder: (_, peerService, _) {
                 final connectedPeers = peerService.connectedPeers;
 
                 if (connectedPeers.isEmpty) {

@@ -21,6 +21,7 @@ class DHTNode extends ChangeNotifier {
   final Map<String, DHTEntry> _routingTable = {};
   final List<String> _bootstrapNodes;
   final Map<String, Completer<DHTEntry?>> _pendingLookups = {};
+  Timer? _refreshTimer;
   bool _isRunning = false;
 
   // K-bucket size (standard Kademlia)
@@ -64,6 +65,8 @@ class DHTNode extends ChangeNotifier {
   /// Stop the DHT node
   Future<void> stop() async {
     _isRunning = false;
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
     await _server?.close();
     _server = null;
     notifyListeners();
@@ -307,19 +310,26 @@ class DHTNode extends ChangeNotifier {
     return entries.take(count).toList();
   }
 
-  /// XOR distance between two node IDs (simplified)
+  /// XOR distance between two node IDs (proper Kademlia big-integer XOR)
   int _xorDistance(String id1, String id2) {
-    int distance = 0;
+    // Compute XOR on the raw bytes and return a comparable distance 
+    // by treating the first differing XOR byte as most significant
     final len = min(id1.length, id2.length);
     for (int i = 0; i < len; i++) {
-      distance += id1.codeUnitAt(i) ^ id2.codeUnitAt(i);
+      final xor = id1.codeUnitAt(i) ^ id2.codeUnitAt(i);
+      if (xor != 0) {
+        // Return distance weighted by position: earlier differences = larger distance
+        return (len - i) * 256 + xor;
+      }
     }
-    return distance;
+    // If one is a prefix of the other, the longer one is further
+    return (id1.length - id2.length).abs();
   }
 
   /// Periodically refresh the routing table
   void _startRefreshTimer() {
-    Timer.periodic(const Duration(minutes: 5), (timer) {
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
       if (!_isRunning) {
         timer.cancel();
         return;

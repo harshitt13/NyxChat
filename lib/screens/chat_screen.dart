@@ -81,6 +81,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
       if (result != null && result.files.single.path != null) {
         final filePath = result.files.single.path!;
+        if (!mounted) return;
         final identity = context.read<IdentityService>().identity!;
 
         await context.read<ChatService>().sendFile(
@@ -153,7 +154,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildAppBar() {
     return Consumer<PeerService>(
-      builder: (_, peerService, __) {
+      builder: (_, peerService, _) {
         final isConnected = widget.room.isGroup
             ? true
             : peerService.isPeerConnected(widget.room.peerId);
@@ -282,7 +283,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildMessageList() {
     return Consumer<ChatService>(
-      builder: (_, chatService, __) {
+      builder: (_, chatService, _) {
         final messages = chatService.getMessages(widget.room.id);
         if (messages.isEmpty) {
           return Center(
@@ -308,7 +309,16 @@ class _ChatScreenState extends State<ChatScreen> {
           );
         }
 
-        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          // Only auto-scroll if user is already near the bottom
+          if (_scrollController.hasClients) {
+            final maxScroll = _scrollController.position.maxScrollExtent;
+            final currentScroll = _scrollController.position.pixels;
+            if (maxScroll - currentScroll < 150) {
+              _scrollToBottom();
+            }
+          }
+        });
 
         final myId = context.read<IdentityService>().identity?.nyxChatId ?? '';
 
@@ -560,7 +570,11 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               const SizedBox(height: 16),
               _infoRow(Icons.vpn_key_rounded, 'Public Key',
-                  '${widget.room.peerPublicKeyHex.substring(0, 16)}...'),
+                  widget.room.peerPublicKeyHex.length >= 16
+                      ? '${widget.room.peerPublicKeyHex.substring(0, 16)}...'
+                      : widget.room.peerPublicKeyHex.isNotEmpty
+                          ? widget.room.peerPublicKeyHex
+                          : 'N/A'),
               _infoRow(Icons.enhanced_encryption_rounded,
                   'Encryption', 'AES-256-GCM + Forward Secrecy'),
               _infoRow(Icons.swap_horiz_rounded, 'Key Exchange',
@@ -627,7 +641,9 @@ class _MessageBubble extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(left: 12, bottom: 2),
                 child: Text(
-                  message.senderId.substring(0, 8),
+                  message.senderId.length >= 8
+                      ? message.senderId.substring(0, 8)
+                      : message.senderId,
                   style: const TextStyle(
                     color: AppTheme.textMuted,
                     fontSize: 11,
@@ -711,7 +727,7 @@ class _MessageBubble extends StatelessWidget {
           child: Image.file(
             File(att.filePath!),
             fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => _buildFileIcon(att),
+            errorBuilder: (_, _, _) => _buildFileIcon(att),
           ),
         ),
       );

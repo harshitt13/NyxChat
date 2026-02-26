@@ -1,21 +1,28 @@
+import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:convert/convert.dart';
+import 'hybrid_key_exchange.dart';
 
 /// Manages cryptographic key generation, storage, and retrieval.
-/// Uses X25519 for key exchange and Ed25519 for signing.
+/// Uses X25519 for key exchange, Ed25519 for signing, and
+/// ML-KEM (Kyber-768) for post-quantum hybrid key exchange.
 class KeyManager {
   static const _storageKeyExchangePrivate = 'nyxchat_kx_private';
   static const _storageKeyExchangePublic = 'nyxchat_kx_public';
   static const _storageSigningPrivate = 'nyxchat_sign_private';
   static const _storageSigningPublic = 'nyxchat_sign_public';
+  static const _storageKyberPrivate = 'nyxchat_kyber_private';
+  static const _storageKyberPublic = 'nyxchat_kyber_public';
 
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
   final X25519 _keyExchangeAlgo = X25519();
   final Ed25519 _signingAlgo = Ed25519();
+  final HybridKeyExchange _hybridKex = HybridKeyExchange();
 
   SimpleKeyPair? _keyExchangeKeyPair;
   SimpleKeyPair? _signingKeyPair;
+  KyberKeyPair? _kyberKeyPair;
 
   /// Check if keys have been generated
   Future<bool> hasKeys() async {
@@ -35,6 +42,9 @@ class KeyManager {
     final signPrivate = await signPair.extractPrivateKeyBytes();
     final signPublic = await signPair.extractPublicKey();
 
+    // Generate ML-KEM (Kyber-768) key pair for post-quantum key exchange
+    final kyberPair = await _hybridKex.generateKyberKeyPair();
+
     // Store keys securely
     await _storage.write(
       key: _storageKeyExchangePrivate,
@@ -52,6 +62,14 @@ class KeyManager {
       key: _storageSigningPublic,
       value: hex.encode(signPublic.bytes),
     );
+    await _storage.write(
+      key: _storageKyberPrivate,
+      value: hex.encode(kyberPair.privateKey),
+    );
+    await _storage.write(
+      key: _storageKyberPublic,
+      value: hex.encode(kyberPair.publicKey),
+    );
 
     _keyExchangeKeyPair = SimpleKeyPairData(
       kxPrivate,
@@ -63,6 +81,7 @@ class KeyManager {
       publicKey: SimplePublicKey(signPublic.bytes, type: KeyPairType.ed25519),
       type: KeyPairType.ed25519,
     );
+    _kyberKeyPair = kyberPair;
   }
 
   /// Load existing key pairs from secure storage
@@ -94,6 +113,28 @@ class KeyManager {
       ),
       type: KeyPairType.ed25519,
     );
+
+    // Load Kyber-768 keys (may not exist on older installs)
+    final kyberPrivateHex = await _storage.read(key: _storageKyberPrivate);
+    final kyberPublicHex = await _storage.read(key: _storageKyberPublic);
+    if (kyberPrivateHex != null && kyberPublicHex != null) {
+      _kyberKeyPair = KyberKeyPair(
+        publicKey: Uint8List.fromList(hex.decode(kyberPublicHex)),
+        privateKey: Uint8List.fromList(hex.decode(kyberPrivateHex)),
+      );
+    } else {
+      // Auto-generate Kyber keys for existing installs that don't have them
+      final kyberPair = await _hybridKex.generateKyberKeyPair();
+      await _storage.write(
+        key: _storageKyberPrivate,
+        value: hex.encode(kyberPair.privateKey),
+      );
+      await _storage.write(
+        key: _storageKyberPublic,
+        value: hex.encode(kyberPair.publicKey),
+      );
+      _kyberKeyPair = kyberPair;
+    }
   }
 
   /// Get public key hex for key exchange (X25519)
@@ -108,11 +149,20 @@ class KeyManager {
     return stored ?? '';
   }
 
+  /// Get Kyber-768 public key hex (ML-KEM)
+  Future<String> getKyberPublicKeyHex() async {
+    final stored = await _storage.read(key: _storageKyberPublic);
+    return stored ?? '';
+  }
+
   /// Get the X25519 key pair
   SimpleKeyPair? get keyExchangeKeyPair => _keyExchangeKeyPair;
 
   /// Get the Ed25519 key pair
   SimpleKeyPair? get signingKeyPair => _signingKeyPair;
+
+  /// Get the Kyber-768 key pair (ML-KEM)
+  KyberKeyPair? get kyberKeyPair => _kyberKeyPair;
 
   /// Clear all keys (danger zone!)
   Future<void> clearKeys() async {
@@ -120,7 +170,10 @@ class KeyManager {
     await _storage.delete(key: _storageKeyExchangePublic);
     await _storage.delete(key: _storageSigningPrivate);
     await _storage.delete(key: _storageSigningPublic);
+    await _storage.delete(key: _storageKyberPrivate);
+    await _storage.delete(key: _storageKyberPublic);
     _keyExchangeKeyPair = null;
     _signingKeyPair = null;
+    _kyberKeyPair = null;
   }
 }

@@ -15,8 +15,9 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter&style=flat-square" alt="Flutter" />
   <img src="https://img.shields.io/badge/Dart-3.11+-0175C2?logo=dart&style=flat-square" alt="Dart" />
-  <img src="https://img.shields.io/badge/Encryption-AES--256--GCM-green?style=flat-square" alt="Encryption" />
-  <img src="https://img.shields.io/badge/Key_Exchange-X25519-blue?style=flat-square" alt="Key Exchange" />
+  <img src="https://img.shields.io/badge/Encryption-Double_Ratchet+AES--256--GCM-green?style=flat-square" alt="Encryption" />
+  <img src="https://img.shields.io/badge/Key_Exchange-X25519+Kyber--768_Hybrid-blue?style=flat-square" alt="Key Exchange" />
+  <img src="https://img.shields.io/badge/Routing-MANET+Spray--Wait-orange?style=flat-square" alt="Routing" />
   <img src="https://img.shields.io/badge/License-GPL--3.0-red?style=flat-square" alt="License" />
   <img src="https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&style=flat-square" alt="Platform" />
   <a href="https://youtu.be/moDl9fvTJ2E">
@@ -47,12 +48,14 @@
   - [Key Management](#key-management)
   - [Encryption Engine](#encryption-engine)
   - [Forward Secrecy](#forward-secrecy)
+  - [Post-Quantum Hybrid Key Exchange](#post-quantum-hybrid-key-exchange)
 - [Mesh Routing Protocol](#mesh-routing-protocol)
   - [Spray-and-Wait Algorithm](#spray-and-wait-algorithm)
   - [Mesh Packet Structure](#mesh-packet-structure)
   - [Store-and-Forward](#store-and-forward)
 - [Geohash Channels](#geohash-channels)
 - [Privacy & Security](#privacy--security)
+  - [App Lock & Data Security](#app-lock--data-security)
 - [Wire Protocol](#wire-protocol)
 - [Data Models](#data-models)
 - [Project Structure](#project-structure)
@@ -73,7 +76,7 @@ Messages are delivered directly between devices via:
 3. **DHT** — global peer discovery across networks
 4. **Optional Internet Relay** — encrypted bridge between disconnected networks
 
-Every message is protected with **end-to-end encryption (E2EE)** using modern cryptographic primitives (X25519 + AES-256-GCM), and the system is designed so that even mesh relay nodes and optional internet relays **cannot read message content** or **identify participants**.
+Every message is protected with **end-to-end encryption (E2EE)** using modern cryptographic primitives (X25519 + Kyber-768 hybrid key exchange + AES-256-GCM), and the system is designed so that even mesh relay nodes and optional internet relays **cannot read message content** or **identify participants**.
 
 ---
 
@@ -82,12 +85,19 @@ Every message is protected with **end-to-end encryption (E2EE)** using modern cr
 | Category | Feature | Description |
 |----------|---------|-------------|
 | **Encryption** | E2EE (AES-256-GCM) | All messages encrypted end-to-end |
-| **Key Exchange** | X25519 ECDH | Elliptic-curve Diffie-Hellman key agreement |
-| **Forward Secrecy** | Session Key Rotation | Per-session keys; compromised key can't decrypt past messages |
-| **Networking** | Multi-Transport | Wi-Fi/LAN, BLE mesh, DHT, and optional relay |
+| **Key Exchange** | X25519 + Kyber-768 Hybrid | Classical ECDH + post-quantum ML-KEM for quantum-resistant sessions |
+| **Forward Secrecy** | Double Ratchet | Per-message key rotation for Perfect Forward Secrecy |
+| **App Lock** | PBKDF2 + AES-GCM | Zero-knowledge password-based database encryption |
+| **Security** | Duress PIN / Stealth | Decoy mode under coercion; reduced network footprint |
+| **Resilience** | Self-Healing Storage | Auto-recovers from corrupted/reset Hive databases |
+| **Resilience** | Identity Auto-Recovery | Reconstructs identity from crypto keys if DB is reset; no re-onboard |
+| **Background** | Foreground Service | Persistent mesh & DHT via Android foreground service |
+| **Wi-Fi Direct** | Nearby Connections | High-bandwidth offline file transfers |
+| **Networking** | Multi-Transport | Wi-Fi Direct, mDNS, BLE Mesh (Coded PHY Long Range), DHT, Tor Relay |
 | **Discovery** | mDNS/DNS-SD | Zero-config local peer discovery via Bonsoir |
-| **Offline Mesh** | BLE GATT | Communicate without Wi-Fi or internet |
+| **Offline Mesh** | BLE GATT + MANET | Communicate without Wi-Fi using dynamic distance-vector routing |
 | **Geo Channels** | Geohash-based | Anonymous location-aware group messaging |
+| **Performance** | Dart Isolates | Background threading for 120fps UI under heavy mesh load |
 | **Chat** | Full-featured | Text, files, images, reactions, replies, groups |
 | **Privacy** | Dummy Traffic | Makes real traffic indistinguishable from noise |
 | **Privacy** | Disappearing Messages | Auto-delete after configurable duration |
@@ -95,6 +105,24 @@ Every message is protected with **end-to-end encryption (E2EE)** using modern cr
 | **Privacy** | Stealth Mode | Reduced network footprint |
 | **Privacy** | Anti-Timing | Random delays to prevent traffic analysis |
 | **Storage** | Local-Only | Hive DB + Flutter Secure Storage; no cloud |
+
+---
+
+## Architecture Highlights
+
+NyxChat's architecture is built on several pillars:
+
+1. **Performance Core:** All heavy cryptographic hashing and mesh routing runs on **Dart Isolates** for buttery smooth 120fps performance, paired with **Adaptive Sensor Scanning** (accelerometer-driven BLE throttling) to minimize battery drain when stationary.
+2. **Advanced Mesh:** Full **MANET (Distance-Vector)** routing protocol with smart route discovery and **Wi-Fi Direct** (Google Nearby Connections) for megabyte-per-second off-grid file transfers.
+3. **Double Ratchet:** Complete **Signal Double Ratchet** implementation (`SessionKeyManager`) with DH ratchet steps on every incoming ephemeral key change and symmetric KDF chain ratcheting on every message, providing per-message Perfect Forward Secrecy.
+4. **App Lock:** Zero-knowledge password-based encryption — databases are encrypted with a master key wrapped by a PBKDF2-derived key (100k iterations). Includes panic wipe after 5 failed attempts.
+5. **Self-Healing Storage:** Encrypted Hive databases automatically recover from key mismatches — corrupted box files are deleted and recreated, while cryptographic identity is deterministically reconstructed from keys stored in the platform's TEE/Secure Enclave.
+6. **Identity Auto-Recovery:** Crypto keys (X25519 + Ed25519 + Kyber-768) and display name are persisted in `FlutterSecureStorage` independently of Hive. If the encrypted database is ever reset (corruption, key mismatch, OS restore), identity is automatically reconstructed — users never have to re-onboard.
+7. **Post-Quantum Cryptography:** Hybrid ML-KEM (Kyber-768) + X25519 key exchange defends against "Harvest Now, Decrypt Later" quantum attacks. The Kyber shared secret is combined with the classical ECDH secret via HKDF to form a hybrid root key — sessions remain secure even if one primitive is broken.
+8. **BLE Coded PHY (Long Range):** Optional Bluetooth 5.0 Coded PHY (S=8) support extends BLE mesh range up to 4× compared to standard 1M PHY. Graceful fallback on unsupported hardware.
+9. **Stealth & Duress:** Duress PIN support for decoy mode under coercion, and stealth mode for reduced network footprint.
+10. **Background Service:** Android foreground service keeps mesh networking and DHT alive in the background. DHT active state is persisted in secure storage and auto-restored on app restart.
+11. **Domain Fronting + Tor:** Relay client supports domain fronting (masquerades as `ajax.googleapis.com`) and optional Tor routing via Orbot.
 
 ---
 
@@ -111,19 +139,24 @@ graph TB
         PDS[Peer Discovery Screen]
         CGS[Create Group Screen]
         SS[Settings Screen]
+        PWS[Password Screen]
+        MMS[Mesh Map Screen]
     end
 
     subgraph Services["Service Layer"]
         IS[Identity Service]
         ChatSvc[Chat Service]
         PS[Peer Service]
+        ALS[App Lock Service]
+        BGS[Background Service]
     end
 
     subgraph Core["Core Layer"]
         subgraph Crypto["Crypto"]
             EE[Encryption Engine]
             KM[Key Manager]
-            SKM[Session Key Manager]
+            HKE[Hybrid Key Exchange<br/>Kyber-768 + X25519]
+            SKM[Session Key Manager<br/>Double Ratchet]
         end
 
         subgraph Network["Network"]
@@ -133,6 +166,8 @@ graph TB
             BLE[BLE Manager]
             DHT[DHT Node]
             MP[Message Protocol]
+            WDM[Wi-Fi Direct<br/>Manager]
+            FTM[File Transfer<br/>Manager]
         end
 
         subgraph Mesh["Mesh"]
@@ -149,10 +184,12 @@ graph TB
 
         subgraph Relay["Relay"]
             RC[Relay Client<br/>WebSocket]
+            TM[Tor Manager<br/>Orbot Proxy]
         end
 
         subgraph Storage["Storage"]
-            LS[Local Storage<br/>Hive]
+            LS[Local Storage<br/>Hive + Self-Healing]
+            SS2[Secure Storage<br/>TEE / Keystore]
         end
     end
 
@@ -160,19 +197,28 @@ graph TB
     Services --> Core
     IS --> KM
     IS --> LS
+    IS --> SS2
     ChatSvc --> EE
     ChatSvc --> SKM
+    ChatSvc --> HKE
     ChatSvc --> P2PC
     ChatSvc --> P2PS
     ChatSvc --> MP
+    ChatSvc --> FTM
     PS --> PD
     PS --> P2PC
     PS --> P2PS
     PS --> BLE
     PS --> DHT
     PS --> MR
+    PS --> WDM
+    PS --> SS2
+    ALS --> LS
+    ALS --> SS2
+    BGS --> PS
     MR --> MS
     MR --> MPkt
+    RC --> TM
 
     style UI fill:#1a1a2e,stroke:#e94560,color:#fff
     style Services fill:#16213e,stroke:#0f3460,color:#fff
@@ -181,6 +227,8 @@ graph TB
     style Network fill:#1a1a2e,stroke:#0f3460,color:#fff
     style Mesh fill:#1a1a2e,stroke:#533483,color:#fff
     style Privacy fill:#1a1a2e,stroke:#e94560,color:#fff
+    style Relay fill:#1a1a2e,stroke:#0f3460,color:#fff
+    style Storage fill:#1a1a2e,stroke:#533483,color:#fff
 ```
 
 ### Data Flow Overview
@@ -188,29 +236,37 @@ graph TB
 ```mermaid
 flowchart LR
     A[User Types Message] --> B[Chat Service]
-    B --> C{Encrypt with<br/>AES-256-GCM}
-    C --> D[Protocol Message]
-    D --> E{Transport<br/>Selection}
-    E -->|LAN| F[P2P Client<br/>TCP Socket]
-    E -->|BLE| G[BLE Manager<br/>GATT Write]
-    E -->|Mesh| H[Mesh Router<br/>Spray-and-Wait]
-    E -->|Relay| I[Relay Client<br/>WebSocket]
-    F --> J[Recipient]
-    G --> J
-    H --> K[Intermediate<br/>Nodes] --> J
-    I --> L[Relay Server<br/>Sees Only Blobs] --> J
+    B --> C{Message Type}
+    C -->|DM| D["Double Ratchet<br/>Per-message key"]
+    C -->|Group| E["Static ECDH<br/>Per-peer shared key"]
+    D --> F[AES-256-GCM Encrypt]
+    E --> F
+    F --> G[Protocol Message]
+    G --> H{Transport<br/>Selection}
+    H -->|LAN| I[P2P Client<br/>TCP Socket]
+    H -->|BLE| J[BLE Manager<br/>GATT Write]
+    H -->|Mesh| K[Mesh Router<br/>Spray-and-Wait]
+    H -->|Wi-Fi Direct| L[Nearby Connections<br/>High Bandwidth]
+    H -->|Relay| M[Relay Client<br/>WebSocket + Tor]
+    I --> N[Recipient]
+    J --> N
+    K --> O[Intermediate<br/>Nodes] --> N
+    L --> N
+    M --> P[Relay Server<br/>Sees Only Blobs] --> N
 
     style A fill:#e94560,stroke:#e94560,color:#fff
-    style C fill:#533483,stroke:#533483,color:#fff
-    style J fill:#0f3460,stroke:#0f3460,color:#fff
-    style L fill:#16213e,stroke:#16213e,color:#fff
+    style D fill:#533483,stroke:#533483,color:#fff
+    style E fill:#533483,stroke:#533483,color:#fff
+    style F fill:#0f3460,stroke:#0f3460,color:#fff
+    style N fill:#0f3460,stroke:#0f3460,color:#fff
+    style P fill:#16213e,stroke:#16213e,color:#fff
 ```
 
 ---
 
 ## Networking Layer
 
-NyxChat supports **four transport mechanisms**, each serving different connectivity scenarios.
+NyxChat supports **five transport mechanisms**, each serving different connectivity scenarios.
 
 ```mermaid
 graph TD
@@ -218,13 +274,15 @@ graph TD
         A["Wi-Fi / LAN<br/><i>mDNS Discovery</i><br/>Same Network"]
         B["BLE Mesh<br/><i>GATT Protocol</i><br/>No Infrastructure"]
         C["DHT<br/><i>Kademlia-like</i><br/>Global Discovery"]
-        D["Internet Relay<br/><i>WebSocket</i><br/>Cross-Network Bridge"]
+        D["Internet Relay<br/><i>WebSocket + Tor</i><br/>Cross-Network Bridge"]
+        W["Wi-Fi Direct<br/><i>Nearby Connections</i><br/>High-Bandwidth Offline"]
     end
 
     A -->|"Auto-discovery<br/>Bonsoir"| E[Peer Connection]
     B -->|"Scan + Connect<br/>flutter_blue_plus"| E
     C -->|"XOR Distance<br/>Routing Table"| E
     D -->|"Encrypted Blobs<br/>Opt-in Only"| E
+    W -->|"Nearby Connections<br/>P2P + File Transfer"| E
 
     E --> F["E2EE Channel"]
 
@@ -232,6 +290,7 @@ graph TD
     style B fill:#533483,stroke:#e94560,color:#fff
     style C fill:#16213e,stroke:#e94560,color:#fff
     style D fill:#1a1a2e,stroke:#e94560,color:#fff
+    style W fill:#0f3460,stroke:#533483,color:#fff
     style F fill:#e94560,stroke:#e94560,color:#fff
 ```
 
@@ -313,6 +372,7 @@ flowchart TD
 - **Data Chunking** — Messages are split into MTU-sized chunks for reliable transfer over GATT
 - **Reconnection** — Automatic reconnection on disconnect with peer state preservation
 - **Dual Discovery** — Both service UUID filtering and manufacturer data identification
+- **Coded PHY (Long Range)** — Optional Bluetooth 5.0 Coded PHY with S=8 coding extends range up to 4× (hundreds of meters outdoors). Enabled via `BleManager.setLongRange(true)`, which negotiates `Phy.leCoded` on all new connections. Falls back gracefully on devices that don't support BLE 5.0 Coded PHY.
 
 ### DHT Global Discovery
 
@@ -391,25 +451,31 @@ flowchart LR
 ```mermaid
 flowchart TD
     A[User Creates Identity] --> B[Generate X25519<br/>Key Pair]
-    B --> C[Generate Ed25519<br/>Signing Key Pair]
-    C --> D[Derive NyxChat ID<br/>SHA-256 of Public Key]
+    B --> B2[Generate Kyber-768<br/>Key Pair]
+    B2 --> C[Generate Ed25519<br/>Signing Key Pair]
+    C --> D["Derive NyxChat ID<br/>NC-{first4hex}...{last4hex}"]
     D --> E[Store Keys in<br/>Flutter Secure Storage]
+    E --> E2["Store Display Name in<br/>Secure Storage<br/>(Identity Recovery Backup)"]
 
-    F[Peer Connection] --> G[Exchange Public Keys]
+    F[Peer Connection] --> G[Exchange Public Keys<br/>+ Kyber Public Keys]
     G --> H[ECDH Key Agreement<br/>X25519]
-    H --> I[Shared Secret]
-    I --> J[AES-256-GCM<br/>Encryption Key]
+    G --> H2[KEM Encapsulation<br/>Kyber-768]
+    H --> I["HKDF(ECDH ‖ Kyber)"]
+    H2 --> I
+    I --> J[Hybrid Root Key<br/>→ Double Ratchet]
 
     style A fill:#e94560,stroke:#e94560,color:#fff
     style I fill:#533483,stroke:#533483,color:#fff
     style J fill:#0f3460,stroke:#0f3460,color:#fff
+    style E2 fill:#16213e,stroke:#0f3460,color:#fff
 ```
 
 | Component | Purpose |
 |-----------|---------|
-| `KeyManager` | Generates, stores, and loads X25519 + Ed25519 key pairs via Flutter Secure Storage |
+| `KeyManager` | Generates, stores, and loads X25519 + Ed25519 + Kyber-768 key pairs via Flutter Secure Storage |
 | `EncryptionEngine` | Performs ECDH key agreement and AES-256-GCM encrypt/decrypt |
-| `SessionKeyManager` | Manages per-peer session keys with rotation for forward secrecy |
+| `HybridKeyExchange` | ML-KEM (Kyber-768) + X25519 hybrid key exchange with HKDF secret combination |
+| `SessionKeyManager` | Manages per-peer session keys with rotation for forward secrecy; derives hybrid root keys |
 
 ### Encryption Engine
 
@@ -419,7 +485,9 @@ The `EncryptionEngine` handles all cryptographic operations using industry-stand
 
 | Operation | Algorithm | Details |
 |-----------|-----------|---------|
-| Key Agreement | X25519 (ECDH) | Elliptic-curve Diffie-Hellman on Curve25519 |
+| Key Agreement (Classical) | X25519 (ECDH) | Elliptic-curve Diffie-Hellman on Curve25519 |
+| Key Agreement (Post-Quantum) | ML-KEM / Kyber-768 | Lattice-based KEM — quantum-resistant key encapsulation |
+| Hybrid Key Derivation | HKDF-SHA256 | Combines ECDH + Kyber shared secrets into a single root key |
 | Symmetric Encryption | AES-256-GCM | 256-bit key, authenticated encryption with associated data |
 | Key Derivation | SHA-256 | For identity hashing and channel key derivation |
 | Digital Signatures | Ed25519 | For message authentication |
@@ -454,24 +522,87 @@ sequenceDiagram
 
 ### Forward Secrecy
 
-The `SessionKeyManager` implements forward secrecy through **periodic key rotation**:
+The `SessionKeyManager` implements the **Signal Double Ratchet** algorithm with two interlocked ratchet mechanisms:
 
 ```mermaid
-flowchart LR
-    A["Session 1<br/>Key: K₁"] -->|"Rotate after<br/>50 messages"| B["Session 2<br/>Key: K₂"]
-    B -->|"Rotate after<br/>50 messages"| C["Session 3<br/>Key: K₃"]
-    C -->|"..."| D["Session N<br/>Key: Kₙ"]
+flowchart TD
+    subgraph DR["Double Ratchet"]
+        direction TB
+        A["Identity Keys<br/>(X25519 ECDH)"] --> B["Root Key: RK₀"]
 
-    E["Key K₂<br/>Compromised"] -.->|"Cannot decrypt"| A
-    E -.->|"Cannot decrypt"| C
+        subgraph DH_Ratchet["DH Ratchet — on each new ephemeral key"]
+            B --> C["HKDF(RK₀, DH(sk, pk'))"]
+            C --> D["New Root Key: RK₁"]
+            C --> E["New Chain Key: CK₀"]
+        end
 
-    style E fill:#e94560,stroke:#e94560,color:#fff
+        subgraph Symmetric_Ratchet["Symmetric Ratchet — on each message"]
+            E --> F["HKDF(CK₀, 0x01) → Message Key: MK₀"]
+            E --> G["HKDF(CK₀, 0x02) → Next Chain Key: CK₁"]
+            G --> H["HKDF(CK₁, 0x01) → Message Key: MK₁"]
+            G --> I["HKDF(CK₁, 0x02) → Next Chain Key: CK₂"]
+        end
+    end
+
+    J["MK₁ Compromised"] -.->|"Cannot derive"| F
+    J -.->|"Cannot derive"| H
+
+    style A fill:#e94560,stroke:#e94560,color:#fff
+    style D fill:#533483,stroke:#533483,color:#fff
+    style F fill:#0f3460,stroke:#0f3460,color:#fff
+    style H fill:#0f3460,stroke:#0f3460,color:#fff
+    style J fill:#e94560,stroke:#e94560,color:#fff
 ```
 
-- Each peer pair gets an **independent session** with its own encryption key
-- Keys are **rotated every 50 messages** or on explicit rotation request
-- Old session keys are **destroyed** — compromising a current key cannot reveal past messages
-- Key rotation is negotiated via the `keyRotation` protocol message type
+- **DH Ratchet:** When a new ephemeral public key arrives, both parties compute fresh shared secrets and derive new root/chain keys. This provides **future secrecy** — a compromised key cannot decrypt future messages.
+- **Symmetric Ratchet:** Every individual message derives a unique message key via HKDF. The chain key is then ratcheted forward. Old chain keys are destroyed — compromising a current key cannot reveal past messages (**forward secrecy**).
+- **DM messages** use the full Double Ratchet; **group messages** use static ECDH per sender–recipient pair.
+- Each peer pair gets an **independent ratchet session** initialized via hybrid key exchange (X25519 ECDH ‖ Kyber-768 KEM).
+
+### Post-Quantum Hybrid Key Exchange
+
+NyxChat defends against **"Harvest Now, Decrypt Later"** attacks by combining classical X25519 ECDH with **ML-KEM (Kyber-768)**, a NIST-standardized post-quantum key encapsulation mechanism:
+
+```mermaid
+sequenceDiagram
+    participant A as Alice (Initiator)
+    participant B as Bob (Responder)
+
+    Note over A: Has X25519 key pair + Kyber-768 key pair
+    Note over B: Has X25519 key pair + Kyber-768 key pair
+
+    A->>B: Hello (publicKeyHex, kyberPublicKeyHex)
+
+    Note over B: 1. Compute ECDH shared secret
+    Note over B: 2. Encapsulate against Alice's Kyber PK
+    Note over B: → (ciphertext, kyberSecret)
+
+    B->>A: Hello Response (publicKeyHex, kyberPublicKeyHex,<br/>kyberCiphertextHex)
+
+    Note over A: 1. Compute ECDH shared secret
+    Note over A: 2. Decapsulate ciphertext with own Kyber SK
+    Note over A: → kyberSecret
+
+    Note over A,B: Both sides now hold identical ecdhSecret + kyberSecret
+
+    Note over A,B: rootKey = HKDF(ecdhSecret ‖ kyberSecret,<br/>nonce='NyxChat-Hybrid-Session-v1')
+
+    Note over A,B: Double Ratchet initialized with hybrid root key
+
+    style A fill:#e94560,stroke:#e94560,color:#fff
+    style B fill:#0f3460,stroke:#0f3460,color:#fff
+```
+
+**Design Principles:**
+
+| Property | Detail |
+|----------|--------|
+| **Hybrid Security** | If either X25519 or Kyber-768 remains secure, the session is secure |
+| **No Extra Round-Trip** | Kyber ciphertext is piggybacked in the hello response |
+| **Backward Compatible** | Peers without Kyber keys fall back to classical ECDH-only sessions |
+| **Key Storage** | Kyber-768 key pair persisted in FlutterSecureStorage alongside X25519 |
+| **Auto-Migration** | Existing installs generate Kyber keys automatically on next startup |
+| **Isolate-Based** | All Kyber operations run on Dart Isolates for smooth 120fps UI |
 
 ---
 
@@ -635,12 +766,58 @@ flowchart TD
 |--------|------------|
 | Message interception | AES-256-GCM end-to-end encryption |
 | Key compromise | Forward secrecy via session key rotation |
+| Quantum computing (HNDL) | Hybrid Kyber-768 + X25519 key exchange; session remains secure if either primitive holds |
 | Traffic analysis | Dummy traffic generation + anti-timing delays |
 | Metadata leakage | SHA-256 hashed addressing; no plaintext IDs on wire |
 | Device seizure | Panic wipe — instant, irreversible data destruction |
 | Network surveillance | BLE mesh — no internet required |
 | Server compromise | No servers to compromise |
 | Identity linking | Geohash channels use anonymous sender hashes |
+
+### App Lock & Data Security
+
+NyxChat's database encryption and identity system are designed for resilience:
+
+```mermaid
+flowchart TD
+    subgraph Boot["App Boot — No Password"]
+        A1["Read unwrapped_master_key<br/>from Secure Storage"] --> A2{Key exists?}
+        A2 -->|No| A3["Generate 256-bit key<br/>Store in TEE"]
+        A2 -->|Yes| A4["Open Hive Boxes<br/>with AES cipher"]
+        A3 --> A4
+        A4 --> A5{Boxes decryptable?}
+        A5 -->|Yes| A6["Load Identity<br/>from Hive"]
+        A5 -->|No| A7["Delete corrupted boxes<br/>Create fresh empty boxes"]
+        A7 --> A8["Reconstruct Identity<br/>from Secure Storage keys"]
+    end
+
+    subgraph Boot2["App Boot — Password Enabled"]
+        B1["Show Password Screen"] --> B2["PBKDF2(password, salt)<br/>100K iterations"]
+        B2 --> B3["Unwrap master key<br/>AES-GCM decrypt"]
+        B3 --> B4["Open Hive Boxes"]
+        B4 --> B5["Load Identity"]
+    end
+
+    subgraph Wipe["Panic Wipe (5 failures)"]
+        C1["Delete all Hive files"] --> C2["Delete all Secure Storage"]
+        C2 --> C3["Reset to Onboarding"]
+    end
+
+    style A3 fill:#533483,stroke:#533483,color:#fff
+    style A8 fill:#0f3460,stroke:#0f3460,color:#fff
+    style B2 fill:#533483,stroke:#533483,color:#fff
+    style C1 fill:#e94560,stroke:#e94560,color:#fff
+```
+
+| Feature | Implementation |
+|---------|---------------|
+| **DB Encryption** | AES-256-CBC (HiveAesCipher) with 256-bit master key |
+| **Key Wrapping** | PBKDF2-SHA256 (100K iterations) + AES-256-GCM |
+| **Key Storage** | Platform TEE / Keystore via FlutterSecureStorage |
+| **Self-Healing** | Corrupted Hive boxes auto-deleted and recreated |
+| **Identity Recovery** | Crypto keys + display name in Secure Storage → deterministic reconstruction |
+| **DHT State** | Persisted in Secure Storage (survives DB resets) |
+| **Panic Wipe** | Irreversible: deletes Hive files + all Secure Storage entries |
 
 ---
 
@@ -655,13 +832,17 @@ classDiagram
         hello
         message
         ack
+        keyExchange
+        peerList
+        ping
+        pong
+        disconnect
         groupCreate
         groupInvite
         groupMessage
+        groupLeave
         fileTransfer
         fileChunk
-        meshPacket
-        meshHello
         reaction
         keyRotation
         dhtAnnounce
@@ -672,13 +853,10 @@ classDiagram
     class ProtocolMessage {
         +ProtocolMessageType type
         +String senderId
-        +String senderName
-        +String? senderPublicKeyHex
-        +String? content
-        +String? encryptedContent
-        +String? targetId
+        +Map~String,dynamic~ payload
+        +DateTime timestamp
         +String? messageId
-        +Map~String,dynamic~? metadata
+        +String? dhPubKey
         +toJson() Map
         +encode() String
     }
@@ -696,19 +874,18 @@ sequenceDiagram
     Note over A: Discovers B via<br/>mDNS / BLE / DHT
 
     A->>B: TCP Connect / GATT Connect
-    A->>B: ProtocolMessage(type: hello,<br/>senderId, displayName,<br/>publicKeyHex, signingPublicKeyHex)
+    A->>B: ProtocolMessage(type: hello,<br/>senderId, displayName,<br/>publicKeyHex, signingPublicKeyHex,<br/>kyberPublicKeyHex)
 
-    B->>A: ProtocolMessage(type: hello,<br/>senderId, displayName,<br/>publicKeyHex, signingPublicKeyHex)
+    B->>A: ProtocolMessage(type: hello,<br/>senderId, displayName,<br/>publicKeyHex, signingPublicKeyHex,<br/>kyberPublicKeyHex, kyberCiphertextHex)
 
-    Note over A,B: ECDH Key Agreement → Shared Secret
+    Note over A,B: Hybrid Key Agreement:<br/>ECDH + Kyber-768 KEM → Hybrid Root Key
 
-    A->>B: ProtocolMessage(type: message,<br/>encryptedContent: "nonce:cipher:mac")
+    A->>B: ProtocolMessage(type: message,<br/>encryptedContent: "nonce:cipher:mac",<br/>dhPubKey: "ephemeral_pub_A")
     B->>A: ProtocolMessage(type: ack,<br/>messageId: "...")
 
-    Note over A,B: After 50 messages...
-    A->>B: ProtocolMessage(type: keyRotation,<br/>newPublicKeyHex: "...")
-    B->>A: ProtocolMessage(type: keyRotation,<br/>newPublicKeyHex: "...")
-    Note over A,B: New shared secret derived
+    Note over A,B: Double Ratchet steps on every message
+    B->>A: ProtocolMessage(type: message,<br/>dhPubKey: "ephemeral_pub_B")
+    Note over A,B: DH Ratchet detects new key →<br/>derives new Root Key + Chain Keys
 ```
 
 ---
@@ -778,6 +955,10 @@ erDiagram
         string publicKeyHex
         string ipAddress
         int port
+        enum status "discovered | connecting | connected | disconnected"
+        datetime lastSeen
+        datetime firstSeen
+        string transport "wifi | ble"
     }
 
     UserIdentity ||--o{ ChatRoom : "owns"
@@ -801,8 +982,9 @@ NyxChat/
 │   │   │
 │   │   ├── crypto/
 │   │   │   ├── encryption_engine.dart    # X25519 ECDH + AES-256-GCM
-│   │   │   ├── key_manager.dart          # Key generation & secure storage
-│   │   │   └── session_key_manager.dart  # Forward secrecy key rotation
+│   │   │   ├── hybrid_key_exchange.dart  # ML-KEM (Kyber-768) + X25519 hybrid PQC
+│   │   │   ├── key_manager.dart          # Key generation & secure storage (X25519 + Ed25519 + Kyber)
+│   │   │   └── session_key_manager.dart  # Double Ratchet forward secrecy with hybrid root keys
 │   │   │
 │   │   ├── network/
 │   │   │   ├── peer_discovery.dart       # mDNS/DNS-SD via Bonsoir
@@ -811,20 +993,23 @@ NyxChat/
 │   │   │   ├── ble_manager.dart          # BLE scanning, connections, GATT
 │   │   │   ├── ble_protocol.dart         # BLE service/characteristic defs
 │   │   │   ├── dht_node.dart             # Distributed Hash Table node
-│   │   │   └── message_protocol.dart     # Wire protocol (JSON messages)
+│   │   │   ├── file_transfer_manager.dart # File chunking & reassembly
+│   │   │   ├── message_protocol.dart     # Wire protocol (JSON messages)
+│   │   │   ├── tor_manager.dart          # Tor proxy via Orbot
+│   │   │   └── wifi_direct_manager.dart  # Wi-Fi Direct (Nearby Connections)
 │   │   │
 │   │   ├── mesh/
-│   │   │   ├── mesh_router.dart          # Spray-and-Wait routing
+│   │   │   ├── mesh_router.dart          # MANET distance-vector + Spray-and-Wait
 │   │   │   ├── mesh_store.dart           # Store-and-forward queue
 │   │   │   ├── mesh_packet.dart          # Mesh packet structure
 │   │   │   └── geohash_channel.dart      # Location-based channels
 │   │   │
 │   │   ├── privacy/
 │   │   │   ├── privacy_manager.dart      # Dummy traffic, panic wipe
-│   │   │   └── stealth_mode.dart         # Reduced network footprint
+│   │   │   └── stealth_mode.dart         # Duress PIN, decoy mode
 │   │   │
 │   │   ├── relay/
-│   │   │   └── relay_client.dart         # Optional WebSocket relay
+│   │   │   └── relay_client.dart         # Optional WebSocket relay + domain fronting
 │   │   │
 │   │   └── storage/
 │   │       └── local_storage.dart        # Hive database operations
@@ -838,7 +1023,9 @@ NyxChat/
 │   ├── services/
 │   │   ├── identity_service.dart         # Identity management
 │   │   ├── chat_service.dart             # Messaging, groups, files, E2EE
-│   │   └── peer_service.dart             # Discovery, connections, DHT, BLE
+│   │   ├── peer_service.dart             # Discovery, connections, DHT, BLE
+│   │   ├── app_lock_service.dart         # Password-based app lock + panic wipe
+│   │   └── background_service.dart       # Android foreground service
 │   │
 │   ├── screens/
 │   │   ├── onboarding_screen.dart        # First-run identity creation
@@ -846,6 +1033,8 @@ NyxChat/
 │   │   ├── chat_screen.dart              # Chat view with messages
 │   │   ├── peer_discovery_screen.dart    # Network & peer management
 │   │   ├── create_group_screen.dart      # Group chat creation
+│   │   ├── mesh_map_screen.dart          # Mesh network topology visualizer
+│   │   ├── password_screen.dart          # App lock / unlock screen
 │   │   └── settings_screen.dart          # App settings & privacy controls
 │   │
 │   └── theme/
@@ -862,15 +1051,20 @@ NyxChat/
 
 | Category | Technology | Purpose |
 |----------|-----------|---------|
-| **Framework** | Flutter 3.x / Dart 3.11+ | Cross-platform UI |
+| **Framework** | Flutter / Dart ≥ 3.11.0 | Cross-platform UI |
 | **BLE** | flutter_blue_plus | Bluetooth Low Energy scanning & GATT |
+| **Wi-Fi Direct** | nearby_connections | High-bandwidth P2P file transfers |
 | **mDNS** | Bonsoir | Zero-config network service discovery |
-| **Cryptography** | cryptography (Dart) | X25519, AES-GCM, SHA-256, Ed25519 |
+| **Cryptography** | cryptography (Dart) | X25519, AES-GCM, SHA-256, Ed25519, HKDF, PBKDF2 |
+| **Post-Quantum** | post_quantum | ML-KEM / Kyber-768 key encapsulation for hybrid PQC key exchange |
 | **Secure Storage** | flutter_secure_storage | Keychain/Keystore for private keys |
 | **Local DB** | Hive + hive_flutter | High-performance NoSQL local storage |
 | **State** | Provider | Reactive state management |
-| **WebSocket** | web_socket_channel | Optional relay client |
-| **Permissions** | permission_handler | BLE, location, storage permissions |
+| **WebSocket** | web_socket_channel | Optional relay client with domain fronting |
+| **Tor** | Orbot (external) | Optional onion routing via HTTP proxy |
+| **Background** | flutter_background_service | Android foreground service for mesh/DHT |
+| **Sensors** | sensors_plus | Accelerometer-driven adaptive BLE scanning |
+| **Permissions** | permission_handler | BLE, location, storage, battery permissions |
 | **UI** | shimmer, flutter_animate, animate_do | Animations and visual effects |
 | **Files** | file_picker, path_provider | File selection and storage paths |
 | **Utilities** | uuid, intl, convert | ID generation, date formatting, encoding |
@@ -881,7 +1075,7 @@ NyxChat/
 
 ### Prerequisites
 
-- **Flutter SDK** ≥ 3.x
+- **Flutter SDK** ≥ 3.32.0
 - **Dart SDK** ≥ 3.11.0
 - **Android Studio** or **VS Code** with Flutter extension
 - **Android device/emulator** (API 21+)
@@ -890,7 +1084,7 @@ NyxChat/
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/NyxChat.git
+git clone https://github.com/harshitt13/NyxChat.git
 cd NyxChat
 
 # Install dependencies
@@ -921,6 +1115,12 @@ flutter build apk --release
 | `INTERNET` | Optional relay server connectivity |
 | `READ_EXTERNAL_STORAGE` | File sharing |
 | `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | Keeps DHT and mesh services running in the background |
+
+---
+
+## Contributing & Code of Conduct
+
+We welcome and encourage community contributions! Please read our [Code of Conduct](CODE_OF_CONDUCT.md) to understand our community standards before participating or submitting a pull request. We strive to maintain a welcoming, inclusive, and harassment-free experience for everyone.
 
 ---
 

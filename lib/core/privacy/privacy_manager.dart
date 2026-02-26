@@ -32,6 +32,9 @@ class PrivacyManager extends ChangeNotifier {
   // Callbacks
   Function(Uint8List dummyData)? onDummyPacket;
   Function()? onPanicWipe;
+  
+  /// Called during panic wipe to clear crypto keys
+  Future<void> Function()? onClearCryptoKeys;
 
   PrivacyManager({required LocalStorage storage}) : _storage = storage;
 
@@ -49,6 +52,23 @@ class PrivacyManager extends ChangeNotifier {
   /// Set default disappearing message duration.
   void setDisappearTime(Duration duration) {
     _defaultDisappearTime = duration;
+    
+    // Start or stop the cleanup timer based on whether disappearing is enabled
+    _cleanupTimer?.cancel();
+    if (duration > Duration.zero) {
+      _cleanupTimer = Timer.periodic(
+        const Duration(minutes: 1),
+        (_) => _cleanupExpiredMessages(),
+      );
+    }
+    
+    notifyListeners();
+  }
+
+  /// Remove messages that have exceeded their disappear time.
+  Future<void> _cleanupExpiredMessages() async {
+    // This is handled externally by the chat service checking shouldDelete()
+    // The timer ensures periodic evaluation.
     notifyListeners();
   }
 
@@ -97,6 +117,13 @@ class PrivacyManager extends ChangeNotifier {
       await _storage.clearAll();
     } catch (e) {
       debugPrint('[Privacy] Storage clear error: $e');
+    }
+
+    // Clear cryptographic keys
+    try {
+      await onClearCryptoKeys?.call();
+    } catch (e) {
+      debugPrint('[Privacy] Crypto key clear error: $e');
     }
 
     // Notify callback for additional cleanup

@@ -16,7 +16,8 @@ enum ProtocolMessageType {
   groupInvite,   // Invite peers to a group
   groupMessage,  // Message in a group chat
   groupLeave,    // Leave a group
-  fileTransfer,  // File/media transfer
+  fileTransfer,  // File/media transfer metadata
+  fileChunk,     // File fragmentation chunk
   reaction,      // Message reaction
   keyRotation,   // Session key rotation (forward secrecy)
   dhtAnnounce,   // DHT peer announcement
@@ -30,6 +31,7 @@ class ProtocolMessage {
   final Map<String, dynamic> payload;
   final DateTime timestamp;
   final String? messageId;
+  final String? dhPubKey; // For Double Ratchet step
 
   ProtocolMessage({
     required this.type,
@@ -37,6 +39,7 @@ class ProtocolMessage {
     required this.payload,
     DateTime? timestamp,
     this.messageId,
+    this.dhPubKey,
   }) : timestamp = timestamp ?? DateTime.now();
 
   // ─── Original factory constructors ─────────────────────────────
@@ -47,6 +50,8 @@ class ProtocolMessage {
     required String publicKeyHex,
     required String signingPublicKeyHex,
     required int listeningPort,
+    String? kyberPublicKeyHex,
+    String? kyberCiphertextHex,
   }) {
     return ProtocolMessage(
       type: ProtocolMessageType.hello,
@@ -56,7 +61,11 @@ class ProtocolMessage {
         'publicKeyHex': publicKeyHex,
         'signingPublicKeyHex': signingPublicKeyHex,
         'listeningPort': listeningPort,
-        'protocolVersion': '2.0',
+        'protocolVersion': '2.1',
+        if (kyberPublicKeyHex != null && kyberPublicKeyHex.isNotEmpty)
+          'kyberPublicKeyHex': kyberPublicKeyHex,
+        if (kyberCiphertextHex != null && kyberCiphertextHex.isNotEmpty)
+          'kyberCiphertextHex': kyberCiphertextHex,
       },
     );
   }
@@ -67,11 +76,13 @@ class ProtocolMessage {
     required String encryptedContent,
     required String messageId,
     String? messageType,
+    String? dhPubKey, // Include ephemeral key
   }) {
     return ProtocolMessage(
       type: ProtocolMessageType.message,
       senderId: senderId,
       messageId: messageId,
+      dhPubKey: dhPubKey,
       payload: {
         'receiverId': receiverId,
         'encryptedContent': encryptedContent,
@@ -185,11 +196,13 @@ class ProtocolMessage {
     required String encryptedDataB64,
     String? thumbnailB64,
     String? groupId,
+    String? dhPubKey,
   }) {
     return ProtocolMessage(
       type: ProtocolMessageType.fileTransfer,
       senderId: senderId,
       messageId: messageId,
+      dhPubKey: dhPubKey,
       payload: {
         'receiverId': receiverId,
         'fileName': fileName,
@@ -198,6 +211,22 @@ class ProtocolMessage {
         'encryptedDataB64': encryptedDataB64,
         'thumbnailB64': thumbnailB64,
         'groupId': groupId,
+        'dhPubKey': dhPubKey,
+      },
+    );
+  }
+
+  factory ProtocolMessage.fileChunk({
+    required String senderId,
+    required String receiverId,
+    required Map<String, dynamic> chunkDataJson,
+  }) {
+    return ProtocolMessage(
+      type: ProtocolMessageType.fileChunk,
+      senderId: senderId,
+      payload: {
+        'receiverId': receiverId,
+        'chunk': chunkDataJson,
       },
     );
   }
@@ -295,6 +324,7 @@ class ProtocolMessage {
     'payload': payload,
     'timestamp': timestamp.toIso8601String(),
     'messageId': messageId,
+    if (dhPubKey != null) 'dhPubKey': dhPubKey,
   };
 
   factory ProtocolMessage.fromJson(Map<String, dynamic> json) {
@@ -307,6 +337,7 @@ class ProtocolMessage {
       payload: json['payload'] as Map<String, dynamic>,
       timestamp: DateTime.parse(json['timestamp'] as String),
       messageId: json['messageId'] as String?,
+      dhPubKey: json['dhPubKey'] as String?,
     );
   }
 

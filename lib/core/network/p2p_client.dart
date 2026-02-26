@@ -47,6 +47,10 @@ class P2PClient {
               msg.payload['displayName'] as String?;
           connection.peerPublicKeyHex =
               msg.payload['publicKeyHex'] as String?;
+          connection.peerKyberPublicKeyHex =
+              msg.payload['kyberPublicKeyHex'] as String?;
+          connection.kyberCiphertextHex =
+              msg.payload['kyberCiphertextHex'] as String?;
 
           _connections[msg.senderId] = connection;
 

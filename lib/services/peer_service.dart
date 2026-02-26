@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:convert/convert.dart';
 import '../core/constants.dart';
+import '../core/crypto/hybrid_key_exchange.dart';
 import '../core/network/message_protocol.dart';
 import '../core/network/p2p_client.dart';
 import '../core/network/p2p_server.dart';
@@ -11,7 +14,9 @@ import '../core/mesh/mesh_router.dart';
 import '../core/mesh/mesh_store.dart';
 import '../core/mesh/mesh_packet.dart';
 import '../core/storage/local_storage.dart';
+import '../core/network/wifi_direct_manager.dart';
 import '../models/peer.dart';
+import 'background_service.dart';
 
 /// Manages peer discovery, connections, and network state.
 /// Now includes DHT for global P2P discovery beyond local network.
@@ -20,8 +25,11 @@ class PeerService extends ChangeNotifier {
   final P2PClient _client;
   final P2PServer _server;
   final BleManager _bleManager;
+  final FlutterSecureStorage _secureStore = const FlutterSecureStorage();
+  static const String _kDHTActive = 'dht_was_active';
   final MeshStore _meshStore = MeshStore();
   late final MeshRouter _meshRouter;
+  final WifiDirectManager _wifiDirectManager = WifiDirectManager();
 
   PeerDiscovery? _discovery;
   DHTNode? _dhtNode;
@@ -54,6 +62,7 @@ class PeerService extends ChangeNotifier {
   P2PClient get client => _client;
   P2PServer get server => _server;
   DHTNode? get dhtNode => _dhtNode;
+  WifiDirectManager get wifiDirectManager => _wifiDirectManager;
   int get nearbyBleCount => _bleManager.nearbyCount;
 
   /// Get list of connected peers (for group chat member selection)
@@ -67,7 +76,10 @@ class PeerService extends ChangeNotifier {
     required String displayName,
     required String publicKeyHex,
     required String signingPublicKeyHex,
+    String kyberPublicKeyHex = '',
   }) async {
+    // Guard: don't start twice
+    if (_isNetworkActive) return;
     // Load saved peers
     final savedPeers = await _storage.getPeers();
     for (final peer in savedPeers) {
@@ -79,7 +91,7 @@ class PeerService extends ChangeNotifier {
 
     _server.onNewConnection.listen((connection) {
       _handleIncomingConnection(connection, nyxChatId, displayName,
-          publicKeyHex, signingPublicKeyHex);
+          publicKeyHex, signingPublicKeyHex, kyberPublicKeyHex);
     });
 
     // Start mDNS peer discovery (local)
@@ -94,7 +106,7 @@ class PeerService extends ChangeNotifier {
 
     _discovery!.onPeerFound.listen((discovered) {
       _handlePeerDiscovered(discovered, nyxChatId, displayName,
-          publicKeyHex, signingPublicKeyHex);
+          publicKeyHex, signingPublicKeyHex, kyberPublicKeyHex);
     });
 
     _discovery!.onPeerLost.listen((peerId) {
@@ -104,6 +116,12 @@ class PeerService extends ChangeNotifier {
     _isNetworkActive = true;
     notifyListeners();
     debugPrint('[Network] Local network started');
+
+    // Start High-Bandwidth Wi-Fi Direct Fallback
+    await _wifiDirectManager.init(nyxChatId);
+    await _wifiDirectManager.startAdvertising();
+    await _wifiDirectManager.startDiscovery();
+    debugPrint('[Network] Wi-Fi Direct MANET fallback initialized');
 
     // Start BLE mesh (non-blocking, best-effort)
     _startBle(nyxChatId);
@@ -192,6 +210,12 @@ class PeerService extends ChangeNotifier {
 
   // ─── DHT Global Network ──────────────────────────────────────
 
+  /// Check if DHT was active in the previous session.
+  /// Stored in secure storage (not Hive) so it survives DB resets.
+  Future<bool> wasDHTActive() async {
+    return (await _secureStore.read(key: _kDHTActive)) == 'true';
+  }
+
   /// Start the DHT node for global P2P discovery
   Future<void> startDHT({
     required String nyxChatId,
@@ -199,6 +223,9 @@ class PeerService extends ChangeNotifier {
     required String displayName,
     List<String>? bootstrapNodes,
   }) async {
+    // Guard: don't start twice
+    if (_isDHTActive) return;
+
     try {
       _dhtNode = DHTNode(
         nodeId: nyxChatId,
@@ -219,11 +246,15 @@ class PeerService extends ChangeNotifier {
       // Announce ourselves
       await _dhtNode!.announce();
       
-      // Persist state
-      await _storage.setDHTActive(true);
+      // Persist state in secure storage (survives DB resets)
+      await _secureStore.write(key: _kDHTActive, value: 'true');
+
+      // Start the OS-level foreground service so the DHT stays alive
+      // even when the user swipes the app away
+      await BackgroundManager.startService();
 
       notifyListeners();
-      debugPrint('[DHT] Global network started');
+      debugPrint('[DHT] Global network started (foreground service active)');
     } catch (e) {
       debugPrint('[DHT] Failed to start: $e');
     }
@@ -234,7 +265,11 @@ class PeerService extends ChangeNotifier {
     await _dhtNode?.stop();
     _dhtNode = null;
     _isDHTActive = false;
-    await _storage.setDHTActive(false);
+    await _secureStore.write(key: _kDHTActive, value: 'false');
+
+    // Stop the foreground service since DHT is no longer needed
+    await BackgroundManager.stopService();
+
     notifyListeners();
   }
 
@@ -293,16 +328,40 @@ class PeerService extends ChangeNotifier {
     String myDisplayName,
     String myPublicKeyHex,
     String mySigningPublicKeyHex,
+    String myKyberPublicKeyHex,
   ) {
     late StreamSubscription sub;
-    sub = connection.onMessage.listen((msg) {
+    sub = connection.onMessage.listen((msg) async {
       if (msg.type == ProtocolMessageType.hello) {
+        // Extract peer's Kyber PK from their hello (if PQC-capable)
+        final peerKyberPKHex =
+            msg.payload['kyberPublicKeyHex'] as String?;
+
+        // Responder performs KEM encapsulation against initiator's Kyber PK
+        String? kyberCiphertextHex;
+        if (peerKyberPKHex != null && peerKyberPKHex.isNotEmpty) {
+          try {
+            final hybridKex = HybridKeyExchange();
+            final peerKyberPK =
+                Uint8List.fromList(hex.decode(peerKyberPKHex));
+            final result = await hybridKex.encapsulate(peerKyberPK);
+            kyberCiphertextHex = hex.encode(result.ciphertext);
+            // Store the shared secret on the connection for later use
+            connection.kyberSharedSecretHex =
+                hex.encode(result.sharedSecret);
+          } catch (e) {
+            debugPrint('[PQC] Kyber encapsulation failed: $e');
+          }
+        }
+
         connection.send(ProtocolMessage.hello(
           senderId: myNyxChatId,
           displayName: myDisplayName,
           publicKeyHex: myPublicKeyHex,
           signingPublicKeyHex: mySigningPublicKeyHex,
           listeningPort: AppConstants.defaultPort,
+          kyberPublicKeyHex: myKyberPublicKeyHex,
+          kyberCiphertextHex: kyberCiphertextHex,
         ));
 
         _client.registerIncomingConnection(connection);
@@ -313,6 +372,7 @@ class PeerService extends ChangeNotifier {
               msg.payload['displayName'] as String? ?? 'Unknown',
           publicKeyHex:
               msg.payload['publicKeyHex'] as String? ?? '',
+          kyberPublicKeyHex: peerKyberPKHex ?? '',
           ipAddress: connection.remoteAddress,
           port: msg.payload['listeningPort'] as int? ??
               AppConstants.defaultPort,
@@ -336,6 +396,7 @@ class PeerService extends ChangeNotifier {
     String myDisplayName,
     String myPublicKeyHex,
     String mySigningPublicKeyHex,
+    String myKyberPublicKeyHex,
   ) async {
     if (_client.isPeerConnected(discovered.nyxChatId)) return;
 
@@ -346,6 +407,7 @@ class PeerService extends ChangeNotifier {
         publicKeyHex: myPublicKeyHex,
         signingPublicKeyHex: mySigningPublicKeyHex,
         listeningPort: AppConstants.defaultPort,
+        kyberPublicKeyHex: myKyberPublicKeyHex,
       );
 
       final connection = await _client.connectToPeer(
@@ -359,6 +421,7 @@ class PeerService extends ChangeNotifier {
         displayName:
             connection.peerDisplayName ?? discovered.displayName,
         publicKeyHex: connection.peerPublicKeyHex ?? '',
+        kyberPublicKeyHex: connection.peerKyberPublicKeyHex ?? '',
         ipAddress: discovered.ipAddress,
         port: discovered.port,
         status: PeerStatus.connected,
@@ -402,6 +465,7 @@ class PeerService extends ChangeNotifier {
     required String myDisplayName,
     required String myPublicKeyHex,
     required String mySigningPublicKeyHex,
+    String myKyberPublicKeyHex = '',
   }) async {
     try {
       final hello = ProtocolMessage.hello(
@@ -410,6 +474,7 @@ class PeerService extends ChangeNotifier {
         publicKeyHex: myPublicKeyHex,
         signingPublicKeyHex: mySigningPublicKeyHex,
         listeningPort: AppConstants.defaultPort,
+        kyberPublicKeyHex: myKyberPublicKeyHex,
       );
 
       await _client.connectToPeer(
@@ -431,6 +496,7 @@ class PeerService extends ChangeNotifier {
     required String myDisplayName,
     required String myPublicKeyHex,
     required String mySigningPublicKeyHex,
+    String myKyberPublicKeyHex = '',
   }) async {
     final peer = _peers[peerId];
     if (peer == null) return false;
@@ -442,6 +508,7 @@ class PeerService extends ChangeNotifier {
       myDisplayName: myDisplayName,
       myPublicKeyHex: myPublicKeyHex,
       mySigningPublicKeyHex: mySigningPublicKeyHex,
+      myKyberPublicKeyHex: myKyberPublicKeyHex,
     );
   }
 
@@ -454,6 +521,7 @@ class PeerService extends ChangeNotifier {
     await _discovery?.stop();
     await stopDHT();
     await stopBle();
+    await _wifiDirectManager.stop();
     await _client.disconnectAll();
     await _server.stop();
     _isNetworkActive = false;

@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'ble_protocol.dart';
 
 /// Represents a peer discovered or connected via BLE.
@@ -16,6 +18,9 @@ class BlePeer {
 
   // Per-peer packet assembler
   final BlePacketAssembler assembler = BlePacketAssembler();
+  
+  // Cache the TX characteristic to avoid re-discovery on every send
+  BluetoothCharacteristic? cachedTxChar;
 
   BlePeer({
     required this.deviceId,
@@ -38,6 +43,10 @@ class BleManager extends ChangeNotifier {
   bool _isSupported = false;
   String? _myNyxId;
 
+  // Long-range (Coded PHY) mode
+  bool _longRangeEnabled = false;
+  bool get isLongRangeEnabled => _longRangeEnabled;
+
   // Connected and discovered peers
   final Map<String, BlePeer> _discoveredPeers = {};
   final Map<String, BlePeer> _connectedPeers = {};
@@ -50,6 +59,12 @@ class BleManager extends ChangeNotifier {
   // Subscriptions
   final List<StreamSubscription> _subscriptions = [];
   Timer? _scanTimer;
+  
+  // Sensor logic
+  bool _isStationary = false;
+  final List<double> _accelerationHistory = [];
+  final int _accelerationWindowSize = 10;
+  final double _stationaryThreshold = 0.5;
 
   // Getters
   bool get isScanning => _isScanning;
@@ -76,10 +91,57 @@ class BleManager extends ChangeNotifier {
         }
       });
       _subscriptions.add(sub);
+      
+      _initSensors();
     } catch (e) {
       debugPrint('[BLE] Init error: $e');
       _isSupported = false;
     }
+  }
+
+  /// Initialize accelerometer to control BLE scan frequencies
+  void _initSensors() {
+    try {
+      final sub = userAccelerometerEventStream(samplingPeriod: const Duration(seconds: 1)).listen((UserAccelerometerEvent event) {
+        // Calculate magnitude of acceleration ignoring gravity
+        final magnitude = math.sqrt(event.x * event.x + event.y * event.y + event.z * event.z);
+        
+        _accelerationHistory.add(magnitude);
+        if (_accelerationHistory.length > _accelerationWindowSize) {
+          _accelerationHistory.removeAt(0);
+        }
+
+        // If we have enough history, check variance
+        if (_accelerationHistory.length == _accelerationWindowSize) {
+          final avg = _accelerationHistory.reduce((a, b) => a + b) / _accelerationWindowSize;
+          final maxDiff = _accelerationHistory.map((v) => (v - avg).abs()).reduce(math.max);
+          
+          final wasStationary = _isStationary;
+          _isStationary = maxDiff < _stationaryThreshold;
+
+          // If we woke up from being stationary, instantly trigger a scan cycle
+          if (wasStationary && !_isStationary && _isScanning) {
+            debugPrint('[BLE] Movement detected. Resuming aggressive scan.');
+            _scanTimer?.cancel();
+            _scanCycle();
+          }
+        }
+      });
+      _subscriptions.add(sub);
+    } catch (e) {
+       debugPrint('[BLE] Sensors init error: $e');
+    }
+  }
+
+  /// Enable or disable BLE 5.0 Long Range (Coded PHY) mode.
+  ///
+  /// Coded PHY uses heavy error correction to extend outdoor line-of-sight
+  /// range from ~30 m to over 1 km, at the cost of lower throughput.
+  /// Only effective on hardware that supports Bluetooth 5.0+.
+  void setLongRange(bool enabled) {
+    _longRangeEnabled = enabled;
+    debugPrint('[BLE] Long Range (Coded PHY) mode: ${enabled ? "ON" : "OFF"}');
+    notifyListeners();
   }
 
   /// Start BLE operations: scanning + advertising.
@@ -124,8 +186,13 @@ class BleManager extends ChangeNotifier {
       timeout: const Duration(seconds: 4),
       androidScanMode: AndroidScanMode.lowLatency,
     ).then((_) {
-      // After scan completes, wait then scan again
-      _scanTimer = Timer(const Duration(seconds: 6), () {
+      // Adaptive Scanning: Wait 6s if moving, 60s if stationary.
+      final delaySeconds = _isStationary ? 60 : 6;
+      if (_isStationary) {
+        debugPrint('[BLE] Device stationary. Throttling scan to $delaySeconds seconds.');
+      }
+      
+      _scanTimer = Timer(Duration(seconds: delaySeconds), () {
         if (_isScanning) _scanCycle();
       });
     }).catchError((e) {
@@ -209,6 +276,16 @@ class BleManager extends ChangeNotifier {
 
       await rxChar.setNotifyValue(true);
 
+      // Cache TX characteristic for later sends (avoids re-discovery)
+      try {
+        final txChar = nyxService.characteristics.firstWhere(
+          (c) => c.characteristicUuid == BleProtocol.txCharUuid,
+        );
+        peer.cachedTxChar = txChar;
+      } catch (_) {
+        debugPrint('[BLE] TX characteristic not found during connect, will discover later');
+      }
+
       // Listen for incoming data
       final sub = rxChar.onValueReceived.listen((value) {
         _handleIncomingData(peer, Uint8List.fromList(value));
@@ -222,6 +299,21 @@ class BleManager extends ChangeNotifier {
         }
       });
       _subscriptions.add(disconnSub);
+
+      // Negotiate Coded PHY for long-range connections (BLE 5.0+)
+      if (_longRangeEnabled) {
+        try {
+          await peer.device.setPreferredPhy(
+            txPhy: Phy.leCoded.mask,
+            rxPhy: Phy.leCoded.mask,
+            option: PhyCoding.s8, // S=8 coding: maximum range
+          );
+          debugPrint('[BLE] Coded PHY (Long Range S=8) negotiated for ${peer.deviceId}');
+        } catch (e) {
+          // Hardware may not support Coded PHY — gracefully fall back to 1M
+          debugPrint('[BLE] Coded PHY not supported on ${peer.deviceId}: $e');
+        }
+      }
 
       peer.isConnected = true;
       _connectedPeers[peer.deviceId] = peer;
@@ -252,14 +344,18 @@ class BleManager extends ChangeNotifier {
     try {
       final data = BleProtocol.encodeMessage(message);
 
-      // Find TX characteristic
-      final services = await peer.device.discoverServices();
-      final nyxService = services.firstWhere(
-        (s) => s.serviceUuid == BleProtocol.serviceUuid,
-      );
-      final txChar = nyxService.characteristics.firstWhere(
-        (c) => c.characteristicUuid == BleProtocol.txCharUuid,
-      );
+      // Use cached TX characteristic if available, otherwise discover
+      BluetoothCharacteristic? txChar = peer.cachedTxChar;
+      if (txChar == null) {
+        final services = await peer.device.discoverServices();
+        final nyxService = services.firstWhere(
+          (s) => s.serviceUuid == BleProtocol.serviceUuid,
+        );
+        txChar = nyxService.characteristics.firstWhere(
+          (c) => c.characteristicUuid == BleProtocol.txCharUuid,
+        );
+        peer.cachedTxChar = txChar; // Cache for future sends
+      }
 
       // Get negotiated MTU
       final mtu = await peer.device.requestMtu(512);
@@ -300,6 +396,7 @@ class BleManager extends ChangeNotifier {
     debugPrint('[BLE] Disconnected: ${peer.deviceId}');
     peer.isConnected = false;
     peer.assembler.reset();
+    peer.cachedTxChar = null;
     _connectedPeers.remove(peer.deviceId);
     notifyListeners();
     onPeerDisconnected?.call(peer);

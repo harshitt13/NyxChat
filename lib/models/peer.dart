@@ -6,6 +6,7 @@ class Peer {
   final String nyxChatId;
   final String displayName;
   final String publicKeyHex;
+  final String kyberPublicKeyHex;
   final String ipAddress;
   final int port;
   final PeerStatus status;
@@ -17,6 +18,7 @@ class Peer {
     required this.nyxChatId,
     required this.displayName,
     required this.publicKeyHex,
+    this.kyberPublicKeyHex = '',
     required this.ipAddress,
     required this.port,
     this.status = PeerStatus.discovered,
@@ -29,6 +31,7 @@ class Peer {
     String? nyxChatId,
     String? displayName,
     String? publicKeyHex,
+    String? kyberPublicKeyHex,
     String? ipAddress,
     int? port,
     PeerStatus? status,
@@ -40,6 +43,7 @@ class Peer {
       nyxChatId: nyxChatId ?? this.nyxChatId,
       displayName: displayName ?? this.displayName,
       publicKeyHex: publicKeyHex ?? this.publicKeyHex,
+      kyberPublicKeyHex: kyberPublicKeyHex ?? this.kyberPublicKeyHex,
       ipAddress: ipAddress ?? this.ipAddress,
       port: port ?? this.port,
       status: status ?? this.status,
@@ -57,6 +61,7 @@ class Peer {
     'nyxChatId': nyxChatId,
     'displayName': displayName,
     'publicKeyHex': publicKeyHex,
+    'kyberPublicKeyHex': kyberPublicKeyHex,
     'ipAddress': ipAddress,
     'port': port,
     'status': status.name,
@@ -69,6 +74,7 @@ class Peer {
     nyxChatId: json['nyxChatId'] as String,
     displayName: json['displayName'] as String,
     publicKeyHex: json['publicKeyHex'] as String,
+    kyberPublicKeyHex: (json['kyberPublicKeyHex'] as String?) ?? '',
     ipAddress: json['ipAddress'] as String,
     port: json['port'] as int,
     status: PeerStatus.values.firstWhere(

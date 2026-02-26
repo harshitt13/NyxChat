@@ -522,10 +522,12 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
     final peerSvc = context.read<PeerService>();
     final pubKey = await idSvc.getPublicKeyHex();
     final signPubKey = await idSvc.getSigningPublicKeyHex();
+    final kyberPubKey = await idSvc.getKyberPublicKeyHex();
     final ok = await peerSvc.connectToPeer(
       address: ip, port: port,
       myNyxChatId: idSvc.nyxChatId, myDisplayName: idSvc.displayName,
       myPublicKeyHex: pubKey, mySigningPublicKeyHex: signPubKey,
+      myKyberPublicKeyHex: kyberPubKey,
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(

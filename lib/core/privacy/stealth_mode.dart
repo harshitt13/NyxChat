@@ -29,16 +29,22 @@ class StealthMode extends ChangeNotifier {
   }
 
   /// Check if a given PIN is the duress PIN.
+  /// Uses constant-time comparison to prevent timing attacks.
   bool isDuressPin(String pin) {
     if (_duressPin == null) return false;
-    return pin == _duressPin;
+    if (pin.length != _duressPin!.length) return false;
+    
+    int result = 0;
+    for (int i = 0; i < pin.length; i++) {
+      result |= pin.codeUnitAt(i) ^ _duressPin!.codeUnitAt(i);
+    }
+    return result == 0;
   }
 
   /// Activate duress mode (shows fake empty state).
   void activateDuress() {
     _isDuressMode = true;
     notifyListeners();
-    debugPrint('[Stealth] Duress mode ACTIVATED');
   }
 
   /// Deactivate duress mode.

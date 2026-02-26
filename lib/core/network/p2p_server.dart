@@ -79,6 +79,11 @@ class PeerConnection {
   String? peerId;
   String? peerDisplayName;
   String? peerPublicKeyHex;
+  String? peerKyberPublicKeyHex;
+  /// Kyber KEM ciphertext (set by the responder for the initiator to decapsulate)
+  String? kyberCiphertextHex;
+  /// Pre-computed Kyber shared secret (set by the responder who performed encapsulation)
+  String? kyberSharedSecretHex;
 
   final StreamController<ProtocolMessage> _messageController =
       StreamController<ProtocolMessage>.broadcast();

@@ -13,7 +13,8 @@ class MeshPacket {
   final int maxTtl;           // Original TTL
   final Uint8List payload;    // E2EE encrypted message bytes
   final DateTime timestamp;
-  final String type;          // 'message', 'ack', 'mesh_hello'
+  final String type;          // 'message', 'ack', 'mesh_hello', 'route_discovery'
+  final List<String> routePath; // Tracking of the path taken for route discovery
 
   MeshPacket({
     required this.id,
@@ -24,10 +25,11 @@ class MeshPacket {
     required this.payload,
     required this.timestamp,
     this.type = 'message',
+    this.routePath = const [],
   });
 
   /// Create a new packet with decremented TTL for forwarding.
-  MeshPacket forward() => MeshPacket(
+  MeshPacket forward(String myHash) => MeshPacket(
     id: id,
     recipientHash: recipientHash,
     senderHash: senderHash,
@@ -36,6 +38,7 @@ class MeshPacket {
     payload: payload,
     timestamp: timestamp,
     type: type,
+    routePath: [...routePath, myHash],
   );
 
   /// Check if this packet can still be forwarded.
@@ -54,6 +57,7 @@ class MeshPacket {
     'payload': base64Encode(payload),
     'timestamp': timestamp.toIso8601String(),
     'type': type,
+    'routePath': routePath,
   };
 
   factory MeshPacket.fromJson(Map<String, dynamic> json) => MeshPacket(
@@ -65,6 +69,7 @@ class MeshPacket {
     payload: base64Decode(json['payload'] as String),
     timestamp: DateTime.parse(json['timestamp'] as String),
     type: (json['type'] as String?) ?? 'message',
+    routePath: (json['routePath'] as List<dynamic>?)?.map((e) => e as String).toList() ?? [],
   );
 
   String encode() => jsonEncode(toJson());
