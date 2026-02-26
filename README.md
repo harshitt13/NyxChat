@@ -907,7 +907,7 @@ erDiagram
         datetime createdAt
         datetime lastMessageAt
         int unreadCount
-        enum roomType "direct | group"
+        string roomType "direct or group"
         string groupDescription
     }
 
@@ -917,9 +917,9 @@ erDiagram
         string receiverId FK
         string content
         datetime timestamp
-        enum status "sending | sent | delivered | read | failed"
+        string status "sending sent delivered read failed"
         string roomId FK
-        enum messageType "text | image | file | reaction | system"
+        string messageType "text image file reaction system"
         string replyToId
     }
 
@@ -952,10 +952,10 @@ erDiagram
         string publicKeyHex
         string ipAddress
         int port
-        enum status "discovered | connecting | connected | disconnected"
+        string status "discovered connecting connected disconnected"
         datetime lastSeen
         datetime firstSeen
-        string transport "wifi | ble"
+        string transport "wifi or ble"
     }
 
     UserIdentity ||--o{ ChatRoom : "owns"
