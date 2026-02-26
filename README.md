@@ -588,9 +588,6 @@ sequenceDiagram
     Note over A,B: rootKey = HKDF(ecdhSecret ‖ kyberSecret,<br/>nonce='NyxChat-Hybrid-Session-v1')
 
     Note over A,B: Double Ratchet initialized with hybrid root key
-
-    style A fill:#e94560,stroke:#e94560,color:#fff
-    style B fill:#0f3460,stroke:#0f3460,color:#fff
 ```
 
 **Design Principles:**
