@@ -3,6 +3,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
 
 import '../core/storage/trust_store.dart';
+import '../l10n/l10n_context.dart';
 import '../theme/app_theme.dart';
 
 /// Parse the compact text form of a contact card.
@@ -43,7 +44,7 @@ class _ScanCardScreenState extends State<ScanCardScreen> {
       if (raw == null) continue;
       final card = parseContactCard(raw);
       if (card == null) {
-        setState(() => _status = 'Not a NyxChat contact card');
+        setState(() => _status = context.l10n.notANyxChatContactCard);
         continue;
       }
       _handled = true;
@@ -53,7 +54,8 @@ class _ScanCardScreenState extends State<ScanCardScreen> {
         Navigator.pop(context, peer);
       } catch (e) {
         _handled = false;
-        setState(() => _status = 'Invalid card: $e');
+        if (!mounted) return;
+        setState(() => _status = context.l10n.invalidCard('$e'));
       }
       return;
     }
@@ -62,14 +64,14 @@ class _ScanCardScreenState extends State<ScanCardScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.background,
+      backgroundColor: context.nyx.background,
       appBar: AppBar(
-        backgroundColor: AppTheme.background,
+        backgroundColor: context.nyx.background,
         elevation: 0,
-        title: const Text('Scan contact card', style: TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
+        title: Text(context.l10n.scanContactCard, style: TextStyle(color: context.nyx.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
         actions: [
           IconButton(
-            icon: const Icon(Icons.flash_on_outlined, color: AppTheme.textSecondary),
+            icon: Icon(Icons.flash_on_outlined, color: context.nyx.textSecondary),
             onPressed: () => _controller.toggleTorch(),
           ),
         ],
@@ -82,7 +84,7 @@ class _ScanCardScreenState extends State<ScanCardScreen> {
               child: Container(
                 width: 240, height: 240,
                 decoration: BoxDecoration(
-                  border: Border.all(color: AppTheme.accentBlue.withValues(alpha: 0.8), width: 2),
+                  border: Border.all(color: context.nyx.accentBlue.withValues(alpha: 0.8), width: 2),
                   borderRadius: BorderRadius.circular(16),
                 ),
               ),
@@ -91,14 +93,14 @@ class _ScanCardScreenState extends State<ScanCardScreen> {
         ),
         Container(
           padding: const EdgeInsets.all(20),
-          color: AppTheme.surface,
+          color: context.nyx.surface,
           child: Column(children: [
-            Text(_status ?? 'Point the camera at the QR code on their Verify screen or Settings page.',
+            Text(_status ?? context.l10n.pointCameraHint,
                 textAlign: TextAlign.center,
-                style: TextStyle(color: _status == null ? AppTheme.textSecondary : AppTheme.warning, fontSize: 13)),
+                style: TextStyle(color: _status == null ? context.nyx.textSecondary : context.nyx.warning, fontSize: 13)),
             const SizedBox(height: 6),
-            const Text('Scanning pins their keys as verified. Nothing is sent over the network.',
-                textAlign: TextAlign.center, style: TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+            Text(context.l10n.scanningPinsKeys,
+                textAlign: TextAlign.center, style: TextStyle(color: context.nyx.textMuted, fontSize: 11)),
           ]),
         ),
       ]),

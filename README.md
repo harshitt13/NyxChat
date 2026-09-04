@@ -54,6 +54,7 @@ This README describes what the code does. The security properties and their limi
 | Privacy | Private discovery beacons, sealed-sender mesh addressing, link encryption hiding all metadata, length padding, stealth mode, cover traffic, screenshot blocking |
 | Device security | Encrypted database, optional Argon2id password, duress password with independent decoy profile, wipe after failed attempts, panic wipe, encrypted backup and restore |
 | Post-quantum | ML-KEM-768 (FIPS 203, PQClean C implementation via dart:ffi) combined with X25519 in every handshake and asynchronous session; one-time ML-KEM prekeys exchanged on direct links give asynchronous sessions post-quantum forward secrecy |
+| Appearance | Dark, light or follow-the-system theme (status and navigation bars follow suit); the whole UI, notifications and the mesh service notification are available in English, Hindi, Spanish, French, German, Portuguese, Arabic (right-to-left layout), Chinese, Russian and Indonesian, selectable in Settings or following the device language |
 
 ## How a message travels
 
@@ -202,7 +203,7 @@ flutter test benchmark/mesh_sim_test.dart --dart-define=SIM_SEEDS=5 --dart-defin
 
 Protocol v4 is a clean break from 3.0 (mesh packet and beacon formats, KEM). The cryptographic core, session logic, parsers and the end-to-end stack are covered by automated tests, and the handshake is modelled in Tamarin, but the Bluetooth, Wi-Fi Direct and Wi-Fi Aware paths have not yet been measured on a fleet of physical devices; treat them as beta and report what you see. iOS is not supported (no CoreBluetooth peripheral yet).
 
-Planned: field measurements on real phones, header encryption for the ratchet, voice notes, a light theme, localisation, an indexed message store for very long histories, and an external audit.
+Planned: field measurements on real phones, header encryption for the ratchet, voice notes, an indexed message store for very long histories, and an external audit.
 
 ## License
 

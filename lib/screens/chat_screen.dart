@@ -7,6 +7,8 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../core/storage/trust_store.dart';
+import '../l10n/l10n_context.dart';
+import '../l10n/system_messages.dart';
 import '../models/chat_room.dart';
 import '../models/message.dart';
 import '../services/chat_service.dart';
@@ -72,15 +74,15 @@ class _ChatScreenState extends State<ChatScreen> {
         .read<ChatService>()
         .sendFile(roomId: widget.roomId, filePath: path);
     if (sent == null && mounted) {
-      _snack('Files need a direct connection. Come within Wi-Fi range first.');
+      _snack(context.l10n.filesNeedDirectConnection);
     }
     _scrollToBottom();
   }
 
-  void _snack(String text, {Color color = AppTheme.surfaceLight}) {
+  void _snack(String text, {Color? color}) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(text),
-      backgroundColor: color,
+      backgroundColor: color ?? context.nyx.surfaceLight,
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
     ));
@@ -91,7 +93,7 @@ class _ChatScreenState extends State<ChatScreen> {
     const emojis = ['👍', '❤️', '😂', '😮', '😢', '🔥', '👏', '🎉'];
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: AppTheme.surface,
+      backgroundColor: context.nyx.surface,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (ctx) => SafeArea(
@@ -113,24 +115,24 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
           ListTile(
-            leading: const Icon(Icons.reply_rounded, color: AppTheme.textSecondary),
-            title: const Text('Reply', style: TextStyle(color: AppTheme.textPrimary)),
+            leading: Icon(Icons.reply_rounded, color: context.nyx.textSecondary),
+            title: Text(context.l10n.reply, style: TextStyle(color: context.nyx.textPrimary)),
             onTap: () {
               setState(() => _replyTo = msg);
               Navigator.pop(ctx);
             },
           ),
           ListTile(
-            leading: const Icon(Icons.copy_rounded, color: AppTheme.textSecondary),
-            title: const Text('Copy text', style: TextStyle(color: AppTheme.textPrimary)),
+            leading: Icon(Icons.copy_rounded, color: context.nyx.textSecondary),
+            title: Text(context.l10n.copyText, style: TextStyle(color: context.nyx.textPrimary)),
             onTap: () {
               Clipboard.setData(ClipboardData(text: msg.content));
               Navigator.pop(ctx);
             },
           ),
           ListTile(
-            leading: const Icon(Icons.delete_outline_rounded, color: AppTheme.error),
-            title: const Text('Delete for me', style: TextStyle(color: AppTheme.error)),
+            leading: Icon(Icons.delete_outline_rounded, color: context.nyx.error),
+            title: Text(context.l10n.deleteForMe, style: TextStyle(color: context.nyx.error)),
             onTap: () {
               chat.deleteMessage(widget.roomId, msg.id);
               Navigator.pop(ctx);
@@ -142,25 +144,25 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _disappearingPicker(ChatRoom room) {
-    const options = {
-      'Off': 0, '5 minutes': 300, '1 hour': 3600, '1 day': 86400, '1 week': 604800,
+    final options = {
+      context.l10n.off: 0, context.l10n.disappear5Minutes: 300, context.l10n.disappear1Hour: 3600, context.l10n.disappear1Day: 86400, context.l10n.disappear1Week: 604800,
     };
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: AppTheme.surface,
+      backgroundColor: context.nyx.surface,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (ctx) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Padding(
+          Padding(
             padding: EdgeInsets.all(16),
-            child: Text('Disappearing messages',
-                style: TextStyle(color: AppTheme.textPrimary, fontSize: 16, fontWeight: FontWeight.w600)),
+            child: Text(context.l10n.disappearingMessages,
+                style: TextStyle(color: context.nyx.textPrimary, fontSize: 16, fontWeight: FontWeight.w600)),
           ),
           ...options.entries.map((e) => ListTile(
-                title: Text(e.key, style: const TextStyle(color: AppTheme.textPrimary)),
+                title: Text(e.key, style: TextStyle(color: context.nyx.textPrimary)),
                 trailing: room.disappearAfterSeconds == e.value
-                    ? const Icon(Icons.check_rounded, color: AppTheme.accentBlue)
+                    ? Icon(Icons.check_rounded, color: context.nyx.accentBlue)
                     : null,
                 onTap: () {
                   context.read<ChatService>().setDisappearing(room.id, e.value);
@@ -175,7 +177,8 @@ class _ChatScreenState extends State<ChatScreen> {
   String _time(DateTime t) {
     final now = DateTime.now();
     final sameDay = t.day == now.day && t.month == now.month && t.year == now.year;
-    return sameDay ? DateFormat.Hm().format(t) : DateFormat('MMM d, HH:mm').format(t);
+    final locale = Localizations.localeOf(context).toString();
+    return sameDay ? DateFormat.Hm(locale).format(t) : DateFormat.MMMd(locale).add_Hm().format(t);
   }
 
   @override
@@ -184,10 +187,10 @@ class _ChatScreenState extends State<ChatScreen> {
       builder: (context, chat, peers, trust, _) {
         final room = chat.room(widget.roomId);
         if (room == null) {
-          return const Scaffold(
-              backgroundColor: AppTheme.background,
-              body: Center(child: Text('Conversation deleted',
-                  style: TextStyle(color: AppTheme.textSecondary))));
+          return Scaffold(
+              backgroundColor: context.nyx.background,
+              body: Center(child: Text(context.l10n.conversationDeleted,
+                  style: TextStyle(color: context.nyx.textSecondary))));
         }
         final messages = chat.getMessages(room.id);
         final direct = !room.isGroup && peers.isPeerConnected(room.peerId);
@@ -200,7 +203,7 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         });
         return Scaffold(
-          backgroundColor: AppTheme.background,
+          backgroundColor: context.nyx.background,
           body: Column(children: [
             _appBar(room, direct: direct, mesh: mesh, verified: verified),
             Expanded(
@@ -214,7 +217,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         final m = messages[i];
                         final isMe = m.senderId == chat.myId;
                         if (m.messageType == MessageType.system) {
-                          return _system(m.content);
+                          return _system(localizeSystemMessage(context.l10n, m.content));
                         }
                         final senderName = room.isGroup && !isMe
                             ? (room.members
@@ -251,20 +254,20 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _appBar(ChatRoom room,
       {required bool direct, required bool mesh, required bool verified}) {
     final status = room.isGroup
-        ? '${room.memberCount} members${room.left ? ' (left)' : ''}'
-        : direct ? 'Connected' : mesh ? 'Reachable via mesh' : 'Offline · will deliver later';
-    final color = direct ? AppTheme.accentGreen : mesh ? AppTheme.accentBlue : AppTheme.textMuted;
+        ? (room.left ? context.l10n.membersCountLeft(room.memberCount) : context.l10n.membersCount(room.memberCount))
+        : direct ? context.l10n.statusConnected : mesh ? context.l10n.statusReachableViaMesh : context.l10n.statusOfflineDeliverLater;
+    final color = direct ? context.nyx.accentGreen : mesh ? context.nyx.accentBlue : context.nyx.textMuted;
     return Container(
-      padding: EdgeInsets.only(
-          top: MediaQuery.of(context).padding.top + 6, left: 4, right: 8, bottom: 10),
+      padding: EdgeInsetsDirectional.only(
+          top: MediaQuery.of(context).padding.top + 6, start: 4, end: 8, bottom: 10),
       decoration: BoxDecoration(
-        color: AppTheme.surface,
-        border: Border(bottom: BorderSide(color: Colors.white.withValues(alpha: 0.04))),
+        color: context.nyx.surface,
+        border: Border(bottom: BorderSide(color: context.nyx.hairline(0.04))),
       ),
       child: Row(children: [
         IconButton(
           onPressed: () => Navigator.pop(context),
-          icon: const Icon(Icons.arrow_back_ios_rounded, color: AppTheme.textPrimary, size: 18),
+          icon: Icon(Icons.arrow_back_ios_rounded, color: context.nyx.textPrimary, size: 18),
         ),
         Expanded(
           child: InkWell(
@@ -276,11 +279,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 Flexible(
                   child: Text(room.peerDisplayName,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15, fontWeight: FontWeight.w500)),
+                      style: TextStyle(color: context.nyx.textPrimary, fontSize: 15, fontWeight: FontWeight.w500)),
                 ),
                 const SizedBox(width: 6),
                 Icon(verified ? Icons.verified_rounded : Icons.lock_outline_rounded,
-                    size: 14, color: verified ? AppTheme.accentGreen : AppTheme.textMuted),
+                    size: 14, color: verified ? context.nyx.accentGreen : context.nyx.textMuted),
               ]),
               const SizedBox(height: 2),
               Row(children: [
@@ -294,11 +297,11 @@ class _ChatScreenState extends State<ChatScreen> {
         IconButton(
           onPressed: () => _disappearingPicker(room),
           icon: Icon(Icons.timer_outlined,
-              color: room.disappearAfterSeconds > 0 ? AppTheme.accentBlue : AppTheme.textSecondary, size: 21),
+              color: room.disappearAfterSeconds > 0 ? context.nyx.accentBlue : context.nyx.textSecondary, size: 21),
         ),
         IconButton(
           onPressed: room.left ? null : _attach,
-          icon: const Icon(Icons.attach_file_rounded, color: AppTheme.textSecondary, size: 21),
+          icon: Icon(Icons.attach_file_rounded, color: context.nyx.textSecondary, size: 21),
         ),
       ]),
     );
@@ -306,15 +309,15 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _empty(ChatRoom room) => Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.lock_outline_rounded, size: 40, color: AppTheme.textMuted.withValues(alpha: 0.4)),
+          Icon(Icons.lock_outline_rounded, size: 40, color: context.nyx.textMuted.withValues(alpha: 0.4)),
           const SizedBox(height: 12),
-          const Text('End-to-end encrypted', style: TextStyle(color: AppTheme.textSecondary)),
+          Text(context.l10n.endToEndEncrypted, style: TextStyle(color: context.nyx.textSecondary)),
           const SizedBox(height: 4),
           Text(
-            room.isGroup ? 'Messages use per-sender keys; only members can read them.'
-                         : 'Messages are protected by a Double Ratchet session.',
+            room.isGroup ? context.l10n.groupEncryptionHint
+                         : context.l10n.directEncryptionHint,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
+            style: TextStyle(color: context.nyx.textMuted, fontSize: 12),
           ),
         ]),
       );
@@ -324,52 +327,52 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Center(
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-            decoration: BoxDecoration(color: AppTheme.surfaceLight, borderRadius: BorderRadius.circular(12)),
-            child: Text(text, style: const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+            decoration: BoxDecoration(color: context.nyx.surfaceLight, borderRadius: BorderRadius.circular(12)),
+            child: Text(text, style: TextStyle(color: context.nyx.textMuted, fontSize: 12)),
           ),
         ),
       );
 
   Widget _replyBar() => Container(
-        padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
-        color: AppTheme.background,
+        padding: const EdgeInsetsDirectional.fromSTEB(16, 8, 8, 0),
+        color: context.nyx.background,
         child: Row(children: [
-          Container(width: 3, height: 32, color: AppTheme.accentBlue),
+          Container(width: 3, height: 32, color: context.nyx.accentBlue),
           const SizedBox(width: 10),
           Expanded(
             child: Text(_replyTo!.content,
                 maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+                style: TextStyle(color: context.nyx.textSecondary, fontSize: 13)),
           ),
           IconButton(
             onPressed: () => setState(() => _replyTo = null),
-            icon: const Icon(Icons.close_rounded, size: 18, color: AppTheme.textMuted),
+            icon: Icon(Icons.close_rounded, size: 18, color: context.nyx.textMuted),
           ),
         ]),
       );
 
   Widget _inputBar(ChatRoom room) => Container(
-        padding: EdgeInsets.only(left: 14, right: 8, top: 10, bottom: MediaQuery.of(context).padding.bottom + 10),
+        padding: EdgeInsetsDirectional.only(start: 14, end: 8, top: 10, bottom: MediaQuery.of(context).padding.bottom + 10),
         decoration: BoxDecoration(
-          color: AppTheme.background,
-          border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.03))),
+          color: context.nyx.background,
+          border: Border(top: BorderSide(color: context.nyx.hairline(0.03))),
         ),
         child: Row(children: [
           Expanded(
             child: Container(
               decoration: BoxDecoration(
-                color: AppTheme.surface,
+                color: context.nyx.surface,
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.04)),
+                border: Border.all(color: context.nyx.hairline(0.04)),
               ),
-              padding: const EdgeInsets.only(left: 16),
+              padding: const EdgeInsetsDirectional.only(start: 16),
               child: TextField(
                 controller: _input,
                 enabled: !room.left,
-                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15),
+                style: TextStyle(color: context.nyx.textPrimary, fontSize: 15),
                 decoration: InputDecoration(
-                  hintText: room.left ? 'You are no longer a member' : 'Message',
-                  hintStyle: const TextStyle(color: AppTheme.textMuted),
+                  hintText: room.left ? context.l10n.noLongerMemberHint : context.l10n.messageHint,
+                  hintStyle: TextStyle(color: context.nyx.textMuted),
                   border: InputBorder.none,
                   contentPadding: const EdgeInsets.symmetric(vertical: 12),
                 ),
@@ -385,11 +388,11 @@ class _ChatScreenState extends State<ChatScreen> {
             child: Container(
               width: 40, height: 40,
               decoration: BoxDecoration(
-                color: AppTheme.surface,
+                color: context.nyx.surface,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                border: Border.all(color: context.nyx.hairline(0.06)),
               ),
-              child: const Icon(Icons.arrow_upward_rounded, color: AppTheme.textSecondary, size: 20),
+              child: Icon(Icons.arrow_upward_rounded, color: context.nyx.textSecondary, size: 20),
             ),
           ),
         ]),

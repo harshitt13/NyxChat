@@ -1,13 +1,22 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show Locale, ThemeMode;
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../core/storage/local_storage.dart';
 
 /// User preferences stored in the encrypted user box.
+///
+/// Appearance (theme mode and language) is kept in the platform secure
+/// storage instead, because it must be known before the database is
+/// unlocked (the lock screen is themed and localised too).
 class SettingsService extends ChangeNotifier {
   static const MethodChannel _window = MethodChannel('nyxchat/window');
+  static const String _kThemeMode = 'appearance_theme_mode';
+  static const String _kLocale = 'appearance_locale';
 
   final LocalStorage _storage;
+  final FlutterSecureStorage _secure;
   bool _blockScreenshots = true;
   bool _readReceipts = true;
   bool _notifications = true;
@@ -20,8 +29,11 @@ class SettingsService extends ChangeNotifier {
   bool _nostrEnabled = false;
   bool _nostrViaTor = false;
   int _defaultDisappearSeconds = 0;
+  ThemeMode _themeMode = ThemeMode.dark;
+  Locale? _locale;
 
-  SettingsService(this._storage);
+  SettingsService(this._storage, {FlutterSecureStorage? secureStorage})
+      : _secure = secureStorage ?? const FlutterSecureStorage();
 
   bool get blockScreenshots => _blockScreenshots;
   bool get readReceipts => _readReceipts;
@@ -35,6 +47,12 @@ class SettingsService extends ChangeNotifier {
   bool get nostrEnabled => _nostrEnabled;
   bool get nostrViaTor => _nostrViaTor;
   int get defaultDisappearSeconds => _defaultDisappearSeconds;
+
+  /// Light, dark or follow the system. Defaults to dark.
+  ThemeMode get themeMode => _themeMode;
+
+  /// Chosen UI language, or null to follow the system locale.
+  Locale? get locale => _locale;
 
   Future<void> load() async {
     _blockScreenshots = _storage.getSetting('blockScreenshots') != 'false';
@@ -50,7 +68,34 @@ class SettingsService extends ChangeNotifier {
     _nostrViaTor = _storage.getSetting('nostrViaTor') == 'true';
     _defaultDisappearSeconds =
         int.tryParse(_storage.getSetting('defaultDisappear') ?? '0') ?? 0;
+    await loadAppearance(notify: false);
     notifyListeners();
+  }
+
+  /// Load theme mode and language. Safe to call before the database is
+  /// open; called again by [load].
+  Future<void> loadAppearance({bool notify = true}) async {
+    try {
+      _themeMode = _parseThemeMode(await _secure.read(key: _kThemeMode));
+      _locale = _parseLocale(await _secure.read(key: _kLocale));
+    } catch (e) {
+      debugPrint('[Settings] appearance: $e');
+    }
+    if (notify) notifyListeners();
+  }
+
+  static ThemeMode _parseThemeMode(String? v) => switch (v) {
+        'system' => ThemeMode.system,
+        'light' => ThemeMode.light,
+        _ => ThemeMode.dark,
+      };
+
+  static Locale? _parseLocale(String? tag) {
+    if (tag == null || tag.isEmpty) return null;
+    final parts = tag.split('-');
+    return parts.length > 1
+        ? Locale.fromSubtags(languageCode: parts[0], countryCode: parts.last)
+        : Locale(parts[0]);
   }
 
   Future<void> applyWindowSecurity() async {
@@ -133,6 +178,33 @@ class SettingsService extends ChangeNotifier {
   Future<void> setDefaultDisappear(int seconds) async {
     _defaultDisappearSeconds = seconds;
     await _set('defaultDisappear', '$seconds');
+    notifyListeners();
+  }
+
+  Future<void> setThemeMode(ThemeMode mode) async {
+    _themeMode = mode;
+    await _secure.write(key: _kThemeMode, value: mode.name);
+    notifyListeners();
+  }
+
+  /// Pass null to follow the system locale.
+  Future<void> setLocale(Locale? locale) async {
+    _locale = locale;
+    if (locale == null) {
+      await _secure.delete(key: _kLocale);
+    } else {
+      await _secure.write(key: _kLocale, value: locale.toLanguageTag());
+    }
+    notifyListeners();
+  }
+
+  /// Back to the defaults (dark theme, system language); used by the
+  /// panic wipe so a wiped device looks like a fresh install.
+  Future<void> resetAppearance() async {
+    _themeMode = ThemeMode.dark;
+    _locale = null;
+    await _secure.delete(key: _kThemeMode);
+    await _secure.delete(key: _kLocale);
     notifyListeners();
   }
 }

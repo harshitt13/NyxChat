@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/network/ble_manager.dart';
+import '../l10n/l10n_context.dart';
 import '../services/peer_service.dart';
 import '../theme/app_theme.dart';
 
@@ -12,11 +13,11 @@ class MeshMapScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.background,
+      backgroundColor: context.nyx.background,
       appBar: AppBar(
-        backgroundColor: AppTheme.background,
+        backgroundColor: context.nyx.background,
         elevation: 0,
-        title: const Text('Mesh diagnostics', style: TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
+        title: Text(context.l10n.meshDiagnostics, style: TextStyle(color: context.nyx.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
       ),
       body: Consumer2<PeerService, BleManager>(
         builder: (context, peers, ble, _) {
@@ -35,42 +36,41 @@ class MeshMapScreen extends StatelessWidget {
                   mainAxisSpacing: 8,
                   crossAxisSpacing: 8,
                   children: [
-                    _stat('BLE links', '${ble.linkCount}', AppTheme.accentBlue),
-                    _stat('Known routes', '${router.knownRoutes}', AppTheme.accentPurple),
-                    _stat('Stored packets', '${store.packetCount}', AppTheme.warning),
-                    _stat('Delivered to me', '${router.totalDelivered}', AppTheme.accentGreen),
-                    _stat('Received', '${router.totalReceived}', AppTheme.textSecondary),
-                    _stat('Forwarded', '${router.totalForwarded}', AppTheme.textSecondary),
-                    _stat('Duplicates dropped', '${router.totalDuplicates}', AppTheme.textMuted),
-                    _stat('Seen ids', '${store.seenCount}', AppTheme.textMuted),
+                    _stat(context, context.l10n.statBleLinks, '${ble.linkCount}', context.nyx.accentBlue),
+                    _stat(context, context.l10n.statKnownRoutes, '${router.knownRoutes}', context.nyx.accentPurple),
+                    _stat(context, context.l10n.statStoredPackets, '${store.packetCount}', context.nyx.warning),
+                    _stat(context, context.l10n.statDeliveredToMe, '${router.totalDelivered}', context.nyx.accentGreen),
+                    _stat(context, context.l10n.statReceived, '${router.totalReceived}', context.nyx.textSecondary),
+                    _stat(context, context.l10n.statForwarded, '${router.totalForwarded}', context.nyx.textSecondary),
+                    _stat(context, context.l10n.statDuplicatesDropped, '${router.totalDuplicates}', context.nyx.textMuted),
+                    _stat(context, context.l10n.statSeenIds, '${store.seenCount}', context.nyx.textMuted),
                   ],
                 ),
                 const SizedBox(height: 24),
-                _title('Links'),
-                if (ble.links.isEmpty) _hint('No Bluetooth links. Devices within range link automatically while scanning and advertising are on.'),
+                _title(context, context.l10n.linksHeader),
+                if (ble.links.isEmpty) _hint(context, context.l10n.noBluetoothLinksHint),
                 ...ble.links.map((l) => _tile(
+                      context,
                       Icons.bluetooth_connected_rounded,
                       l.nyxId ?? l.address,
-                      '${l.isCentralRole ? 'we dialled' : 'they dialled'} · MTU ${l.mtu} · ${l.address}',
-                      AppTheme.accentBlue,
+                      context.l10n.linkSubtitle(l.isCentralRole ? context.l10n.weDialled : context.l10n.theyDialled, l.mtu, l.address),
+                      context.nyx.accentBlue,
                     )),
-                _tile(Icons.wifi_tethering_rounded, 'Wi-Fi Aware', peers.awareManager.statusText,
-                    peers.isAwareActive ? AppTheme.accentGreen : AppTheme.textMuted),
+                _tile(context, Icons.wifi_tethering_rounded, 'Wi-Fi Aware', peers.awareManager.statusText,
+                    peers.isAwareActive ? context.nyx.accentGreen : context.nyx.textMuted),
                 const SizedBox(height: 20),
-                _title('Routing table'),
-                if (router.routingTable.isEmpty) _hint('Routes are learned from the path recorded in every packet and from periodic beacons.'),
+                _title(context, context.l10n.routingTableHeader),
+                if (router.routingTable.isEmpty) _hint(context, context.l10n.routingTableHint),
                 ...router.routingTable.entries.map((e) => _tile(
+                      context,
                       Icons.alt_route_rounded,
-                      'token ${e.key.substring(0, 12)}...',
-                      'via relay ${e.value.nextHopHex}... · ${e.value.hopCount} hops',
-                      AppTheme.accentPurple,
+                      context.l10n.routeToken(e.key.substring(0, 12)),
+                      context.l10n.routeVia(e.value.nextHopHex, e.value.hopCount),
+                      context.nyx.accentPurple,
                     )),
                 const SizedBox(height: 20),
-                _title('How it works'),
-                _hint('Packets are addressed by SHA-256 hashes and carry an end-to-end encrypted envelope. '
-                    'A relay stores each packet, forwards it to the learned next hop or sprays up to '
-                    '${router.sprayCount} copies, and drops it after ${router.defaultTtl} hops or 24 hours. '
-                    'Relays cannot read, alter or re-address what they carry.'),
+                _title(context, context.l10n.howItWorksHeader),
+                _hint(context, context.l10n.meshExplanation(router.sprayCount, router.defaultTtl)),
               ],
             ),
           );
@@ -79,33 +79,33 @@ class MeshMapScreen extends StatelessWidget {
     );
   }
 
-  Widget _stat(String label, String value, Color color) => Container(
+  Widget _stat(BuildContext context, String label, String value, Color color) => Container(
         padding: const EdgeInsets.all(12),
-        decoration: AppTheme.glassDecoration(opacity: 0.04, borderRadius: 12),
+        decoration: context.nyx.glass(opacity: 0.04, borderRadius: 12),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
           Text(value, style: TextStyle(color: color, fontSize: 22, fontWeight: FontWeight.w700)),
           const SizedBox(height: 2),
-          Text(label, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+          Text(label, style: TextStyle(color: context.nyx.textMuted, fontSize: 11)),
         ]),
       );
 
-  Widget _title(String t) => Padding(
+  Widget _title(BuildContext context, String t) => Padding(
         padding: const EdgeInsets.only(bottom: 8),
-        child: Text(t.toUpperCase(), style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1)),
+        child: Text(t.toUpperCase(), style: TextStyle(color: context.nyx.textSecondary, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1)),
       );
 
-  Widget _hint(String t) => Text(t, style: const TextStyle(color: AppTheme.textMuted, fontSize: 12, height: 1.4));
+  Widget _hint(BuildContext context, String t) => Text(t, style: TextStyle(color: context.nyx.textMuted, fontSize: 12, height: 1.4));
 
-  Widget _tile(IconData icon, String title, String subtitle, Color color) => Container(
+  Widget _tile(BuildContext context, IconData icon, String title, String subtitle, Color color) => Container(
         margin: const EdgeInsets.only(bottom: 6),
         padding: const EdgeInsets.all(12),
-        decoration: AppTheme.glassDecoration(opacity: 0.03, borderRadius: 12),
+        decoration: context.nyx.glass(opacity: 0.03, borderRadius: 12),
         child: Row(children: [
           Icon(icon, size: 18, color: color),
           const SizedBox(width: 12),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontFamily: 'monospace')),
-            Text(subtitle, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+            Text(title, style: TextStyle(color: context.nyx.textPrimary, fontSize: 13, fontFamily: 'monospace')),
+            Text(subtitle, style: TextStyle(color: context.nyx.textMuted, fontSize: 11)),
           ])),
         ]),
       );

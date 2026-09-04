@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/crypto/nyx_id.dart';
 import '../core/crypto/prekey_store.dart';
 import '../core/storage/trust_store.dart';
+import '../l10n/l10n_context.dart';
 import '../services/chat_service.dart';
 import '../services/identity_service.dart';
 import '../theme/app_theme.dart';
@@ -52,39 +54,38 @@ class _ContactVerifyScreenState extends State<ContactVerifyScreen> {
       builder: (context, trust, _) {
         final peer = trust.get(widget.peerId);
         return Scaffold(
-          backgroundColor: AppTheme.background,
+          backgroundColor: context.nyx.background,
           appBar: AppBar(
-            backgroundColor: AppTheme.background,
+            backgroundColor: context.nyx.background,
             elevation: 0,
             title: Text(peer?.displayName ?? widget.peerId,
-                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
+                style: TextStyle(color: context.nyx.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
           ),
           body: peer == null
-              ? const Center(child: Text('Contact not pinned yet', style: TextStyle(color: AppTheme.textSecondary)))
+              ? Center(child: Text(context.l10n.contactNotPinnedYet, style: TextStyle(color: context.nyx.textSecondary)))
               : ListView(
                   padding: const EdgeInsets.all(20),
                   children: [
                     _header(peer),
                     const SizedBox(height: 20),
-                    _section('Safety number'),
+                    _section(context.l10n.safetyNumber),
                     const SizedBox(height: 8),
                     Container(
                       padding: const EdgeInsets.all(16),
-                      decoration: AppTheme.glassDecoration(opacity: 0.04, borderRadius: 14),
+                      decoration: context.nyx.glass(opacity: 0.04, borderRadius: 14),
                       child: Column(children: [
                         if (_safetyNumber == null)
-                          const Padding(
+                          Padding(
                             padding: EdgeInsets.all(12),
-                            child: CircularProgressIndicator(color: AppTheme.accentBlue),
+                            child: CircularProgressIndicator(color: context.nyx.accentBlue),
                           )
                         else
                           _safetyGrid(_safetyNumber!),
                         const SizedBox(height: 12),
-                        const Text(
-                          'Both of you see the same number if nobody is intercepting the connection. '
-                          'Compare it in person, by phone, or through another channel you trust.',
+                        Text(
+                          context.l10n.safetyNumberExplanation,
                           textAlign: TextAlign.center,
-                          style: TextStyle(color: AppTheme.textSecondary, fontSize: 12, height: 1.4),
+                          style: TextStyle(color: context.nyx.textSecondary, fontSize: 12, height: 1.4),
                         ),
                       ]),
                     ),
@@ -92,35 +93,35 @@ class _ContactVerifyScreenState extends State<ContactVerifyScreen> {
                     Row(children: [
                       Expanded(
                         child: _button(
-                          peer.verified ? 'Verified' : 'Mark as verified',
+                          peer.verified ? context.l10n.verified : context.l10n.markAsVerified,
                           icon: peer.verified ? Icons.verified_rounded : Icons.verified_outlined,
-                          color: peer.verified ? AppTheme.accentGreen : AppTheme.accentBlue,
+                          color: peer.verified ? context.nyx.accentGreen : context.nyx.accentBlue,
                           onTap: () => trust.setVerified(peer.nyxChatId, !peer.verified),
                         ),
                       ),
                       const SizedBox(width: 10),
                       Expanded(
-                        child: _button('Message', icon: Icons.chat_bubble_outline_rounded,
-                            color: AppTheme.textSecondary, onTap: () => _openChat(peer)),
+                        child: _button(context.l10n.messageAction, icon: Icons.chat_bubble_outline_rounded,
+                            color: context.nyx.textSecondary, onTap: () => _openChat(peer)),
                       ),
                     ]),
                     const SizedBox(height: 10),
-                    _button('Scan their QR code', icon: Icons.qr_code_scanner_rounded, color: AppTheme.accentPurple, onTap: () async {
+                    _button(context.l10n.scanTheirQr, icon: Icons.qr_code_scanner_rounded, color: context.nyx.accentPurple, onTap: () async {
                       final scanned = await Navigator.push<PinnedPeer?>(context, MaterialPageRoute(builder: (_) => const ScanCardScreen()));
                       if (scanned != null && context.mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-                            scanned.nyxChatId == peer.nyxChatId ? 'Verified: keys match this contact' : 'That card belongs to ${scanned.displayName}, pinned separately')));
+                            scanned.nyxChatId == peer.nyxChatId ? context.l10n.verifiedKeysMatch : context.l10n.cardBelongsToOther(scanned.displayName))));
                         await _compute();
                       }
                     }),
                     const SizedBox(height: 24),
-                    _section('Their fingerprint'),
+                    _section(context.l10n.theirFingerprint),
                     _mono(_theirFingerprint ?? '...'),
                     const SizedBox(height: 14),
-                    _section('Your fingerprint'),
+                    _section(context.l10n.yourFingerprint),
                     _mono(_myFingerprint ?? '...'),
                     const SizedBox(height: 24),
-                    _section('Show them your contact card'),
+                    _section(context.l10n.showThemYourCard),
                     const SizedBox(height: 8),
                     Center(
                       child: Container(
@@ -134,20 +135,20 @@ class _ContactVerifyScreenState extends State<ContactVerifyScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    const Text(
-                      'Contains only your public keys. Scanning or pasting it pins your identity on their device.',
+                    Text(
+                      context.l10n.contactCardContainsOnlyPublicKeys,
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: AppTheme.textMuted, fontSize: 11),
+                      style: TextStyle(color: context.nyx.textMuted, fontSize: 11),
                     ),
                     const SizedBox(height: 24),
-                    _section('Details'),
-                    _detail('NyxChat ID', peer.nyxChatId),
-                    _detail('Handshake', 'X25519 + Kyber-768 hybrid, Ed25519 signed'),
-                    _detail('Messages', 'Double Ratchet, AES-256-GCM'),
+                    _section(context.l10n.details),
+                    _detail(context.l10n.nyxChatId, peer.nyxChatId),
+                    _detail(context.l10n.handshake, context.l10n.handshakeValue),
+                    _detail(context.l10n.messages, context.l10n.messagesValue),
                     _detail('Offline sessions', _asyncSessionLine(context, peer.nyxChatId)),
-                    _detail('First seen', peer.firstSeen.toLocal().toString().substring(0, 16)),
+                    _detail(context.l10n.firstSeen, _when(peer.firstSeen)),
                     if (peer.keyChangedAt != null)
-                      _detail('Keys changed', peer.keyChangedAt!.toLocal().toString().substring(0, 16)),
+                      _detail(context.l10n.keysChanged, _when(peer.keyChangedAt!)),
                   ],
                 ),
         );
@@ -160,6 +161,10 @@ class _ContactVerifyScreenState extends State<ContactVerifyScreen> {
     // Compact key=value form keeps the QR small.
     return 'nyx3;${card['id']};${card['name']};${card['ik']};${card['sk']};${card['kpk']}';
   }
+
+  String _when(DateTime t) => DateFormat.yMMMd(Localizations.localeOf(context).toString())
+      .add_Hm()
+      .format(t.toLocal());
 
   Future<void> _openChat(PinnedPeer peer) async {
     final chat = context.read<ChatService>();
@@ -181,26 +186,26 @@ class _ContactVerifyScreenState extends State<ContactVerifyScreen> {
         Container(
           width: 64, height: 64,
           decoration: BoxDecoration(
-            color: AppTheme.surfaceLight,
+            color: context.nyx.surfaceLight,
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+            border: Border.all(color: context.nyx.hairline(0.06)),
           ),
           child: Center(
             child: Icon(peer.verified ? Icons.verified_user_rounded : Icons.person_outline_rounded,
-                color: peer.verified ? AppTheme.accentGreen : AppTheme.textSecondary, size: 28),
+                color: peer.verified ? context.nyx.accentGreen : context.nyx.textSecondary, size: 28),
           ),
         ),
         const SizedBox(height: 10),
         Text(peer.displayName,
-            style: const TextStyle(color: AppTheme.textPrimary, fontSize: 18, fontWeight: FontWeight.w500)),
+            style: TextStyle(color: context.nyx.textPrimary, fontSize: 18, fontWeight: FontWeight.w500)),
         const SizedBox(height: 4),
         GestureDetector(
           onTap: () {
             Clipboard.setData(ClipboardData(text: peer.nyxChatId));
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ID copied')));
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(context.l10n.idCopied)));
           },
           child: Text(peer.nyxChatId,
-              style: const TextStyle(color: AppTheme.accentBlue, fontSize: 13, fontFamily: 'monospace')),
+              style: TextStyle(color: context.nyx.accentBlue, fontSize: 13, fontFamily: 'monospace')),
         ),
       ]);
 
@@ -214,25 +219,25 @@ class _ContactVerifyScreenState extends State<ContactVerifyScreen> {
       children: groups
           .map((g) => Center(
                 child: Text(g,
-                    style: const TextStyle(color: AppTheme.textPrimary, fontSize: 16, fontFamily: 'monospace', letterSpacing: 1)),
+                    style: TextStyle(color: context.nyx.textPrimary, fontSize: 16, fontFamily: 'monospace', letterSpacing: 1)),
               ))
           .toList(),
     );
   }
 
   Widget _section(String t) => Text(t,
-      style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1));
+      style: TextStyle(color: context.nyx.textSecondary, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1));
 
   Widget _mono(String t) => Padding(
         padding: const EdgeInsets.only(top: 6),
-        child: Text(t, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12, fontFamily: 'monospace', height: 1.5)),
+        child: Text(t, style: TextStyle(color: context.nyx.textPrimary, fontSize: 12, fontFamily: 'monospace', height: 1.5)),
       );
 
   Widget _detail(String k, String v) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 5),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          SizedBox(width: 110, child: Text(k, style: const TextStyle(color: AppTheme.textMuted, fontSize: 12))),
-          Expanded(child: Text(v, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12))),
+          SizedBox(width: 110, child: Text(k, style: TextStyle(color: context.nyx.textMuted, fontSize: 12))),
+          Expanded(child: Text(v, style: TextStyle(color: context.nyx.textSecondary, fontSize: 12))),
         ]),
       );
 

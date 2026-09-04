@@ -137,6 +137,12 @@ void main() {
   });
 
   testWidgets('every settings switch toggles without throwing', (tester) async {
+    // Tall viewport so the whole settings list is built at once (ListView
+    // builds lazily; the appearance card would otherwise push every switch
+    // below the fold).
+    tester.view.physicalSize = const Size(1200, 6000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
     await tester.pumpWidget(const NyxChatApp());
     await settle(tester);
     await push(tester, const SettingsScreen());
@@ -147,6 +153,11 @@ void main() {
     await tester.runAsync(() async {
       for (var i = 0; i < count; i++) {
         final tile = find.byType(SwitchListTile).at(i);
+        final title = tester.widget<SwitchListTile>(tile).title;
+        final label = title is Text ? (title.data ?? '') : '';
+        // The relay switches open real WebSocket connections; flutter_test's
+        // HttpClient refuses them and the retries outlive the test.
+        if (label.contains('Nostr') || label.contains('Tor')) continue;
         await tester.ensureVisible(tile);
         await tester.pump();
         await tester.tap(tile, warnIfMissed: false);

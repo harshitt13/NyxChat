@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/storage/trust_store.dart';
+import '../l10n/l10n_context.dart';
 import '../models/chat_room.dart';
 import '../services/chat_service.dart';
 import '../theme/app_theme.dart';
@@ -21,16 +22,16 @@ class GroupInfoScreen extends StatelessWidget {
         final me = chat.myId;
         final iAmAdmin = room.members.any((m) => m.nyxChatId == me && m.isAdmin);
         return Scaffold(
-          backgroundColor: AppTheme.background,
+          backgroundColor: context.nyx.background,
           appBar: AppBar(
-            backgroundColor: AppTheme.background,
+            backgroundColor: context.nyx.background,
             elevation: 0,
             title: Text(room.peerDisplayName,
-                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
+                style: TextStyle(color: context.nyx.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
             actions: [
               if (!room.left)
                 IconButton(
-                  icon: const Icon(Icons.edit_outlined, color: AppTheme.textSecondary, size: 20),
+                  icon: Icon(Icons.edit_outlined, color: context.nyx.textSecondary, size: 20),
                   onPressed: () => _rename(context, chat, room),
                 ),
             ],
@@ -41,30 +42,29 @@ class GroupInfoScreen extends StatelessWidget {
               if (room.groupDescription != null && room.groupDescription!.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 16),
-                  child: Text(room.groupDescription!, style: const TextStyle(color: AppTheme.textSecondary)),
+                  child: Text(room.groupDescription!, style: TextStyle(color: context.nyx.textSecondary)),
                 ),
-              Text('${room.members.length} MEMBERS',
-                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1)),
+              Text(context.l10n.membersCount(room.members.length).toUpperCase(),
+                  style: TextStyle(color: context.nyx.textSecondary, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1)),
               const SizedBox(height: 8),
               ...room.members.map((m) => _memberTile(context, chat, trust, room, m, me, iAmAdmin)),
               const SizedBox(height: 20),
               if (!room.left)
-                _action(context, Icons.person_add_alt_1_outlined, 'Add members', AppTheme.accentBlue,
+                _action(context, Icons.person_add_alt_1_outlined, context.l10n.addMembers, context.nyx.accentBlue,
                     () => _addMembers(context, chat, trust, room)),
               if (!room.left)
-                _action(context, Icons.logout_rounded, 'Leave group', AppTheme.warning, () async {
+                _action(context, Icons.logout_rounded, context.l10n.leaveGroup, context.nyx.warning, () async {
                   await chat.leaveGroup(room.id);
                   if (context.mounted) Navigator.pop(context);
                 }),
-              _action(context, Icons.delete_outline_rounded, 'Delete conversation', AppTheme.error, () async {
+              _action(context, Icons.delete_outline_rounded, context.l10n.deleteConversation, context.nyx.error, () async {
                 await chat.deleteRoom(room.id);
                 if (context.mounted) Navigator.popUntil(context, (r) => r.isFirst);
               }),
               const SizedBox(height: 24),
-              const Text(
-                'Group messages are encrypted with per-member sender keys distributed over pairwise '
-                'Double Ratchet sessions. Keys rotate whenever someone leaves.',
-                style: TextStyle(color: AppTheme.textMuted, fontSize: 12, height: 1.4),
+              Text(
+                context.l10n.groupEncryptionExplanation,
+                style: TextStyle(color: context.nyx.textMuted, fontSize: 12, height: 1.4),
               ),
             ],
           ),
@@ -81,28 +81,28 @@ class GroupInfoScreen extends StatelessWidget {
       contentPadding: EdgeInsets.zero,
       leading: Container(
         width: 36, height: 36,
-        decoration: BoxDecoration(color: AppTheme.surfaceLight, borderRadius: BorderRadius.circular(10)),
+        decoration: BoxDecoration(color: context.nyx.surfaceLight, borderRadius: BorderRadius.circular(10)),
         child: Center(
           child: Text(m.displayName.isNotEmpty ? m.displayName[0].toUpperCase() : '?',
-              style: const TextStyle(color: AppTheme.accentBlue, fontWeight: FontWeight.w600)),
+              style: TextStyle(color: context.nyx.accentBlue, fontWeight: FontWeight.w600)),
         ),
       ),
       title: Row(children: [
-        Flexible(child: Text(isMe ? '${m.displayName} (you)' : m.displayName,
-            overflow: TextOverflow.ellipsis, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14))),
-        if (verified) ...[const SizedBox(width: 6), const Icon(Icons.verified_rounded, size: 13, color: AppTheme.accentGreen)],
+        Flexible(child: Text(isMe ? context.l10n.memberYou(m.displayName) : m.displayName,
+            overflow: TextOverflow.ellipsis, style: TextStyle(color: context.nyx.textPrimary, fontSize: 14))),
+        if (verified) ...[const SizedBox(width: 6), Icon(Icons.verified_rounded, size: 13, color: context.nyx.accentGreen)],
       ]),
-      subtitle: Text(m.nyxChatId, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11, fontFamily: 'monospace')),
+      subtitle: Text(m.nyxChatId, style: TextStyle(color: context.nyx.textMuted, fontSize: 11, fontFamily: 'monospace')),
       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
         if (m.isAdmin)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            decoration: BoxDecoration(color: AppTheme.accentPurple.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(6)),
-            child: const Text('Admin', style: TextStyle(color: AppTheme.accentPurple, fontSize: 11, fontWeight: FontWeight.w600)),
+            decoration: BoxDecoration(color: context.nyx.accentPurple.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(6)),
+            child: Text(context.l10n.admin, style: TextStyle(color: context.nyx.accentPurple, fontSize: 11, fontWeight: FontWeight.w600)),
           ),
         if (!isMe && iAmAdmin && !room.left)
           IconButton(
-            icon: const Icon(Icons.person_remove_outlined, size: 18, color: AppTheme.textMuted),
+            icon: Icon(Icons.person_remove_outlined, size: 18, color: context.nyx.textMuted),
             onPressed: () => chat.removeGroupMember(room.id, m.nyxChatId),
           ),
       ]),
@@ -125,12 +125,12 @@ class GroupInfoScreen extends StatelessWidget {
     final name = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.surface,
-        title: const Text('Rename group', style: TextStyle(color: AppTheme.textPrimary)),
-        content: TextField(controller: ctrl, maxLength: 64, style: const TextStyle(color: AppTheme.textPrimary)),
+        backgroundColor: context.nyx.surface,
+        title: Text(context.l10n.renameGroup, style: TextStyle(color: context.nyx.textPrimary)),
+        content: TextField(controller: ctrl, maxLength: 64, style: TextStyle(color: context.nyx.textPrimary)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('Save')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(context.l10n.cancel)),
+          TextButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: Text(context.l10n.save)),
         ],
       ),
     );
@@ -141,7 +141,7 @@ class GroupInfoScreen extends StatelessWidget {
     final current = room.members.map((m) => m.nyxChatId).toSet();
     final candidates = trust.all.where((p) => !current.contains(p.nyxChatId)).toList();
     if (candidates.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No other known contacts')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(context.l10n.noOtherKnownContacts)));
       return;
     }
     final selected = <PinnedPeer>{};
@@ -149,8 +149,8 @@ class GroupInfoScreen extends StatelessWidget {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setState) => AlertDialog(
-          backgroundColor: AppTheme.surface,
-          title: const Text('Add members', style: TextStyle(color: AppTheme.textPrimary)),
+          backgroundColor: context.nyx.surface,
+          title: Text(context.l10n.addMembers, style: TextStyle(color: context.nyx.textPrimary)),
           content: SizedBox(
             width: double.maxFinite,
             child: ListView(
@@ -158,16 +158,16 @@ class GroupInfoScreen extends StatelessWidget {
               children: candidates
                   .map((p) => CheckboxListTile(
                         value: selected.contains(p),
-                        title: Text(p.displayName, style: const TextStyle(color: AppTheme.textPrimary)),
-                        subtitle: Text(p.nyxChatId, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+                        title: Text(p.displayName, style: TextStyle(color: context.nyx.textPrimary)),
+                        subtitle: Text(p.nyxChatId, style: TextStyle(color: context.nyx.textMuted, fontSize: 11)),
                         onChanged: (v) => setState(() => v == true ? selected.add(p) : selected.remove(p)),
                       ))
                   .toList(),
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Add')),
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(context.l10n.cancel)),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text(context.l10n.add)),
           ],
         ),
       ),

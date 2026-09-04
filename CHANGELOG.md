@@ -2,6 +2,24 @@
 
 ## 3.2.0 (unreleased)
 
+### Appearance and languages
+- Light theme and a theme-mode setting (dark, light or system; dark stays
+  the default). Colours are a `ThemeExtension` (`NyxColors`) resolved per
+  theme; the light palette keeps every text colour at WCAG AA contrast, QR
+  codes stay dark-on-white, and the status/navigation bar icons follow the
+  active theme.
+- Localisation of the whole UI (Flutter `gen_l10n`, `lib/l10n/*.arb`):
+  English, Hindi, Spanish, French, German, Portuguese, Arabic, Chinese,
+  Russian and Indonesian, with ICU plurals and locale-aware dates. Arabic
+  mirrors the layout (directional paddings, bubble corners, quote bars).
+  A language picker in Settings (native names) or follow the device
+  language. Notification and foreground-service texts are translated too;
+  the English system messages stored in chat history are rendered in the
+  UI language at display time, so storage and protocol are unchanged.
+- Theme mode and language are kept in the platform secure storage so the
+  lock and onboarding screens honour them before the database is opened;
+  a panic wipe resets them.
+
 ### Post-quantum
 - Asynchronous (mesh and relay) sessions gain post-quantum forward
   secrecy from the first message: right after every direct handshake each
