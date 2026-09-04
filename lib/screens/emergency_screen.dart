@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../core/mesh/geohash_channel.dart';
 import '../core/network/location_channel.dart';
+import '../l10n/l10n_context.dart';
 import '../services/chat_service.dart';
 import '../services/identity_service.dart';
 import '../services/peer_service.dart';
@@ -55,7 +56,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     final p = await LocationChannel.lastKnown();
     if (!mounted) return;
     if (p == null) {
-      setState(() => _status = 'No recent position. Enter a geohash cell manually or move outdoors.');
+      setState(() => _status = context.l10n.noRecentPosition);
       return;
     }
     _position = p;
@@ -70,7 +71,8 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
       await context.read<ChatService>().joinEmergencyChannel(cell);
       setState(() => _status = null);
     } catch (e) {
-      setState(() => _status = 'Invalid cell: $e');
+      if (!mounted) return;
+      setState(() => _status = context.l10n.invalidCell('$e'));
     }
   }
 
@@ -86,7 +88,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     setState(() {
       _busy = false;
       _text.clear();
-      _status = carried ? null : 'No neighbours right now. Your message is kept and sent to the first device that appears.';
+      _status = carried ? null : context.l10n.noNeighboursKept;
     });
   }
 
@@ -100,24 +102,24 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
           if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
         });
         return Scaffold(
-          backgroundColor: AppTheme.background,
+          backgroundColor: context.nyx.background,
           appBar: AppBar(
-            backgroundColor: AppTheme.background,
+            backgroundColor: context.nyx.background,
             elevation: 0,
-            title: const Text('Emergency broadcast', style: TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
+            title: Text(context.l10n.emergencyBroadcastTitle, style: TextStyle(color: context.nyx.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
           ),
           body: Column(children: [
             Container(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-              color: AppTheme.surface,
+              color: context.nyx.surface,
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Row(children: [
                   Expanded(
                     child: TextField(
                       controller: _cell,
-                      style: const TextStyle(color: AppTheme.textPrimary, fontFamily: 'monospace'),
-                      decoration: const InputDecoration(
-                        labelText: 'Area cell (geohash)', labelStyle: TextStyle(color: AppTheme.textMuted),
+                      style: TextStyle(color: context.nyx.textPrimary, fontFamily: 'monospace'),
+                      decoration: InputDecoration(
+                        labelText: context.l10n.areaCellLabel, labelStyle: TextStyle(color: context.nyx.textMuted),
                         isDense: true, border: OutlineInputBorder(),
                       ),
                       onSubmitted: (_) => _join(),
@@ -126,8 +128,8 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
                   const SizedBox(width: 8),
                   DropdownButton<int>(
                     value: _precision,
-                    dropdownColor: AppTheme.surfaceLight,
-                    items: [4, 5, 6].map((p) => DropdownMenuItem(value: p, child: Text(GeohashChannel.approximateArea(p), style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13)))).toList(),
+                    dropdownColor: context.nyx.surfaceLight,
+                    items: [4, 5, 6].map((p) => DropdownMenuItem(value: p, child: Text(GeohashChannel.approximateArea(p), style: TextStyle(color: context.nyx.textPrimary, fontSize: 13)))).toList(),
                     onChanged: (v) async {
                       if (v == null) return;
                       setState(() => _precision = v);
@@ -138,18 +140,21 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
                       }
                     },
                   ),
-                  IconButton(icon: const Icon(Icons.my_location_rounded, color: AppTheme.accentBlue), onPressed: _locate),
+                  IconButton(icon: Icon(Icons.my_location_rounded, color: context.nyx.accentBlue), onPressed: _locate),
                 ]),
                 const SizedBox(height: 6),
                 Text(
                   channel == null
-                      ? (_status ?? 'Finding your area...')
-                      : 'Listening in cell ${channel.geohash} (${GeohashChannel.approximateArea(channel.geohash.length)}) · '
-                        '${peers.meshNeighbourCount} mesh neighbours, ${peers.connectedPeers.length} direct links',
-                  style: TextStyle(color: _status != null ? AppTheme.warning : AppTheme.textMuted, fontSize: 12),
+                      ? (_status ?? context.l10n.findingYourArea)
+                      : context.l10n.listeningInCell(
+                          channel.geohash,
+                          GeohashChannel.approximateArea(channel.geohash.length),
+                          context.l10n.meshNeighboursCount(peers.meshNeighbourCount),
+                          context.l10n.directLinksCount(peers.connectedPeers.length)),
+                  style: TextStyle(color: _status != null ? context.nyx.warning : context.nyx.textMuted, fontSize: 12),
                 ),
                 if (_status != null && channel != null)
-                  Padding(padding: const EdgeInsets.only(top: 4), child: Text(_status!, style: const TextStyle(color: AppTheme.warning, fontSize: 12))),
+                  Padding(padding: const EdgeInsets.only(top: 4), child: Text(_status!, style: TextStyle(color: context.nyx.warning, fontSize: 12))),
               ]),
             ),
             Expanded(
@@ -158,8 +163,8 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
                       child: Padding(
                         padding: const EdgeInsets.all(32),
                         child: Text(
-                          'Messages from anyone running NyxChat in this cell appear here. Your position never leaves the phone unless you include it explicitly.',
-                          textAlign: TextAlign.center, style: TextStyle(color: AppTheme.textMuted.withValues(alpha: 0.9), fontSize: 13, height: 1.4),
+                          context.l10n.emergencyEmptyHint,
+                          textAlign: TextAlign.center, style: TextStyle(color: context.nyx.textMuted.withValues(alpha: 0.9), fontSize: 13, height: 1.4),
                         ),
                       ),
                     )
@@ -180,45 +185,45 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
   Widget _bubble(EmergencyMessage m) => Container(
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.all(12),
-        decoration: AppTheme.glassDecoration(opacity: 0.04, borderRadius: 12, borderColor: AppTheme.error.withValues(alpha: 0.25)),
+        decoration: context.nyx.glass(opacity: 0.04, borderRadius: 12, borderColor: context.nyx.error.withValues(alpha: 0.25)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
-            const Icon(Icons.campaign_rounded, size: 14, color: AppTheme.error),
+            Icon(Icons.campaign_rounded, size: 14, color: context.nyx.error),
             const SizedBox(width: 6),
-            Text(m.displayName ?? 'Anonymous', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.w600)),
+            Text(m.displayName ?? context.l10n.anonymous, style: TextStyle(color: context.nyx.textSecondary, fontSize: 12, fontWeight: FontWeight.w600)),
             const Spacer(),
-            Text(DateFormat('MMM d, HH:mm').format(m.timestamp.toLocal()), style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+            Text(DateFormat.MMMd(Localizations.localeOf(context).toString()).add_Hm().format(m.timestamp.toLocal()), style: TextStyle(color: context.nyx.textMuted, fontSize: 11)),
           ]),
           const SizedBox(height: 6),
-          Text(m.text, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15, height: 1.3)),
+          Text(m.text, style: TextStyle(color: context.nyx.textPrimary, fontSize: 15, height: 1.3)),
           if (m.lat != null && m.lon != null)
             Padding(
               padding: const EdgeInsets.only(top: 6),
-              child: Text('Position: ${m.lat!.toStringAsFixed(5)}, ${m.lon!.toStringAsFixed(5)}',
-                  style: const TextStyle(color: AppTheme.accentBlue, fontSize: 12, fontFamily: 'monospace')),
+              child: Text(context.l10n.positionLabel('${m.lat!.toStringAsFixed(5)}, ${m.lon!.toStringAsFixed(5)}'),
+                  style: TextStyle(color: context.nyx.accentBlue, fontSize: 12, fontFamily: 'monospace')),
             ),
         ]),
       );
 
   Widget _composer(bool ready) => Container(
         padding: EdgeInsets.fromLTRB(14, 10, 14, MediaQuery.of(context).padding.bottom + 10),
-        decoration: BoxDecoration(color: AppTheme.background, border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.04)))),
+        decoration: BoxDecoration(color: context.nyx.background, border: Border(top: BorderSide(color: context.nyx.hairline(0.04)))),
         child: Column(children: [
           Row(children: [
-            _chip('Include my name', _includeName, (v) => setState(() => _includeName = v)),
+            _chip(context.l10n.includeMyName, _includeName, (v) => setState(() => _includeName = v)),
             const SizedBox(width: 8),
-            _chip('Include my position', _includePosition, (v) => setState(() => _includePosition = v)),
+            _chip(context.l10n.includeMyPosition, _includePosition, (v) => setState(() => _includePosition = v)),
           ]),
           const SizedBox(height: 8),
           Row(children: [
             Expanded(
               child: TextField(
                 controller: _text, maxLines: 3, minLines: 1, enabled: ready,
-                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15),
+                style: TextStyle(color: context.nyx.textPrimary, fontSize: 15),
                 decoration: InputDecoration(
-                  hintText: ready ? 'What is happening? Where are you?' : 'Join a cell first',
-                  hintStyle: const TextStyle(color: AppTheme.textMuted),
-                  filled: true, fillColor: AppTheme.surface,
+                  hintText: ready ? context.l10n.emergencyComposerHint : context.l10n.joinCellFirst,
+                  hintStyle: TextStyle(color: context.nyx.textMuted),
+                  filled: true, fillColor: context.nyx.surface,
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
                 ),
               ),
@@ -228,34 +233,34 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
               height: 46,
               child: ElevatedButton(
                 onPressed: ready && !_busy ? () => _send() : null,
-                style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error, foregroundColor: Colors.white, elevation: 0,
+                style: ElevatedButton.styleFrom(backgroundColor: context.nyx.error, foregroundColor: Colors.white, elevation: 0,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-                child: const Text('SEND', style: TextStyle(fontWeight: FontWeight.w700)),
+                child: Text(context.l10n.send.toUpperCase(), style: const TextStyle(fontWeight: FontWeight.w700)),
               ),
             ),
           ]),
           const SizedBox(height: 8),
           Row(children: [
-            _preset(ready, 'I need help'),
+            _preset(ready, context.l10n.presetNeedHelp),
             const SizedBox(width: 6),
-            _preset(ready, 'I am safe'),
+            _preset(ready, context.l10n.presetSafe),
             const SizedBox(width: 6),
-            _preset(ready, 'Medical emergency'),
+            _preset(ready, context.l10n.presetMedical),
           ]),
         ]),
       );
 
   Widget _chip(String label, bool on, ValueChanged<bool> onChanged) => FilterChip(
-        label: Text(label, style: TextStyle(color: on ? AppTheme.textPrimary : AppTheme.textMuted, fontSize: 12)),
+        label: Text(label, style: TextStyle(color: on ? context.nyx.textPrimary : context.nyx.textMuted, fontSize: 12)),
         selected: on, onSelected: onChanged,
-        selectedColor: AppTheme.accentBlue.withValues(alpha: 0.2), backgroundColor: AppTheme.surface,
-        checkmarkColor: AppTheme.accentBlue, side: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
+        selectedColor: context.nyx.accentBlue.withValues(alpha: 0.2), backgroundColor: context.nyx.surface,
+        checkmarkColor: context.nyx.accentBlue, side: BorderSide(color: context.nyx.hairline(0.06)),
       );
 
   Widget _preset(bool ready, String text) => Expanded(
         child: OutlinedButton(
           onPressed: ready && !_busy ? () => _send(preset: text) : null,
-          style: OutlinedButton.styleFrom(foregroundColor: AppTheme.textSecondary, side: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+          style: OutlinedButton.styleFrom(foregroundColor: context.nyx.textSecondary, side: BorderSide(color: context.nyx.hairline(0.1)),
               padding: const EdgeInsets.symmetric(horizontal: 6), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
           child: Text(text, style: const TextStyle(fontSize: 11), textAlign: TextAlign.center),
         ),

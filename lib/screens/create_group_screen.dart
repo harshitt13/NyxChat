@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/storage/trust_store.dart';
+import '../l10n/l10n_context.dart';
 import '../services/chat_service.dart';
 import '../theme/app_theme.dart';
 import 'chat_screen.dart';
@@ -28,11 +29,11 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   Future<void> _create() async {
     final name = _name.text.trim();
     if (name.isEmpty) {
-      _snack('Give the group a name');
+      _snack(context.l10n.giveGroupAName);
       return;
     }
     if (_selected.isEmpty) {
-      _snack('Select at least one member');
+      _snack(context.l10n.selectAtLeastOneMember);
       return;
     }
     setState(() => _busy = true);
@@ -50,22 +51,22 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
 
   void _snack(String t) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(t),
-        backgroundColor: AppTheme.surface,
+        backgroundColor: context.nyx.surface,
         behavior: SnackBarBehavior.floating,
       ));
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.background,
+      backgroundColor: context.nyx.background,
       appBar: AppBar(
-        backgroundColor: AppTheme.background,
+        backgroundColor: context.nyx.background,
         elevation: 0,
-        title: const Text('New group', style: TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
+        title: Text(context.l10n.newGroup, style: TextStyle(color: context.nyx.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
         actions: [
           TextButton(
             onPressed: _busy ? null : _create,
-            child: const Text('Create', style: TextStyle(color: AppTheme.accentBlue, fontWeight: FontWeight.w600)),
+            child: Text(context.l10n.create, style: TextStyle(color: context.nyx.accentBlue, fontWeight: FontWeight.w600)),
           ),
         ],
       ),
@@ -75,18 +76,18 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
           return ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              _field(_name, 'Group name', maxLength: 64),
+              _field(_name, context.l10n.groupNameHint, maxLength: 64),
               const SizedBox(height: 10),
-              _field(_description, 'Description (optional)', maxLength: 200),
+              _field(_description, context.l10n.descriptionOptionalHint, maxLength: 200),
               const SizedBox(height: 20),
-              Text('MEMBERS · ${_selected.length} selected',
-                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1)),
+              Text(context.l10n.membersSelectedHeader(_selected.length).toUpperCase(),
+                  style: TextStyle(color: context.nyx.textSecondary, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1)),
               const SizedBox(height: 8),
               if (contacts.isEmpty)
-                const Padding(
+                Padding(
                   padding: EdgeInsets.all(16),
-                  child: Text('No contacts yet. Connect to someone first so their keys are pinned.',
-                      style: TextStyle(color: AppTheme.textMuted, fontSize: 13)),
+                  child: Text(context.l10n.noContactsYet,
+                      style: TextStyle(color: context.nyx.textMuted, fontSize: 13)),
                 ),
               ...contacts.map((p) {
                 final on = _selected.contains(p.nyxChatId);
@@ -96,17 +97,17 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                   child: Container(
                     margin: const EdgeInsets.only(bottom: 6),
                     padding: const EdgeInsets.all(12),
-                    decoration: AppTheme.glassDecoration(
+                    decoration: context.nyx.glass(
                         opacity: on ? 0.08 : 0.03,
                         borderRadius: 12,
-                        borderColor: on ? AppTheme.accentBlue.withValues(alpha: 0.5) : null),
+                        borderColor: on ? context.nyx.accentBlue.withValues(alpha: 0.5) : null),
                     child: Row(children: [
                       Container(
                         width: 36, height: 36,
-                        decoration: BoxDecoration(color: AppTheme.surfaceLight, borderRadius: BorderRadius.circular(10)),
+                        decoration: BoxDecoration(color: context.nyx.surfaceLight, borderRadius: BorderRadius.circular(10)),
                         child: Center(
                           child: Text(p.displayName.isNotEmpty ? p.displayName[0].toUpperCase() : '?',
-                              style: const TextStyle(color: AppTheme.accentBlue, fontWeight: FontWeight.w600)),
+                              style: TextStyle(color: context.nyx.accentBlue, fontWeight: FontWeight.w600)),
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -114,15 +115,15 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                           Row(children: [
                             Flexible(child: Text(p.displayName, overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14, fontWeight: FontWeight.w500))),
+                                style: TextStyle(color: context.nyx.textPrimary, fontSize: 14, fontWeight: FontWeight.w500))),
                             if (p.verified) ...[const SizedBox(width: 6),
-                              const Icon(Icons.verified_rounded, size: 13, color: AppTheme.accentGreen)],
+                              Icon(Icons.verified_rounded, size: 13, color: context.nyx.accentGreen)],
                           ]),
-                          Text(p.nyxChatId, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11, fontFamily: 'monospace')),
+                          Text(p.nyxChatId, style: TextStyle(color: context.nyx.textMuted, fontSize: 11, fontFamily: 'monospace')),
                         ]),
                       ),
                       Icon(on ? Icons.check_circle_rounded : Icons.circle_outlined,
-                          color: on ? AppTheme.accentBlue : AppTheme.textMuted, size: 22),
+                          color: on ? context.nyx.accentBlue : context.nyx.textMuted, size: 22),
                     ]),
                   ),
                 );
@@ -136,18 +137,18 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
 
   Widget _field(TextEditingController c, String hint, {int? maxLength}) => Container(
         decoration: BoxDecoration(
-          color: AppTheme.surface,
+          color: context.nyx.surface,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+          border: Border.all(color: context.nyx.hairline(0.06)),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 14),
         child: TextField(
           controller: c,
           maxLength: maxLength,
-          style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15),
+          style: TextStyle(color: context.nyx.textPrimary, fontSize: 15),
           decoration: InputDecoration(
             hintText: hint,
-            hintStyle: const TextStyle(color: AppTheme.textMuted),
+            hintStyle: TextStyle(color: context.nyx.textMuted),
             border: InputBorder.none,
             counterText: '',
           ),

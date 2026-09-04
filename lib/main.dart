@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:provider/provider.dart';
 
@@ -19,6 +20,7 @@ import 'core/relay/nostr_transport.dart';
 import 'core/storage/local_storage.dart';
 import 'core/storage/outbox.dart';
 import 'core/storage/trust_store.dart';
+import 'l10n/generated/app_localizations.dart';
 import 'screens/chat_list_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/password_screen.dart';
@@ -37,7 +39,7 @@ import 'theme/app_theme.dart';
 class AppServices extends ChangeNotifier {
   final LocalStorage storage = LocalStorage();
   final P2PClient client = P2PClient();
-  final P2PServer server = P2PServer(port: AppConstants.defaultPort);
+  final P2PServer server;
   final BleManager ble = BleManager();
   final MeshStore meshStore = MeshStore();
   late final MeshRouter meshRouter = MeshRouter(store: meshStore);
@@ -48,6 +50,10 @@ class AppServices extends ChangeNotifier {
   late final Outbox outbox = Outbox(storage.outboxStore);
   final PrivacyManager privacy = PrivacyManager();
   late final BackupService backup = BackupService(storage, identity.keyManager);
+
+  /// [port] is the TCP listening port; tests pass 0 for an ephemeral one.
+  AppServices({int port = AppConstants.defaultPort})
+      : server = P2PServer(port: port);
 
   SessionManager? _sessions;
   PairKeyCache? _pairKeys;
@@ -197,6 +203,7 @@ class AppServices extends ChangeNotifier {
     meshRouter.clearAll();
     await appLock.panicWipe();
     await identity.destroy();
+    await settings.resetAppearance();
     _chat = null;
     _peers = null;
     _connections = null;
@@ -209,11 +216,24 @@ class AppServices extends ChangeNotifier {
 
 late final AppServices services;
 
+/// The locale the UI runs in: the language chosen in Settings, otherwise the
+/// best supported match for the device languages. Used outside widget
+/// contexts (notifications, background service).
+Locale uiLocale() {
+  final chosen = services.settings.locale;
+  final preferred = chosen != null
+      ? [chosen]
+      : WidgetsBinding.instance.platformDispatcher.locales;
+  return basicLocaleListResolution(preferred, AppLocalizations.supportedLocales);
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await BackgroundManager.initialize();
-
   services = AppServices();
+  await services.settings.loadAppearance();
+  BackgroundManager.languageTag = uiLocale().toLanguageTag();
+  await BackgroundManager.initialize(l10n: lookupAppLocalizations(uiLocale()));
+
   await services.storage.init();
   await services.appLock.init();
   if (!services.appLock.isLocked) {
@@ -242,6 +262,14 @@ class _NyxChatAppState extends State<NyxChatApp> with WidgetsBindingObserver {
     unawaited(_initNotifications());
     _wireIncoming();
     services.addListener(_wireIncoming);
+    services.settings.addListener(_syncBackgroundLocale);
+  }
+
+  void _syncBackgroundLocale() {
+    final tag = uiLocale().toLanguageTag();
+    if (tag == BackgroundManager.languageTag) return;
+    BackgroundManager.languageTag = tag;
+    BackgroundManager.setLocale(tag);
   }
 
   Future<void> _initNotifications() async {
@@ -256,18 +284,20 @@ class _NyxChatAppState extends State<NyxChatApp> with WidgetsBindingObserver {
       if (!_inBackground || !services.settings.notifications) return;
       final room = services.chat.room(msg.roomId ?? '');
       if (room?.muted == true) return;
-      final title = room?.peerDisplayName ?? 'NyxChat';
-      final body =
-          services.settings.notificationPreview ? msg.content : 'New message';
+      final l = lookupAppLocalizations(uiLocale());
+      final title = room?.peerDisplayName ?? l.appTitle;
+      final body = services.settings.notificationPreview
+          ? msg.content
+          : l.notificationNewMessage;
       _notifications.show(
         msg.id.hashCode & 0x7fffffff,
         title,
         body,
-        const NotificationDetails(
+        NotificationDetails(
           android: AndroidNotificationDetails(
             'nyxchat_messages',
-            'Messages',
-            channelDescription: 'Incoming NyxChat messages',
+            l.notificationChannelMessages,
+            channelDescription: l.notificationChannelMessagesDescription,
             importance: Importance.high,
             priority: Priority.high,
           ),
@@ -281,6 +311,7 @@ class _NyxChatAppState extends State<NyxChatApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _incomingSub?.cancel();
     services.removeListener(_wireIncoming);
+    services.settings.removeListener(_syncBackgroundLocale);
     super.dispose();
   }
 
@@ -306,8 +337,9 @@ class _NyxChatAppState extends State<NyxChatApp> with WidgetsBindingObserver {
         ChangeNotifierProvider.value(value: services.ble),
         ChangeNotifierProvider.value(value: services.outbox),
       ],
-      child: Consumer3<AppLockService, IdentityService, AppServices>(
-        builder: (context, lock, identity, app, _) {
+      child: Consumer4<AppLockService, IdentityService, AppServices,
+          SettingsService>(
+        builder: (context, lock, identity, app, settings, _) {
           Widget home;
           if (lock.isLockEnabled && lock.isLocked) {
             home = const PasswordScreen();
@@ -320,8 +352,20 @@ class _NyxChatAppState extends State<NyxChatApp> with WidgetsBindingObserver {
           }
           final materialApp = MaterialApp(
             title: 'NyxChat',
+            onGenerateTitle: (ctx) => AppLocalizations.of(ctx).appTitle,
             debugShowCheckedModeBanner: false,
-            theme: AppTheme.darkTheme,
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: settings.themeMode,
+            locale: settings.locale,
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            // Status/navigation bar icons follow the resolved theme, also on
+            // screens without an AppBar.
+            builder: (ctx, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+              value: AppTheme.overlayStyle(ctx.nyx),
+              child: child ?? const SizedBox.shrink(),
+            ),
             home: home,
           );
           if (!app.ready) return materialApp;
@@ -367,9 +411,9 @@ class _BootScreenState extends State<_BootScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => const Scaffold(
-        backgroundColor: AppTheme.background,
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: context.nyx.background,
         body: Center(
-            child: CircularProgressIndicator(color: AppTheme.accentBlue)),
+            child: CircularProgressIndicator(color: context.nyx.accentBlue)),
       );
 }

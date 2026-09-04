@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/l10n_context.dart';
 import '../main.dart';
 import '../services/app_lock_service.dart';
 import '../services/identity_service.dart';
@@ -30,8 +31,8 @@ class _PasswordScreenState extends State<PasswordScreen> {
   }
 
   String? _validate(String? v) {
-    if (v == null || v.isEmpty) return 'Password is required';
-    if (v.length < 8) return 'At least 8 characters';
+    if (v == null || v.isEmpty) return context.l10n.passwordRequired;
+    if (v.length < 8) return context.l10n.atLeast8Characters;
     return null;
   }
 
@@ -41,7 +42,7 @@ class _PasswordScreenState extends State<PasswordScreen> {
     if (widget.isSetupMode) {
       if (!_formKey.currentState!.validate()) return;
       if (_password.text != _confirm.text) {
-        setState(() => _error = 'Passwords do not match');
+        setState(() => _error = context.l10n.passwordsDoNotMatch);
         return;
       }
       setState(() => _busy = true);
@@ -50,7 +51,7 @@ class _PasswordScreenState extends State<PasswordScreen> {
       return;
     }
     if (_password.text.isEmpty) {
-      setState(() => _error = 'Enter your password');
+      setState(() => _error = context.l10n.enterYourPassword);
       return;
     }
     setState(() => _busy = true);
@@ -66,17 +67,19 @@ class _PasswordScreenState extends State<PasswordScreen> {
       _busy = false;
       _password.clear();
       _error = wiped
-          ? 'All data has been wiped.'
-          : 'Incorrect password${lock.wipeOnFailure ? ' · ${lock.attemptsRemaining} attempts left before wipe' : ''}';
+          ? context.l10n.allDataWiped
+          : lock.wipeOnFailure
+              ? context.l10n.incorrectPasswordAttemptsLeft(lock.attemptsRemaining)
+              : context.l10n.incorrectPassword;
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.background,
+      backgroundColor: context.nyx.background,
       appBar: widget.isSetupMode
-          ? AppBar(title: const Text('Set app lock'), backgroundColor: AppTheme.background, elevation: 0)
+          ? AppBar(title: Text(context.l10n.setAppLock), backgroundColor: context.nyx.background, elevation: 0)
           : null,
       body: SafeArea(
         child: Padding(
@@ -88,21 +91,20 @@ class _PasswordScreenState extends State<PasswordScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 if (!widget.isSetupMode) ...[
-                  const Icon(Icons.lock_rounded, size: 44, color: AppTheme.accentBlue),
+                  Icon(Icons.lock_rounded, size: 44, color: context.nyx.accentBlue),
                   const SizedBox(height: 16),
-                  const Text('NyxChat is locked',
+                  Text(context.l10n.nyxChatIsLocked,
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: AppTheme.textPrimary, fontSize: 20, fontWeight: FontWeight.w600)),
+                      style: TextStyle(color: context.nyx.textPrimary, fontSize: 20, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 6),
-                  const Text('Your database is encrypted. Enter your password to unlock.',
+                  Text(context.l10n.unlockPrompt,
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+                      style: TextStyle(color: context.nyx.textSecondary, fontSize: 13)),
                   const SizedBox(height: 28),
                 ] else ...[
-                  const Text(
-                    'The database key will be wrapped with a key derived from this password using Argon2id. '
-                    'There is no recovery: a forgotten password means the data is gone.',
-                    style: TextStyle(color: AppTheme.textSecondary, fontSize: 13, height: 1.4),
+                  Text(
+                    context.l10n.passwordSetupExplanation,
+                    style: TextStyle(color: context.nyx.textSecondary, fontSize: 13, height: 1.4),
                   ),
                   const SizedBox(height: 20),
                 ],
@@ -112,11 +114,11 @@ class _PasswordScreenState extends State<PasswordScreen> {
                   autofocus: true,
                   enabled: !_busy,
                   validator: widget.isSetupMode ? _validate : null,
-                  style: const TextStyle(color: AppTheme.textPrimary),
-                  decoration: _decoration('Password').copyWith(
+                  style: TextStyle(color: context.nyx.textPrimary),
+                  decoration: _decoration(context.l10n.passwordHint).copyWith(
                     suffixIcon: IconButton(
                       icon: Icon(_obscure ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                          color: AppTheme.textMuted, size: 20),
+                          color: context.nyx.textMuted, size: 20),
                       onPressed: () => setState(() => _obscure = !_obscure),
                     ),
                   ),
@@ -128,15 +130,15 @@ class _PasswordScreenState extends State<PasswordScreen> {
                     controller: _confirm,
                     obscureText: true,
                     enabled: !_busy,
-                    style: const TextStyle(color: AppTheme.textPrimary),
-                    decoration: _decoration('Confirm password'),
+                    style: TextStyle(color: context.nyx.textPrimary),
+                    decoration: _decoration(context.l10n.confirmPasswordHint),
                     onFieldSubmitted: (_) => _submit(),
                   ),
                 ],
                 if (_error != null) ...[
                   const SizedBox(height: 12),
                   Text(_error!, textAlign: TextAlign.center,
-                      style: const TextStyle(color: AppTheme.error, fontSize: 13)),
+                      style: TextStyle(color: context.nyx.error, fontSize: 13)),
                 ],
                 const SizedBox(height: 20),
                 SizedBox(
@@ -144,18 +146,18 @@ class _PasswordScreenState extends State<PasswordScreen> {
                   child: ElevatedButton(
                     onPressed: _busy ? null : _submit,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.surfaceLight,
-                      foregroundColor: AppTheme.textPrimary,
+                      backgroundColor: context.nyx.surfaceLight,
+                      foregroundColor: context.nyx.textPrimary,
                       elevation: 0,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14),
-                        side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+                        side: BorderSide(color: context.nyx.hairline(0.08)),
                       ),
                     ),
                     child: _busy
-                        ? const SizedBox(width: 20, height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.accentBlue))
-                        : Text(widget.isSetupMode ? 'Enable lock' : 'Unlock',
+                        ? SizedBox(width: 20, height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: context.nyx.accentBlue))
+                        : Text(widget.isSetupMode ? context.l10n.enableLock : context.l10n.unlock,
                             style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
                   ),
                 ),
@@ -169,15 +171,15 @@ class _PasswordScreenState extends State<PasswordScreen> {
 
   InputDecoration _decoration(String hint) => InputDecoration(
         hintText: hint,
-        hintStyle: const TextStyle(color: AppTheme.textMuted),
+        hintStyle: TextStyle(color: context.nyx.textMuted),
         filled: true,
-        fillColor: AppTheme.surface,
+        fillColor: context.nyx.surface,
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
         enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.06))),
+            borderSide: BorderSide(color: context.nyx.hairline(0.06))),
         focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: AppTheme.accentBlue)),
+            borderSide: BorderSide(color: context.nyx.accentBlue)),
       );
 }

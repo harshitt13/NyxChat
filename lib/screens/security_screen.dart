@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/l10n_context.dart';
 import '../main.dart';
 import '../services/app_lock_service.dart';
 import '../services/settings_service.dart';
@@ -16,25 +17,25 @@ class SecurityScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.background,
+      backgroundColor: context.nyx.background,
       appBar: AppBar(
-        backgroundColor: AppTheme.background,
+        backgroundColor: context.nyx.background,
         elevation: 0,
-        title: const Text('Security', style: TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
+        title: Text(context.l10n.security, style: TextStyle(color: context.nyx.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
       ),
       body: Consumer2<AppLockService, SettingsService>(
         builder: (context, lock, settings, _) => ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            _title('Database lock'),
-            _card([
+            _title(context, context.l10n.databaseLock),
+            _card(context, [
               SwitchListTile(
-                secondary: const Icon(Icons.lock_outline_rounded, color: AppTheme.textSecondary, size: 20),
-                title: const Text('Require password', style: TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
-                subtitle: const Text('Argon2id-wrapped database key. No recovery if forgotten.',
-                    style: TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+                secondary: Icon(Icons.lock_outline_rounded, color: context.nyx.textSecondary, size: 20),
+                title: Text(context.l10n.requirePassword, style: TextStyle(color: context.nyx.textPrimary, fontSize: 14)),
+                subtitle: Text(context.l10n.requirePasswordSubtitle,
+                    style: TextStyle(color: context.nyx.textMuted, fontSize: 11)),
                 value: lock.isLockEnabled,
-                activeThumbColor: AppTheme.accentBlue,
+                activeThumbColor: context.nyx.accentBlue,
                 onChanged: (v) async {
                   if (v) {
                     await Navigator.push(context, MaterialPageRoute(builder: (_) => const PasswordScreen(isSetupMode: true)));
@@ -44,91 +45,88 @@ class SecurityScreen extends StatelessWidget {
                 },
               ),
               SwitchListTile(
-                secondary: const Icon(Icons.lock_clock_outlined, color: AppTheme.textSecondary, size: 20),
-                title: const Text('Lock when in background', style: TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
+                secondary: Icon(Icons.lock_clock_outlined, color: context.nyx.textSecondary, size: 20),
+                title: Text(context.l10n.lockWhenInBackground, style: TextStyle(color: context.nyx.textPrimary, fontSize: 14)),
                 value: settings.lockOnBackground,
-                activeThumbColor: AppTheme.accentBlue,
+                activeThumbColor: context.nyx.accentBlue,
                 onChanged: lock.isLockEnabled ? (v) => settings.setLockOnBackground(v) : null,
               ),
               SwitchListTile(
-                secondary: const Icon(Icons.local_fire_department_outlined, color: AppTheme.textSecondary, size: 20),
-                title: const Text('Wipe after 5 failed attempts', style: TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
+                secondary: Icon(Icons.local_fire_department_outlined, color: context.nyx.textSecondary, size: 20),
+                title: Text(context.l10n.wipeAfterFailedAttempts(AppLockService.maxFailedAttempts), style: TextStyle(color: context.nyx.textPrimary, fontSize: 14)),
                 value: lock.wipeOnFailure,
-                activeThumbColor: AppTheme.accentBlue,
+                activeThumbColor: context.nyx.accentBlue,
                 onChanged: (v) => lock.setWipeOnFailure(v),
               ),
             ]),
             const SizedBox(height: 24),
-            _title('Duress password'),
-            _card([
+            _title(context, context.l10n.duressPassword),
+            _card(context, [
               ListTile(
-                leading: const Icon(Icons.theater_comedy_outlined, color: AppTheme.textSecondary, size: 20),
-                title: Text(lock.hasDuressPassword ? 'Duress password set' : 'Set a duress password',
-                    style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
+                leading: Icon(Icons.theater_comedy_outlined, color: context.nyx.textSecondary, size: 20),
+                title: Text(lock.hasDuressPassword ? context.l10n.duressPasswordSet : context.l10n.setADuressPassword,
+                    style: TextStyle(color: context.nyx.textPrimary, fontSize: 14)),
                 subtitle: Text(
                   lock.hasDuressPassword
-                      ? (lock.duressWipesReal ? 'Opens a decoy profile and destroys the real one' : 'Opens an empty decoy profile')
-                      : 'Entering it at the lock screen opens an empty decoy profile',
-                  style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
+                      ? (lock.duressWipesReal ? context.l10n.duressOpensDecoyAndDestroys : context.l10n.duressOpensEmptyDecoy)
+                      : context.l10n.duressExplanation,
+                  style: TextStyle(color: context.nyx.textMuted, fontSize: 11),
                 ),
-                trailing: const Icon(Icons.chevron_right_rounded, color: AppTheme.textMuted),
+                trailing: Icon(Icons.chevron_right_rounded, color: context.nyx.textMuted),
                 enabled: lock.isLockEnabled,
                 onTap: () => _duressDialog(context, lock),
               ),
               if (lock.hasDuressPassword)
                 ListTile(
-                  leading: const Icon(Icons.delete_sweep_outlined, color: AppTheme.textSecondary, size: 20),
-                  title: const Text('Remove duress password', style: TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
+                  leading: Icon(Icons.delete_sweep_outlined, color: context.nyx.textSecondary, size: 20),
+                  title: Text(context.l10n.removeDuressPassword, style: TextStyle(color: context.nyx.textPrimary, fontSize: 14)),
                   onTap: () => lock.setDuressPassword(null),
                 ),
             ]),
             const SizedBox(height: 24),
-            _title('Identity'),
-            _card([
+            _title(context, context.l10n.identity),
+            _card(context, [
               ListTile(
-                leading: const Icon(Icons.autorenew_rounded, color: AppTheme.textSecondary, size: 20),
-                title: const Text('Rotate identity keys', style: TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
-                subtitle: const Text('New keys and handle. Contacts that are online now receive a signed transition immediately; '
-                    'others receive it the next time you connect directly. The app closes afterwards.',
-                    style: TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+                leading: Icon(Icons.autorenew_rounded, color: context.nyx.textSecondary, size: 20),
+                title: Text(context.l10n.rotateIdentityKeys, style: TextStyle(color: context.nyx.textPrimary, fontSize: 14)),
+                subtitle: Text(context.l10n.rotateIdentitySubtitle,
+                    style: TextStyle(color: context.nyx.textMuted, fontSize: 11)),
                 onTap: () => _rotate(context),
               ),
             ]),
             const SizedBox(height: 24),
-            _title('Backup'),
-            _card([
+            _title(context, context.l10n.backup),
+            _card(context, [
               ListTile(
-                leading: const Icon(Icons.save_alt_rounded, color: AppTheme.textSecondary, size: 20),
-                title: const Text('Export encrypted backup', style: TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
-                subtitle: const Text('Identity keys, contacts, sessions and messages, sealed with a passphrase (Argon2id + AES-256-GCM).',
-                    style: TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+                leading: Icon(Icons.save_alt_rounded, color: context.nyx.textSecondary, size: 20),
+                title: Text(context.l10n.exportEncryptedBackup, style: TextStyle(color: context.nyx.textPrimary, fontSize: 14)),
+                subtitle: Text(context.l10n.exportBackupSubtitle,
+                    style: TextStyle(color: context.nyx.textMuted, fontSize: 11)),
                 onTap: () => _exportBackup(context),
               ),
               ListTile(
-                leading: const Icon(Icons.restore_rounded, color: AppTheme.textSecondary, size: 20),
-                title: const Text('Restore from backup', style: TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
-                subtitle: const Text('Replaces this profile. Wipe the old device afterwards: two live copies of one identity fork its sessions.',
-                    style: TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+                leading: Icon(Icons.restore_rounded, color: context.nyx.textSecondary, size: 20),
+                title: Text(context.l10n.restoreFromBackup, style: TextStyle(color: context.nyx.textPrimary, fontSize: 14)),
+                subtitle: Text(context.l10n.restoreBackupSubtitle,
+                    style: TextStyle(color: context.nyx.textMuted, fontSize: 11)),
                 onTap: () => _restoreBackup(context),
               ),
             ]),
             const SizedBox(height: 24),
-            _title('Danger zone'),
-            _card([
+            _title(context, context.l10n.dangerZone),
+            _card(context, [
               ListTile(
-                leading: const Icon(Icons.warning_amber_rounded, color: AppTheme.error, size: 20),
-                title: const Text('Panic wipe', style: TextStyle(color: AppTheme.error, fontSize: 14, fontWeight: FontWeight.w600)),
-                subtitle: const Text('Destroys messages, contacts, sessions and identity keys. Irreversible.',
-                    style: TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+                leading: Icon(Icons.warning_amber_rounded, color: context.nyx.error, size: 20),
+                title: Text(context.l10n.panicWipe, style: TextStyle(color: context.nyx.error, fontSize: 14, fontWeight: FontWeight.w600)),
+                subtitle: Text(context.l10n.panicWipeSubtitle,
+                    style: TextStyle(color: context.nyx.textMuted, fontSize: 11)),
                 onTap: () => _confirmWipe(context),
               ),
             ]),
             const SizedBox(height: 24),
-            const Text(
-              'Keys live in the Android keystore-backed secure storage. The message database is AES-256 encrypted '
-              'with a random master key; with a password enabled that key is additionally wrapped with '
-              'AES-256-GCM under an Argon2id-derived key (32 MiB, 2 passes).',
-              style: TextStyle(color: AppTheme.textMuted, fontSize: 12, height: 1.4),
+            Text(
+              context.l10n.securityFooter,
+              style: TextStyle(color: context.nyx.textMuted, fontSize: 12, height: 1.4),
             ),
           ],
         ),
@@ -142,25 +140,25 @@ class SecurityScreen extends StatelessWidget {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.surface,
-        title: Text(title, style: const TextStyle(color: AppTheme.textPrimary)),
+        backgroundColor: context.nyx.surface,
+        title: Text(title, style: TextStyle(color: context.nyx.textPrimary)),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: a, obscureText: true, autofocus: true, style: const TextStyle(color: AppTheme.textPrimary),
-              decoration: const InputDecoration(hintText: 'Passphrase (8+ characters)')),
+          TextField(controller: a, obscureText: true, autofocus: true, style: TextStyle(color: context.nyx.textPrimary),
+              decoration: InputDecoration(hintText: context.l10n.passphraseHint)),
           if (confirm)
-            TextField(controller: b, obscureText: true, style: const TextStyle(color: AppTheme.textPrimary),
-                decoration: const InputDecoration(hintText: 'Confirm passphrase')),
+            TextField(controller: b, obscureText: true, style: TextStyle(color: context.nyx.textPrimary),
+                decoration: InputDecoration(hintText: context.l10n.confirmPassphraseHint)),
         ]),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Continue')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(context.l10n.cancel)),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text(context.l10n.continueAction)),
         ],
       ),
     );
     if (ok != true) return null;
     if (a.text.length < 8 || (confirm && a.text != b.text)) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Passphrase too short or mismatch')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(context.l10n.passphraseTooShortOrMismatch)));
       }
       return null;
     }
@@ -171,13 +169,13 @@ class SecurityScreen extends StatelessWidget {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.surface,
-        title: const Text('Rotate identity keys?', style: TextStyle(color: AppTheme.textPrimary)),
-        content: const Text('Your NyxChat ID will change. Contacts who are offline will not be able to reach you until you meet again directly.',
-            style: TextStyle(color: AppTheme.textSecondary)),
+        backgroundColor: context.nyx.surface,
+        title: Text(context.l10n.rotateIdentityKeysQuestion, style: TextStyle(color: context.nyx.textPrimary)),
+        content: Text(context.l10n.rotateIdentityWarning,
+            style: TextStyle(color: context.nyx.textSecondary)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Rotate', style: TextStyle(color: AppTheme.warning))),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(context.l10n.cancel)),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text(context.l10n.rotate, style: TextStyle(color: context.nyx.warning))),
         ],
       ),
     );
@@ -186,24 +184,25 @@ class SecurityScreen extends StatelessWidget {
       await services.rotateIdentity();
       await SystemNavigator.pop();
     } catch (e) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Rotation failed: $e')));
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(context.l10n.rotationFailed('$e'))));
     }
   }
 
   Future<void> _exportBackup(BuildContext context) async {
-    final pass = await _askPassphrase(context, 'Backup passphrase', confirm: true);
+    final pass = await _askPassphrase(context, context.l10n.backupPassphrase, confirm: true);
     if (pass == null || !context.mounted) return;
     try {
+      final dialogTitle = context.l10n.saveBackupDialogTitle;
       final bytes = await services.backup.export(pass);
       final stamp = DateTime.now().toIso8601String().substring(0, 10);
       final path = await FilePicker.platform.saveFile(
-        dialogTitle: 'Save NyxChat backup', fileName: 'nyxchat-backup-$stamp.nyxbk', bytes: Uint8List.fromList(bytes),
+        dialogTitle: dialogTitle, fileName: 'nyxchat-backup-$stamp.nyxbk', bytes: Uint8List.fromList(bytes),
       );
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(path == null ? 'Backup cancelled' : 'Backup saved')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(path == null ? context.l10n.backupCancelled : context.l10n.backupSaved)));
       }
     } catch (e) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Backup failed: $e')));
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(context.l10n.backupFailed('$e'))));
     }
   }
 
@@ -211,7 +210,7 @@ class SecurityScreen extends StatelessWidget {
     final picked = await FilePicker.platform.pickFiles(withData: true);
     final bytes = picked?.files.single.bytes;
     if (bytes == null || !context.mounted) return;
-    final pass = await _askPassphrase(context, 'Backup passphrase');
+    final pass = await _askPassphrase(context, context.l10n.backupPassphrase);
     if (pass == null || !context.mounted) return;
     try {
       final backup = await services.backup.inspect(bytes, pass);
@@ -219,13 +218,13 @@ class SecurityScreen extends StatelessWidget {
       final confirm = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
-          backgroundColor: AppTheme.surface,
-          title: const Text('Replace this profile?', style: TextStyle(color: AppTheme.warning)),
-          content: Text('Backup from ${backup['created']} for "${backup['displayName']}". Everything on this device will be replaced and the app will close.',
-              style: const TextStyle(color: AppTheme.textSecondary)),
+          backgroundColor: context.nyx.surface,
+          title: Text(context.l10n.replaceThisProfile, style: TextStyle(color: context.nyx.warning)),
+          content: Text(context.l10n.restoreConfirmBody('${backup['created']}', '${backup['displayName']}'),
+              style: TextStyle(color: context.nyx.textSecondary)),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Restore', style: TextStyle(color: AppTheme.warning))),
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(context.l10n.cancel)),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text(context.l10n.restore, style: TextStyle(color: context.nyx.warning))),
           ],
         ),
       );
@@ -233,7 +232,7 @@ class SecurityScreen extends StatelessWidget {
       await services.backup.restore(backup);
       await SystemNavigator.pop();
     } catch (e) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Restore failed: $e')));
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(context.l10n.restoreFailed('$e'))));
     }
   }
 
@@ -244,26 +243,26 @@ class SecurityScreen extends StatelessWidget {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setState) => AlertDialog(
-          backgroundColor: AppTheme.surface,
-          title: const Text('Duress password', style: TextStyle(color: AppTheme.textPrimary)),
+          backgroundColor: context.nyx.surface,
+          title: Text(context.l10n.duressPassword, style: TextStyle(color: context.nyx.textPrimary)),
           content: Column(mainAxisSize: MainAxisSize.min, children: [
             TextField(
               controller: ctrl, obscureText: true,
-              style: const TextStyle(color: AppTheme.textPrimary),
-              decoration: const InputDecoration(hintText: 'Different from your real password'),
+              style: TextStyle(color: context.nyx.textPrimary),
+              decoration: InputDecoration(hintText: context.l10n.duressDifferentFromReal),
             ),
             const SizedBox(height: 8),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Also destroy the real profile', style: TextStyle(color: AppTheme.textPrimary, fontSize: 13)),
+              title: Text(context.l10n.alsoDestroyRealProfile, style: TextStyle(color: context.nyx.textPrimary, fontSize: 13)),
               value: wipes,
-              activeThumbColor: AppTheme.error,
+              activeThumbColor: context.nyx.error,
               onChanged: (v) => setState(() => wipes = v),
             ),
           ]),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(context.l10n.cancel)),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text(context.l10n.save)),
           ],
         ),
       ),
@@ -277,17 +276,16 @@ class SecurityScreen extends StatelessWidget {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.surface,
-        title: const Text('Wipe everything?', style: TextStyle(color: AppTheme.error)),
-        content: const Text(
-          'All messages, contacts, sessions and your identity keys will be destroyed on this device. '
-          'Peers will see a key change the next time you meet.',
-          style: TextStyle(color: AppTheme.textSecondary),
+        backgroundColor: context.nyx.surface,
+        title: Text(context.l10n.wipeEverythingQuestion, style: TextStyle(color: context.nyx.error)),
+        content: Text(
+          context.l10n.wipeEverythingBody,
+          style: TextStyle(color: context.nyx.textSecondary),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(context.l10n.cancel)),
           TextButton(onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Wipe', style: TextStyle(color: AppTheme.error, fontWeight: FontWeight.w600))),
+              child: Text(context.l10n.wipe, style: TextStyle(color: context.nyx.error, fontWeight: FontWeight.w600))),
         ],
       ),
     );
@@ -297,17 +295,17 @@ class SecurityScreen extends StatelessWidget {
     }
   }
 
-  Widget _title(String t) => Padding(
+  Widget _title(BuildContext context, String t) => Padding(
         padding: const EdgeInsets.only(bottom: 10),
-        child: Text(t.toUpperCase(), style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1)),
+        child: Text(t.toUpperCase(), style: TextStyle(color: context.nyx.textSecondary, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1)),
       );
 
-  Widget _card(List<Widget> children) => Container(
-        decoration: AppTheme.glassDecoration(opacity: 0.04, borderRadius: 14),
+  Widget _card(BuildContext context, List<Widget> children) => Container(
+        decoration: context.nyx.glass(opacity: 0.04, borderRadius: 14),
         child: Column(children: [
           for (var i = 0; i < children.length; i++) ...[
             children[i],
-            if (i < children.length - 1) Divider(height: 1, color: Colors.white.withValues(alpha: 0.04)),
+            if (i < children.length - 1) Divider(height: 1, color: context.nyx.hairline(0.04)),
           ],
         ]),
       );
