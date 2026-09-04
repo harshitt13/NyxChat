@@ -53,7 +53,7 @@ This README describes what the code does. The security properties and their limi
 | Emergency | One-tap anonymous broadcast to everyone within the same geohash cell (about 5 km), with optional name and position |
 | Privacy | Private discovery beacons, sealed-sender mesh addressing, link encryption hiding all metadata, length padding, stealth mode, cover traffic, screenshot blocking |
 | Device security | Encrypted database, optional Argon2id password, duress password with independent decoy profile, wipe after failed attempts, panic wipe, encrypted backup and restore |
-| Post-quantum | ML-KEM-768 (FIPS 203, PQClean C implementation via dart:ffi) combined with X25519 in every handshake and asynchronous session |
+| Post-quantum | ML-KEM-768 (FIPS 203, PQClean C implementation via dart:ffi) combined with X25519 in every handshake and asynchronous session; one-time ML-KEM prekeys exchanged on direct links give asynchronous sessions post-quantum forward secrecy |
 
 ## How a message travels
 
@@ -92,7 +92,7 @@ Primitives come from `package:cryptography` (X25519, Ed25519, HKDF, HMAC, AES-GC
 
 **Pair keys.** From the static X25519 agreement between two contacts' identity keys, HKDF derives four keys used for everything that must be recognisable to the contact but opaque to everyone else: 8-byte presence tokens per 15-minute slot, 16-byte mesh addresses per hour, 32-byte relay tokens per day, and the sealed-sender wrapper key. Tokens include the recipient's handle so the two directions never collide.
 
-**Asynchronous sessions.** X3DH-lite against pinned keys (dh1 = X25519(IK_A, IK_B), dh2 = X25519(EK_A, IK_B), kem to KPK_B); the recipient's identity key is its first ratchet key. Simultaneous initiation resolves deterministically by handle order.
+**Asynchronous sessions.** X3DH-lite against pinned keys (dh1 = X25519(IK_A, IK_B), dh2 = X25519(EK_A, IK_B)) plus an ML-KEM-768 encapsulation to a *one-time prekey* of the recipient. On every direct link each side hands the other a signed pool of eight single-use ML-KEM keys; an initiation consumes one (its id travels in the init block, under a KDF label distinct from the fallback) and the recipient deletes the private half once the first message decrypts, so a session started through the mesh or a relay is forward secret from its first message against a later compromise of the recipient's device or long-term keys, quantum adversaries included. Only when no prekey is held (never met, pool used up, or the recipient lost its store and says so with a signed notice) does the initiation fall back to the long-term KEM key; that session is flagged in the contact screen until the next meeting. The recipient's identity key is its first ratchet key. Simultaneous initiation resolves deterministically by handle order.
 
 **Groups.** Sender Keys: per-member chain and Ed25519 signing key distributed through pairwise ratchets; each message is padded, AES-256-GCM sealed and signed; chains rotate whenever membership shrinks.
 

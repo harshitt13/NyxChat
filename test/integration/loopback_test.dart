@@ -12,12 +12,14 @@ import 'package:nyxchat/core/crypto/crypto_utils.dart';
 import 'package:nyxchat/core/crypto/key_manager.dart';
 import 'package:nyxchat/core/crypto/nyx_id.dart';
 import 'package:nyxchat/core/crypto/pair_keys.dart';
+import 'package:nyxchat/core/crypto/prekey_store.dart';
 import 'package:nyxchat/core/crypto/session_manager.dart';
 import 'package:nyxchat/core/mesh/mesh_router.dart';
 import 'package:nyxchat/core/mesh/mesh_store.dart';
 import 'package:nyxchat/core/network/connection_manager.dart';
 import 'package:nyxchat/core/network/p2p_client.dart';
 import 'package:nyxchat/core/network/p2p_server.dart';
+import 'package:nyxchat/core/network/prekey_exchange.dart';
 import 'package:nyxchat/core/storage/local_storage.dart';
 import 'package:nyxchat/core/storage/outbox.dart';
 import 'package:nyxchat/core/storage/trust_store.dart';
@@ -42,6 +44,8 @@ class Node {
   late final TrustStore trust;
   late final Outbox outbox;
   late final SessionManager sessions;
+  late final PrekeyStore prekeys;
+  late final PrekeyExchange prekeyExchange;
   final P2PClient client = P2PClient();
   final P2PServer server = P2PServer(port: 0);
   late final ConnectionManager connections;
@@ -62,9 +66,13 @@ class Node {
     n.trust = TrustStore(n.storage.trustStore);
     await n.trust.load();
     n.outbox = Outbox(n.storage.outboxStore);
-    n.sessions = SessionManager(keys: n.keys, store: n.storage.sessionStore, myId: n.id);
+    n.prekeys = PrekeyStore(n.storage.prekeyStore);
+    await n.prekeys.load();
+    n.sessions = SessionManager(keys: n.keys, store: n.storage.sessionStore, myId: n.id, prekeys: n.prekeys);
     await n.sessions.load();
     n.connections = ConnectionManager(keys: n.keys, client: n.client, server: n.server, trust: n.trust, sessions: n.sessions);
+    n.prekeyExchange = PrekeyExchange(keys: n.keys, trust: n.trust, prekeys: n.prekeys, connections: n.connections, client: n.client)
+      ..start(myId: n.id);
     n.pairKeys = PairKeyCache(n.keys, n.trust);
     await n.mesh.init(n.id);
     n.chat = ChatService(
@@ -92,6 +100,8 @@ class Node {
     expect(conn, isNotNull, reason: '$name could not connect to ${other.name}');
     await waitFor(() => sessions.hasSession(other.id) && other.sessions.hasSession(id), what: 'sessions');
     await waitFor(() => other.sessions.canSend(id), what: 'session open at ${other.name}');
+    await waitFor(() => prekeys.peerPrekeyCount(other.id) > 0 && other.prekeys.peerPrekeyCount(id) > 0,
+        what: 'prekey bundles exchanged');
   }
 
   ChatMessage? messageById(String roomId, String id) {
@@ -103,6 +113,7 @@ class Node {
 
   Future<void> dispose() async {
     chat.dispose();
+    prekeyExchange.dispose();
     await client.disconnectAll();
     await server.stop();
     mesh.dispose();

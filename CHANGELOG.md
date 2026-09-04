@@ -2,6 +2,20 @@
 
 ## 3.2.0 (unreleased)
 
+### Post-quantum
+- Asynchronous (mesh and relay) sessions gain post-quantum forward
+  secrecy from the first message: right after every direct handshake each
+  side hands the other a pool of eight one-time ML-KEM-768 prekeys as a
+  signed, time-stamped bundle (new link frame `prekeys`, new encrypted box
+  `prekeys`); an initiation encapsulates to one of them (init block field
+  `pk`, distinct KDF label) and the recipient wipes the private half once
+  the first message decrypts. Without a prekey the initiation falls back
+  to the long-term KEM key and the contact screen says so; a recipient
+  that lost its prekeys answers with a signed notice (new envelope kind
+  `ct`) and the initiator restarts with the long-term key. The Tamarin
+  model of asynchronous initiation covers prekeys
+  (`async_pq_forward_secrecy`).
+
 ### Transports
 - Wi-Fi Aware (NAN) on Android 8+: the same rotating discovery beacon as
   over BLE is published as the `nyxchat` Aware service and subscribed for;

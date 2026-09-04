@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/crypto/nyx_id.dart';
+import '../core/crypto/prekey_store.dart';
 import '../core/storage/trust_store.dart';
 import '../services/chat_service.dart';
 import '../services/identity_service.dart';
@@ -143,6 +144,7 @@ class _ContactVerifyScreenState extends State<ContactVerifyScreen> {
                     _detail('NyxChat ID', peer.nyxChatId),
                     _detail('Handshake', 'X25519 + Kyber-768 hybrid, Ed25519 signed'),
                     _detail('Messages', 'Double Ratchet, AES-256-GCM'),
+                    _detail('Offline sessions', _asyncSessionLine(context, peer.nyxChatId)),
                     _detail('First seen', peer.firstSeen.toLocal().toString().substring(0, 16)),
                     if (peer.keyChangedAt != null)
                       _detail('Keys changed', peer.keyChangedAt!.toLocal().toString().substring(0, 16)),
@@ -164,6 +166,15 @@ class _ContactVerifyScreenState extends State<ContactVerifyScreen> {
     final room = await chat.getOrCreateDirectRoom(peerId: peer.nyxChatId, displayName: peer.displayName);
     if (!mounted) return;
     await Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => ChatScreen(roomId: room.id)));
+  }
+
+  /// Store-and-forward sessions get post-quantum forward secrecy from a
+  /// one-time prekey this contact handed over on a direct link.
+  String _asyncSessionLine(BuildContext context, String peerId) {
+    final held = context.watch<PrekeyStore?>()?.peerPrekeyCount(peerId) ?? 0;
+    return held > 0
+        ? 'Post-quantum forward secrecy ready ($held one-time prekeys)'
+        : 'Post-quantum forward secrecy pending next meeting';
   }
 
   Widget _header(PinnedPeer peer) => Column(children: [

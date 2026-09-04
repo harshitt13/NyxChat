@@ -11,14 +11,15 @@
 | File | Contents |
 |---|---|
 | `nyxchat_v4_handshake.spthy` | Direct-link handshake (protocol v4): signed hellos with a per-handshake ML-KEM key, X3DH-style DH quadruple + KEM, initiator-hello hash in the response, responder nonce cache, master secret. 9 rules, 12 lemmas. |
-| `nyxchat_v4_async.spthy` | Part 1: asynchronous (store-and-forward) initiation against pinned keys (long-term KEM key). Part 2: the concurrent-initiation collision rule with two parties `'a' < 'b'`, including the `ignoredInitEphs` blacklist and the abandoned-init announcement (`ab`). 16 rules, 10 lemmas. |
+| `nyxchat_v4_async.spthy` | Part 1: asynchronous (store-and-forward) initiation against pinned keys, both with a one-time ML-KEM prekey that the recipient registered over an authenticated link (consumed on use, private half deleted on acceptance) and with the long-term KEM key as the fallback. Part 2: the concurrent-initiation collision rule with two parties `'a' < 'b'`, including the `ignoredInitEphs` blacklist and the abandoned-init announcement (`ab`). 20 rules, 13 lemmas. |
 
 Naming: `HelloMessage.protocolVersion` is 4 and the documentation calls the
 protocol v4; the domain strings inside `lib/core/crypto` still read
 `NyxChat-...-v3` (`NyxChat-Hello-v3`, `NyxChat-Handshake-v3`,
-`NyxChat-Async-Session-v3`, `NyxChat-ID-v3`). The models mirror the code and
-use `_v3` labels as opaque public constants; renaming them changes nothing
-in the proofs.
+`NyxChat-Async-Session-v3`, `NyxChat-ID-v3`), while the one-time-prekey
+variant added in 3.2 is labelled `NyxChat-Async-Prekey-Session-v4`. The
+models mirror the code and use the labels as opaque public constants;
+renaming them changes nothing in the proofs.
 
 ## Installing Tamarin
 
@@ -107,7 +108,10 @@ either a modelling error or a genuine finding and should be recorded.
 | async | `async_secrecy_responder` | all-traces | verified |
 | async | `async_kem_only_secrecy` | all-traces | verified |
 | async | `async_dh_only_secrecy` | all-traces | verified |
-| async | `async_agreement` | all-traces | verified |
+| async | `async_agreement` | all-traces | verified (both the prekey and the fallback path) |
+| async | `async_executable_opk` | exists-trace | trace found |
+| async | `async_pq_forward_secrecy` | all-traces | verified (post-quantum forward secrecy of asynchronous sessions, new with one-time prekeys; every DH secret and every long-term key of both parties may leak after acceptance, B's long-term KEM key at any time) |
+| async | `async_pq_forward_secrecy_initiator` | all-traces | verified (KEM-only: nothing but the used prekey's private half, which is deleted on use, protects the initiator's root) |
 | async | `collision_executable` | exists-trace | trace found |
 | async | `collision_consistency` | all-traces | verified (unconditional, recovery path included) |
 | async | `abandoned_init_blacklisted` | all-traces | verified (the announcement reaches the winner before it settles) |
@@ -136,7 +140,13 @@ either a modelling error or a genuine finding and should be recorded.
 | `SessionKey`, `InitKey`, `RespKey` | `HandshakeResult.masterSecret`. The ratchet root and link keys are HKDF outputs of master and inherit its secrecy. |
 | `Async_Initiate` | `SessionManager.encrypt` with no session and a `PinnedPeer` -> `Handshake.asyncInitiate` (encapsulates to the pinned long-term `KPK_B`), `DoubleRatchetSession.initAlice`, `SessionInitBlock(EK_A, kct)`. |
 | `Async_Respond` | `SessionManager.decrypt` with an init block -> `Handshake.asyncRespond`, `DoubleRatchetSession.initBob`, decrypt-then-save. |
-| `root = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)` | `Handshake._asyncRoot`. |
+| `root = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)` | `Handshake.asyncRoot` without a prekey id (the fallback). |
+| `Register_Prekey`, `OPK($B, $A, ~opk)`, `OPKPub($A, $B, kempk(~opk))` | `PrekeyStore.replenish` (B generates ML-KEM-768 pairs for A, `lib/core/crypto/prekey_store.dart`) and `PrekeyExchange` (`lib/core/network/prekey_exchange.dart`): the Ed25519-signed, time-stamped `PrekeyBundle` (`lib/core/crypto/prekey_bundle.dart`) sent as a `prekeys` frame inside the link encryption after every handshake, verified by A against its pinned signing key of B (`PrekeyBundle.validate`, which also refuses anything not strictly newer than the bundle on file) and stored by `PrekeyStore.replacePeerBundle`. The 8-byte prekey id (truncated SHA-256 of the public key) stands in for `kempk(~opk)` itself in the model. |
+| `Async_Initiate_OPK`, consumption of `OPKPub` | `SessionManager.encrypt` -> `PrekeyStore.takePeerPrekey` (removed from the pool before use, never re-admitted from a later bundle) -> `Handshake.asyncInitiate(prekeyId:, prekeyPublicKey:)`; the id travels as `SessionInitBlock.prekeyId` (`pk`). |
+| `Async_Respond_OPK`, consumption of `OPK` | `SessionManager.decrypt` -> `PrekeyStore.findOwn` -> `Handshake.asyncRespond(prekeyId:, prekeyPrivateKey:)` -> `ratchet.decrypt` -> `PrekeyStore.deleteOwn` (only after the first message decrypted; the private half is wiped and removed from the encrypted `prekeys` box). |
+| `root = kdf(<'NyxChat_Async_Prekey_Session_v4', pkOPK, dh1, dh2, kem>)` | `Handshake.asyncRoot` with a prekey id: HKDF(salt = prekey id, ikm = 0xFF*32‖dh1‖dh2‖kem, info = "NyxChat-Async-Prekey-Session-v4"). |
+| `Reveal_OPK` | compromise of an unused prekey's private half (readable from the encrypted `prekeys` box, or from a backup) before it is used. |
+| (no rule) an `init_opk` naming a prekey B does not hold | `UnknownPrekeyException` -> signed `PrekeyUnknownNotice` in a control envelope (`k: 'ct'`) back to the initiator, which discards the peer's pool, drops the pending session and re-initiates through `Async_Initiate`. The notice is an availability mechanism whose effect is the modelled fallback path; it is not modelled. |
 | `senc('session_open', kdf(<'NyxChat_DR_Root_v3', root>))` | the first ratchet envelope (`InnerMessage.sessionOpen`) encrypted under the first message key of a `DoubleRatchetSession` seeded with `root`. |
 | `!Less('a','b')`, `C_Collision_Ignore`, `C_Collision_Adopt` | `myId.compareTo(peerId) < 0` -> `SessionCollisionException`, otherwise re-derive and replace, in `SessionManager.decrypt`. |
 | `Ignored(X, Y, eph)`, `NotIgnored(X, Y, eph)`, restriction `IgnoredInitsDropped` | `SessionRecord.ignoredInitEphs` (last 8 entries): appended when a collision is won and whenever a fast-path decrypt sees an `ab` field; checked before the collision and recovery branches of `SessionManager.decrypt`; copied when a session is replaced. |
@@ -174,8 +184,16 @@ either a modelling error or a genuine finding and should be recorded.
   code keeps 2048 nonces and 8 ephemerals. An attacker who can push more
   than that many entries through before replaying is outside the model.
 * **Per-handshake KEM key reveal.** `Reveal_KEM_Ephemeral` exists only in
-  the handshake model; the async flow has no ephemeral KEM key (it
-  encapsulates to the pinned long-term `KPK_B`).
+  the handshake model. The async model's counterpart is the one-time
+  prekey (`Reveal_OPK`), which exists only until it is used; the fallback
+  path has no such secret (it encapsulates to the pinned long-term
+  `KPK_B`).
+* **Prekey registration is an ideal authenticated channel.** The signed
+  bundle, its issue-time replay check and the link encryption collapse
+  into direct state transfer (`OPKPub`). Pool size (8), the 30-day expiry,
+  the notice for an unknown prekey and the session record's fallback flag
+  are not modelled; an init naming a prekey B does not hold matches no
+  rule, and the fallback is the separately modelled long-term path.
 * **`ab` is modelled as integrity-protected.** The collision model puts the
   abandoned-init announcement inside the authenticated payload
   (`senc(<'reply', ab>, k)`); the code binds it into the AEAD associated
@@ -217,20 +235,27 @@ abandoned-init announcement and its AAD binding). Status after the changes:
    captured hello can still be delivered to a *different* responder, which
    answers with fresh keys that nobody else can compute
    (`hello_accepted_by_two_responders`). Resource use only.
-3. **Asynchronous root has no forward secrecy against the recipient's
-   long-term keys (unchanged, documented).** The async flow encapsulates to
-   the pinned long-term `KPK_B` and B contributes no ephemeral, so an
-   adversary who later obtains `IK_B` and `KPK_B` recovers every root B
-   accepted before its first reply. `async_secrecy_responder` states the
-   exact condition; SECURITY.md already says protection starts at the
-   first reply.
+3. **Asynchronous root had no forward secrecy against the recipient's
+   long-term keys (addressed in 3.2 with one-time prekeys; fallback
+   documented).** The async flow used to encapsulate to the pinned
+   long-term `KPK_B` and B contributes no ephemeral, so an adversary who
+   later obtained `IK_B` and `KPK_B` recovered every root B accepted before
+   its first reply. Now every device hands each contact a pool of one-time
+   ML-KEM prekeys on every direct link, an initiation encapsulates to one
+   of them and B deletes the private half after the first message
+   decrypts; `async_pq_forward_secrecy` states the resulting guarantee.
+   `async_secrecy_responder` still states the exact condition for the
+   fallback, taken only when the initiator holds no prekey of B (never
+   met, pool used up, or B lost its store), which the session record flags
+   and the contact screen shows.
 4. **Post-quantum forward secrecy on direct links (fixed).** The initiator
    hello now carries a per-handshake ML-KEM key and the responder
    encapsulates to it, so a harvest-now-decrypt-later adversary who breaks
    X25519 and later seizes both devices' long-term keys still cannot
    recover master (`kem_only_forward_secrecy`). The long-term KEM key no
-   longer plays any role in the direct-link handshake. The async flow keeps
-   the previous behaviour (finding 3).
+   longer plays any role in the direct-link handshake. The async flow gets
+   the same property from one-time prekeys and keeps the long-term key as
+   a flagged last resort (finding 3).
 5. **Stale-init divergence in collision handling (fixed).** With handles
    `a < b` both initiating, a stale copy of `b`'s init delivered after `b`
    had adopted `a`'s session used to take the recovery branch at `a` and
@@ -294,6 +319,14 @@ abandoned-init announcement and its AAD binding). Status after the changes:
       envelope without an init block, and recorded by the receiver on every
       successful fast-path decrypt (`C_Collision_Adopt`, `C_Reply`,
       `C_Confirm`, `C_Recv_Reply_Final`).
+- [ ] The prekey rules match the code: `PrekeyStore.takePeerPrekey` removes
+      the public half before `Handshake.asyncInitiate` runs;
+      `SessionManager.decrypt` calls `PrekeyStore.deleteOwn` only after
+      `ratchet.decrypt` succeeded; the two root labels differ
+      (`NyxChat-Async-Prekey-Session-v4` vs `NyxChat-Async-Session-v3`) and
+      the prekey id is the HKDF salt; a bundle is accepted only from the
+      authenticated link peer, with a signature by the pinned key, and with
+      an issue time strictly newer than the bundle on file.
 - [ ] The reveal rules cover the compromise scenarios claimed in
       SECURITY.md ("Compromise of long-term keys", "always combined with
       X25519") and the lemma assumptions are not stronger than those claims.

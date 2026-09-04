@@ -3,14 +3,30 @@
  * =======================================================
  *
  * Part 1 models Handshake.asyncInitiate / Handshake.asyncRespond as driven
- * by SessionManager.encrypt / SessionManager.decrypt (lib/core/crypto/).
+ * by SessionManager.encrypt / SessionManager.decrypt (lib/core/crypto/),
+ * in both variants: encapsulating to a one-time ML-KEM prekey of B that B
+ * registered with A over an authenticated link (PrekeyStore,
+ * PrekeyExchange), and the last-resort fallback to B's long-term KEM key.
  * Part 2 models the concurrent-initiation collision rule of
  * SessionManager.decrypt with two fixed parties whose handles are ordered.
  *
+ *   A -> B : 'init_opk', A, EK_A, kct, senc('session-open', mk)
+ *   kct  = KEM.Encaps(OPK_B) carrying fresh secret kem     (prekey path)
+ *   root = kdf('NyxChat_Async_Prekey_Session_v4', OPK_B, dh1, dh2, kem)
+ *
  *   A -> B : 'init', A, EK_A, kct, senc('session-open', mk)
- *   kct  = KEM.Encaps(KPK_B) carrying fresh secret kem
- *   root = kdf(dh1, dh2, kem)   dh1 = DH(IK_A, IK_B)   dh2 = DH(EK_A, IK_B)
- *   mk   = kdf('NyxChat_DR_Root_v3', root)        (first Double Ratchet message key, abstracted)
+ *   kct  = KEM.Encaps(KPK_B) carrying fresh secret kem     (fallback)
+ *   root = kdf('NyxChat_Async_Session_v3', dh1, dh2, kem)
+ *
+ *   dh1 = DH(IK_A, IK_B)   dh2 = DH(EK_A, IK_B)
+ *   mk  = kdf('NyxChat_DR_Root_v3', root)        (first Double Ratchet message key, abstracted)
+ *
+ * The prekey's private half is a linear fact that B consumes when it
+ * accepts (PrekeyStore.deleteOwn after the first decrypt) and that the
+ * reveal rule consumes too, so a prekey cannot both be used and later
+ * leaked: that is what gives the prekey path post-quantum forward secrecy
+ * (lemma async_pq_forward_secrecy) that the fallback lacks
+ * (async_secrecy_responder).
  *
  * B holds A's pinned IK/KPK (the !Pk lookup by the sender handle carried in
  * the envelope), derives root with its private IK/KPK and accepts only if
@@ -81,6 +97,28 @@ rule Reveal_DH_Ephemeral:
   --[ RevealDH($A) ]->
   [ Out(~ek) ]
 
+/* One-time prekeys. B generates an ML-KEM key pair for A and hands the
+ * public half to A inside an authenticated, encrypted direct link
+ * (PrekeyBundle: Ed25519-signed by B, verified by A against its pin of B,
+ * replay-rejected by issue time). That channel is modelled as direct state
+ * transfer: A's copy OPKPub is exactly what B generated and the adversary
+ * cannot insert or alter one. Both halves are linear facts: A consumes
+ * its copy when it initiates (PrekeyStore.takePeerPrekey), B consumes,
+ * i.e. deletes, the private half when it accepts (PrekeyStore.deleteOwn).
+ * The public half is also published, which only helps the adversary. */
+rule Register_Prekey:
+  [ !Ltk($B, ~ikB, ~skB, ~kkB), !Ltk($A, ~ikA, ~skA, ~kkA), Fr(~opk) ]
+  --[ Neq($A, $B), RegisterOPK($B, $A, kempk(~opk)) ]->
+  [ OPK($B, $A, ~opk), OPKPub($A, $B, kempk(~opk)), Out(kempk(~opk)) ]
+
+/* Compromise of an unused prekey's private half, the only time it exists
+ * (after use it is deleted). Consuming the fact means the same prekey
+ * cannot also be accepted with afterwards. */
+rule Reveal_OPK:
+  [ OPK($B, $A, ~opk) ]
+  --[ RevealOPK($B, kempk(~opk)) ]->
+  [ Out(~opk) ]
+
 /* SessionManager.encrypt with no session and pinned keys for $B:
  * Handshake.asyncInitiate, DoubleRatchetSession.initAlice, and the first
  * envelope carrying the SessionInitBlock (EK_A, kct). */
@@ -122,6 +160,60 @@ rule Async_Respond:
     , AsyncAccept($B, $A, root)
     , AsyncCommitR($B, $A, ekA, kct, root)
     , AsyncKey($B, $A, root)
+    , Honest($A), Honest($B) ]->
+  [ ]
+
+/* SessionManager.encrypt with a prekey of $B on file: Handshake.asyncInitiate
+ * with prekeyId/prekeyPublicKey encapsulates to the prekey, the root uses
+ * the prekey label with the prekey (id) as salt, and the SessionInitBlock
+ * carries the id (`pk`); in the model B selects the prekey by trying its
+ * own OPK facts, which the Eq check on the first message disambiguates.
+ * The prekey is used once: OPKPub is consumed. */
+rule Async_Initiate_OPK:
+  let dh1  = pkIKB^~ikA
+      ekA  = 'g'^~ekA
+      dh2  = pkIKB^~ekA
+      kct  = kemenc(pkOPK, ~kem)
+      root = kdf(<'NyxChat_Async_Prekey_Session_v4', pkOPK, dh1, dh2, ~kem>)
+      mk   = kdf(<'NyxChat_DR_Root_v3', root>)
+  in
+  [ !Ltk($A, ~ikA, ~skA, ~kkA)
+  , !Pk($B, pkIKB, pkSKB, pkKPKB)
+  , OPKPub($A, $B, pkOPK)
+  , Fr(~ekA), Fr(~kem) ]
+  --[ Neq($A, $B)
+    , AsyncInitOPK($A, $B, root, pkOPK)
+    , AsyncRunningI($A, $B, ekA, kct, root)
+    , Honest($A), Honest($B) ]->
+  [ Out(<'init_opk', $A, ekA, kct, senc('session_open', mk)>)
+  , !Eph($A, ~ekA) ]
+
+/* SessionManager.decrypt with an init block naming one of our prekeys
+ * (PrekeyStore.findOwn): Handshake.asyncRespond with the prekey's private
+ * half, DoubleRatchetSession.initBob, decrypt, and only then
+ * PrekeyStore.deleteOwn. The OPK fact is consumed by this rule, so the
+ * private half is gone exactly when a session was accepted with it (a rule
+ * instance whose Eq fails is not part of any trace). An init naming a
+ * prekey we do not hold matches no rule: the code raises
+ * UnknownPrekeyException, signs a notice, and the initiator restarts
+ * through Async_Initiate (the fallback). */
+rule Async_Respond_OPK:
+  let dh1   = pkIKA^~ikB
+      dh2   = ekA^~ikB
+      pkOPK = kempk(~opk)
+      kem   = kemdec(kct, ~opk)
+      root  = kdf(<'NyxChat_Async_Prekey_Session_v4', pkOPK, dh1, dh2, kem>)
+      mk    = kdf(<'NyxChat_DR_Root_v3', root>)
+  in
+  [ !Ltk($B, ~ikB, ~skB, ~kkB)
+  , !Pk($A, pkIKA, pkSKA, pkKPKA)
+  , OPK($B, $A, ~opk)
+  , In(<'init_opk', $A, ekA, kct, c>) ]
+  --[ Eq(sdec(c, mk), 'session_open')
+    , Neq($A, $B)
+    , AsyncAcceptOPK($B, $A, root, pkOPK)
+    , AsyncCommitR($B, $A, ekA, kct, root)
+    , UsedOPK($B, $A, pkOPK)
     , Honest($A), Honest($B) ]->
   [ ]
 
@@ -319,17 +411,63 @@ lemma async_dh_only_secrecy:
    & not (Ex #j. RevealDH(A) @j)
    ==> not (Ex #k. K(r) @k)"
 
-/* Agreement: if B accepts (EK_A, kct, root) as coming from A, then A
- * really initiated toward B with exactly those values, provided neither
- * party's X25519 secrets were compromised beforehand. Non-injective:
- * de-duplication of repeated init blocks is done by the ratchet
- * (acceptedInitEph + replay rejection), which is not modelled. */
+/* Agreement, both paths: if B accepts (EK_A, kct, root) as coming from A,
+ * then A really initiated toward B with exactly those values, provided
+ * neither party's X25519 secrets were compromised beforehand. The two
+ * roots carry different labels, so a prekey accept can only be matched by
+ * a prekey initiation and vice versa. Non-injective: de-duplication of
+ * repeated init blocks is done by the ratchet (acceptedInitEph + replay
+ * rejection), which is not modelled. */
 lemma async_agreement:
   "All A B ekA kct r #i.
      AsyncCommitR(B, A, ekA, kct, r) @i
    & not (Ex X #j. RevealLTK(X) @j & Honest(X) @i & #j < #i)
    & not (Ex X #j. RevealDH(X) @j  & Honest(X) @i & #j < #i)
    ==> Ex #k. AsyncRunningI(A, B, ekA, kct, r) @k & #k < #i"
+
+/* ------------------------------------------------------------------ */
+/* Lemmas: one-time prekeys                                            */
+/* ------------------------------------------------------------------ */
+
+/* Sanity: the prekey path runs end to end without any compromise. */
+lemma async_executable_opk:
+  exists-trace
+  "Ex A B r pk #i #j.
+     AsyncInitOPK(A, B, r, pk) @i & AsyncAcceptOPK(B, A, r, pk) @j & #i < #j
+   & not (Ex X #k. RevealLTK(X) @k)
+   & not (Ex X #k. RevealDH(X) @k)
+   & not (Ex X #k. RevealKPK(X) @k)
+   & not (Ex X p #k. RevealOPK(X, p) @k)"
+
+/* Post-quantum forward secrecy of the responder's accepted root when a
+ * one-time prekey was used. After acceptance the adversary may obtain
+ * every DH secret of both parties (identity and ephemeral, i.e. a break
+ * of X25519) and all long-term keys of both parties, and B's long-term
+ * KEM key at ANY time, even before; the root stays secret. Only the
+ * compromise of either party's X25519 secrets BEFORE acceptance is
+ * excluded (impersonation of A, or key-compromise impersonation through
+ * IK_B, exactly as in async_secrecy_responder). Compare that lemma: on
+ * the fallback path RevealLTK(B) or RevealKPK(B) at any time breaks the
+ * root. The prekey's private half cannot leak after use because it no
+ * longer exists (the linear OPK fact was consumed on acceptance). */
+lemma async_pq_forward_secrecy:
+  "All A B r pk #i.
+     AsyncAcceptOPK(B, A, r, pk) @i
+   & not (Ex #j. RevealLTK(A) @j & #j < #i)
+   & not (Ex #j. RevealDH(A) @j  & #j < #i)
+   & not (Ex #j. RevealLTK(B) @j & #j < #i)
+   & not (Ex #j. RevealDH(B) @j  & #j < #i)
+   ==> not (Ex #k. K(r) @k)"
+
+/* Initiator's view, KEM-only: the root A derived to a prekey survives a
+ * total X25519 break and the compromise of every long-term key of both
+ * parties at any time, as long as that particular prekey's private half
+ * was not revealed while it still existed (before B used it). */
+lemma async_pq_forward_secrecy_initiator:
+  "All A B r pk #i.
+     AsyncInitOPK(A, B, r, pk) @i
+   & not (Ex #j. RevealOPK(B, pk) @j)
+   ==> not (Ex #k. K(r) @k)"
 
 /* ------------------------------------------------------------------ */
 /* Lemmas: collision rule                                              */

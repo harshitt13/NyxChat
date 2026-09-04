@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 import '../core/crypto/double_ratchet.dart';
 import '../core/crypto/key_transition.dart';
 import '../core/crypto/pair_keys.dart';
+import '../core/crypto/prekey_bundle.dart';
 import '../core/crypto/sender_keys.dart';
 import '../core/crypto/session_manager.dart';
 import '../core/mesh/geohash_channel.dart';
@@ -99,6 +100,7 @@ class ChatService extends ChangeNotifier {
   final LinkedHashMap<String, String> _packetToMessage = LinkedHashMap();
   final Map<String, _OutgoingFile> _outgoingFiles = {};
   final Map<String, int> _chunkRequestsSent = {};
+  final LinkedHashMap<String, DateTime> _prekeyNoticeSent = LinkedHashMap();
   final List<StreamSubscription> _subs = [];
   Timer? _expiryTimer;
   Timer? _outboxTimer;
@@ -339,14 +341,17 @@ class ChatService extends ChangeNotifier {
   }
 
   /// After a session reset, messages sent but never confirmed delivered are
-  /// re-queued so nothing is silently lost.
-  Future<void> _requeueUndelivered(String peerId) async {
+  /// re-queued so nothing is silently lost. With [since] every own message
+  /// from that instant on is re-queued, including ones a mesh ack marked
+  /// delivered (the ack proves arrival at the device, not decryption).
+  Future<void> _requeueUndelivered(String peerId, {DateTime? since}) async {
     final room = _directRoomFor(peerId);
     if (room == null) return;
-    final cutoff = DateTime.now().subtract(const Duration(hours: 6));
+    final cutoff = since ?? DateTime.now().subtract(const Duration(hours: 6));
     final candidates = (_messages[room.id] ?? [])
         .where((m) => m.senderId == _myId && m.messageType == MessageType.text &&
-            m.status == MessageStatus.sent && m.timestamp.isAfter(cutoff))
+            (m.status == MessageStatus.sent || (since != null && m.status == MessageStatus.delivered)) &&
+            m.timestamp.isAfter(cutoff))
         .toList()
         .reversed
         .take(20);
@@ -430,6 +435,7 @@ class ChatService extends ChangeNotifier {
     } else {
       await _sessions.reset(t.oldId);
     }
+    await _sessions.prekeys?.rename(t.oldId, t.newId);
     // Move the conversation and group memberships to the new handle.
     for (final room in _rooms.values.toList()) {
       if (!room.isGroup && room.peerId == t.oldId) {
@@ -679,7 +685,7 @@ class ChatService extends ChangeNotifier {
       case MeshPacket.typeMessage:
         try {
           final env = Envelope.fromBytes(plain);
-          if (env.from != peerId && env.kind == EnvelopeKind.ratchet) return;
+          if (env.from != peerId && env.kind != EnvelopeKind.senderKey) return;
           await _handleEnvelope(env);
         } catch (e) {
           debugPrint('[Chat] bad mesh envelope from $peerId: $e');
@@ -714,7 +720,7 @@ class ChatService extends ChangeNotifier {
     if (plain == null) return;
     try {
       final env = Envelope.fromBytes(plain);
-      if (env.from != peerId && env.kind == EnvelopeKind.ratchet) return;
+      if (env.from != peerId && env.kind != EnvelopeKind.senderKey) return;
       await _handleEnvelope(env);
     } catch (e) {
       debugPrint('[Chat] bad relay envelope from $peerId: $e');
@@ -1092,6 +1098,10 @@ class ChatService extends ChangeNotifier {
       return;
     }
     if (env.to != _myId) return;
+    if (env.kind == EnvelopeKind.control) {
+      await _onControlEnvelope(env);
+      return;
+    }
     final pinned = _trust.get(env.from);
     InnerMessage inner;
     try {
@@ -1106,6 +1116,17 @@ class ChatService extends ChangeNotifier {
       return;
     } on NoSessionException {
       if (via != null) await _requestSessionReset(via);
+      return;
+    } on UnknownPrekeyException catch (e) {
+      // Our one-time prekey is gone. On a link the reset flow re-derives
+      // from the handshake; store-and-forward gets a signed notice so the
+      // initiator restarts with the long-term key.
+      debugPrint('[Chat] ${env.from} named prekey ${e.prekeyId}, which we no longer hold');
+      if (via != null) {
+        await _requestSessionReset(via);
+      } else {
+        await _sendPrekeyUnknownNotice(e);
+      }
       return;
     } catch (e) {
       debugPrint('[Chat] envelope error from ${env.from}: $e');
@@ -1124,6 +1145,57 @@ class ChatService extends ChangeNotifier {
   Future<void> _handleSessionReset(PeerConnection via) async {
     debugPrint('[Chat] session reset requested by ${via.peerId}');
     await _connections.resetSession(via);
+  }
+
+  /// Tell an asynchronous initiator that the one-time prekey its init names
+  /// is gone. Signed, bound to that init's ephemeral, rate-limited per
+  /// ephemeral, and queued in the outbox if no carrier takes it now.
+  Future<void> _sendPrekeyUnknownNotice(UnknownPrekeyException e) async {
+    final now = DateTime.now();
+    final last = _prekeyNoticeSent[e.ephemeralHex];
+    if (last != null && now.difference(last) < const Duration(minutes: 10)) return;
+    _prekeyNoticeSent[e.ephemeralHex] = now;
+    while (_prekeyNoticeSent.length > 64) {
+      _prekeyNoticeSent.remove(_prekeyNoticeSent.keys.first);
+    }
+    final notice = await PrekeyUnknownNotice.create(
+        keys: _sessions.keys, from: _myId, to: e.peerId, ephemeralHex: e.ephemeralHex, prekeyId: e.prekeyId);
+    final env = notice.toEnvelope();
+    if (await _sendRawEnvelope(e.peerId, env) == DeliveryPath.failed) {
+      await _outbox.enqueue(OutboxItem(id: 'prekey-notice:${e.ephemeralHex}', peerId: e.peerId,
+          kind: OutboxItem.kindEnvelope, payload: env.toJson()));
+    }
+  }
+
+  /// A signed control notice outside any session (today only "unknown
+  /// prekey"). Acted on only if it verifies against the pinned signing key
+  /// and names the init we are still waiting on: the pending session is
+  /// dropped, the peer's remaining prekeys are discarded (its store is
+  /// evidently gone) and everything sent under that init is re-queued,
+  /// which restarts the session with the long-term KEM key.
+  Future<void> _onControlEnvelope(Envelope env) async {
+    final pinned = _trust.get(env.from);
+    if (pinned == null) return;
+    final PrekeyUnknownNotice notice;
+    try {
+      notice = PrekeyUnknownNotice.fromEnvelope(env);
+    } on FormatException catch (e) {
+      debugPrint('[Chat] bad control envelope from ${env.from}: $e');
+      return;
+    }
+    final problem = await notice.validate(pinnedSigningKey: pinned.signingKey, myId: _myId, fromId: env.from);
+    if (problem != null) {
+      debugPrint('[Chat] control notice from ${env.from} rejected: $problem');
+      return;
+    }
+    final rec = _sessions.record(env.from);
+    if (rec == null || rec.pendingInit?.ephemeralHex != notice.ephemeralHex) return;
+    debugPrint('[Chat] ${env.from} no longer holds prekey ${notice.prekeyId}; restarting with the long-term key');
+    await _sessions.prekeys?.discardPeerPrekeys(env.from);
+    await _sessions.reset(env.from);
+    await _requeueUndelivered(env.from, since: rec.createdAt.subtract(const Duration(minutes: 1)));
+    await _outbox.resetBackoff(env.from);
+    await flushOutbox(env.from);
   }
 
   Future<void> _handleGroupEnvelope(Envelope env) async {

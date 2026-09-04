@@ -12,20 +12,37 @@ enum EnvelopeKind {
 
   /// Group sender key (symmetric chain + Ed25519 signature).
   senderKey,
+
+  /// Signed control notice that needs no session (e.g. a responder telling
+  /// an initiator that the one-time prekey it named is gone). The body
+  /// carries its own Ed25519 signature; see PrekeyUnknownNotice.
+  control,
 }
 
 /// Material that lets a peer bootstrap a session asynchronously (X3DH-lite
 /// against pinned identity keys). Attached until the initiator has heard
 /// back from the recipient.
 class SessionInitBlock {
+  static const int prekeyIdLength = 8;
+
   final Uint8List ephemeralKey;
   final Uint8List kyberCiphertext;
 
-  SessionInitBlock({required this.ephemeralKey, required this.kyberCiphertext});
+  /// Id of the recipient's one-time ML-KEM prekey the ciphertext was
+  /// encapsulated to (8 bytes, `pk`); absent when the long-term KEM key
+  /// was used.
+  final Uint8List? prekeyId;
+
+  SessionInitBlock({
+    required this.ephemeralKey,
+    required this.kyberCiphertext,
+    this.prekeyId,
+  });
 
   Map<String, dynamic> toJson() => {
         'eph': CryptoUtils.toHex(ephemeralKey),
         'kct': base64Encode(kyberCiphertext),
+        if (prekeyId != null) 'pk': CryptoUtils.toHex(prekeyId!),
       };
 
   factory SessionInitBlock.fromJson(Map<String, dynamic> json) => parseOr(() {
@@ -35,10 +52,14 @@ class SessionInitBlock {
               length: CryptoUtils.x25519KeyLength, context: ctx),
           kyberCiphertext: requireBase64(json, 'kct',
               length: CryptoUtils.kyber768CiphertextLength, context: ctx),
+          prekeyId: optionalHex(json, 'pk',
+              length: prekeyIdLength, context: ctx),
         );
       }, context: 'session init');
 
   String get ephemeralHex => CryptoUtils.toHex(ephemeralKey);
+  String? get prekeyIdHex =>
+      prekeyId == null ? null : CryptoUtils.toHex(prekeyId!);
 }
 
 /// Transport-independent end-to-end encrypted unit.
@@ -50,6 +71,7 @@ class SessionInitBlock {
 class Envelope {
   static const int version = 3;
   static const int maxEncodedBytes = 512 * 1024;
+  static const int maxControlBytes = 4096;
 
   final String from;
   final String to;
@@ -112,7 +134,25 @@ class Envelope {
         ciphertext: ciphertext,
       );
 
+  /// A signed control notice outside any session. [body] is a JSON
+  /// document that carries its own signature and addressing.
+  factory Envelope.control({
+    required String from,
+    required String to,
+    required Uint8List body,
+  }) =>
+      Envelope._(
+        from: from,
+        to: to,
+        kind: EnvelopeKind.control,
+        ciphertext: body,
+      );
+
   bool get isGroup => kind == EnvelopeKind.senderKey;
+  bool get isControl => kind == EnvelopeKind.control;
+
+  /// Body of a control envelope (plaintext, self-signed).
+  Uint8List get controlBody => ciphertext;
 
   /// Associated data bound into the AEAD so that ciphertext cannot be
   /// re-addressed to a different sender/recipient pair.
@@ -136,7 +176,11 @@ class Envelope {
         'v': version,
         'from': from,
         'to': to,
-        'k': kind == EnvelopeKind.ratchet ? 'dr' : 'sk',
+        'k': switch (kind) {
+          EnvelopeKind.ratchet => 'dr',
+          EnvelopeKind.senderKey => 'sk',
+          EnvelopeKind.control => 'ct',
+        },
         if (header != null) 'h': header!.toJson(),
         if (init != null) 'i': init!.toJson(),
         if (abandonedInitEph != null) 'ab': abandonedInitEph,
@@ -189,6 +233,17 @@ class Envelope {
         iteration: requireInt(json, 'it', min: 0, max: 1 << 30, context: ctx),
         signature: requireHex(json, 's',
             length: CryptoUtils.ed25519SignatureLength, context: ctx),
+        ciphertext: ciphertext,
+      );
+    }
+    if (k == 'ct') {
+      if (ciphertext.length > maxControlBytes) {
+        throw const FormatException('envelope: control body too large');
+      }
+      return Envelope._(
+        from: from,
+        to: to,
+        kind: EnvelopeKind.control,
         ciphertext: ciphertext,
       );
     }
