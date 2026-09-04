@@ -13,7 +13,7 @@ class Peer {
   final PeerStatus status;
   final DateTime lastSeen;
   final DateTime? firstSeen;
-  final String transport; // 'wifi' or 'ble'
+  final String transport; // 'wifi', 'ble' or 'aware'
 
   Peer({
     required this.nyxChatId,

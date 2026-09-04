@@ -30,6 +30,8 @@ const _stubbedChannels = [
   'nyxchat/window',
   'nyxchat/ble_peripheral',
   'nyxchat/location',
+  'nyxchat/wifi_aware',
+  'nyxchat/wifi_aware/events',
   'dexterous.com/flutter/local_notifications',
   'flutter_blue_plus/methods',
   'nearby_connections',

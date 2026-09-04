@@ -17,6 +17,7 @@ import '../core/network/message_protocol.dart';
 import '../core/network/p2p_client.dart';
 import '../core/network/p2p_server.dart';
 import '../core/network/peer_discovery.dart';
+import '../core/network/wifi_aware_manager.dart';
 import '../core/network/wifi_direct_manager.dart';
 import '../core/storage/local_storage.dart';
 import '../core/storage/trust_store.dart';
@@ -38,12 +39,17 @@ class PeerService extends ChangeNotifier {
   final MeshRouter _meshRouter;
   final PairKeyCache _pairKeys;
   final WifiDirectManager _wifiDirect = WifiDirectManager();
+  final WifiAwareManager _aware;
   final FlutterSecureStorage _secure = const FlutterSecureStorage();
   static const String _kDhtActive = 'dht_was_active';
 
   /// Whether to include our handle and name in beacons (anyone can find
   /// us) instead of contact-only private beacons.
   bool Function() isDiscoverableToEveryone = () => true;
+
+  /// Whether the user wants Wi-Fi Aware (a setting); read whenever the
+  /// transport could start.
+  bool Function() isAwareEnabled = () => true;
 
   PeerDiscovery? _discovery;
   DHTNode? _dhtNode;
@@ -56,6 +62,7 @@ class PeerService extends ChangeNotifier {
   bool _networkActive = false;
   bool _dhtActive = false;
   bool _bleActive = false;
+  bool _awareActive = false;
   bool _stealth = false;
   String _myId = '';
   String _myName = '';
@@ -71,6 +78,7 @@ class PeerService extends ChangeNotifier {
     required MeshStore meshStore,
     required MeshRouter meshRouter,
     required PairKeyCache pairKeys,
+    WifiAwareManager? awareManager,
   })  : _storage = storage,
         _client = client,
         _server = server,
@@ -80,7 +88,10 @@ class PeerService extends ChangeNotifier {
         _keys = keys,
         _meshStore = meshStore,
         _meshRouter = meshRouter,
-        _pairKeys = pairKeys;
+        _pairKeys = pairKeys,
+        _aware = awareManager ?? WifiAwareManager() {
+    _aware.addListener(notifyListeners);
+  }
 
   Map<String, Peer> get peers => Map.unmodifiable(_peers);
   List<Peer> get peerList => _peers.values.toList();
@@ -88,6 +99,10 @@ class PeerService extends ChangeNotifier {
   bool get isDHTActive => _dhtActive;
   bool get isBleActive => _bleActive;
   bool get isBleSupported => _bleManager.isSupported;
+  bool get isAwareActive => _awareActive;
+  bool get isAwareSupported => _aware.isSupported;
+  WifiAwareManager get awareManager => _aware;
+  int get awarePathCount => _aware.pathCount;
   bool get isStealth => _stealth;
   BleManager get bleManager => _bleManager;
   MeshRouter get meshRouter => _meshRouter;
@@ -123,18 +138,19 @@ class PeerService extends ChangeNotifier {
       final hs = conn.handshake;
       if (hs == null) return;
       final existing = _peers[hs.peerId];
+      final awarePath = _aware.pathForNyxId(hs.peerId);
       _peers[hs.peerId] = Peer(
         nyxChatId: hs.peerId,
         displayName: hs.peerDisplayName,
         publicKeyHex: _hex(hs.peerIdentityKey),
         signingPublicKeyHex: _hex(hs.peerSigningKey),
         kyberPublicKeyHex: _hex(hs.peerKyberPublicKey),
-        ipAddress: conn.remoteAddress,
+        ipAddress: awarePath?.dialAddress ?? conn.remoteAddress,
         port: hs.peerListeningPort,
         status: PeerStatus.connected,
         lastSeen: DateTime.now(),
         firstSeen: existing?.firstSeen ?? DateTime.now(),
-        transport: 'wifi',
+        transport: awarePath != null || _aware.isAwareAddress(conn.remoteAddress) ? 'aware' : 'wifi',
       );
       _storage.savePeer(_peers[hs.peerId]!);
       notifyListeners();
@@ -154,6 +170,7 @@ class PeerService extends ChangeNotifier {
 
     unawaited(_startBle());
     unawaited(_startWifiDirect());
+    unawaited(_startAware());
     _beaconTimer?.cancel();
     _beaconTimer = Timer.periodic(const Duration(minutes: 1), (_) => _rotateBeacons());
   }
@@ -170,11 +187,15 @@ class PeerService extends ChangeNotifier {
     if (!_networkActive || _stealth) return;
     await _discovery?.refreshBeacon();
     final slot = PairKeys.discoverySlot();
-    if (_bleActive && slot != _bleBeaconSlot) {
+    if ((_bleActive || _awareActive) && slot != _bleBeaconSlot) {
       _bleBeaconSlot = slot;
-      final b = await _beacon(bits: DiscoveryBeacon.bleBloomBits);
-      await _bleManager.updateBeacon(b.encodeBle());
+      final bytes = (await _beacon(bits: DiscoveryBeacon.bleBloomBits)).encodeBle();
+      if (_bleActive) await _bleManager.updateBeacon(bytes);
+      if (_awareActive) await _aware.updateBeacon(bytes);
     }
+    // Aware may have been refused earlier (permission prompt still open,
+    // Wi-Fi off): try again on every tick while it is wanted.
+    if (!_awareActive) unawaited(startAware());
   }
 
   /// Visibility or contact list changed: re-publish immediately.
@@ -319,6 +340,64 @@ class PeerService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Wi-Fi Aware: same beacon as BLE, IP paths dialled like LAN peers.
+
+  Future<void> _startAware() async {
+    try {
+      await _aware.init();
+      if (!_aware.isSupported) return;
+      _aware.resolveBeacon = (bloom, slot) => _matcher!.match(bloom, slot);
+      _subs.add(_aware.onPeerPath.listen(_onAwarePath));
+      if (!_stealth) await startAware();
+    } catch (e) {
+      debugPrint('[Aware] start error: $e');
+    }
+  }
+
+  /// A Wi-Fi Aware data path is up: run the regular handshake over it.
+  Future<void> _onAwarePath(WifiAwarePath path) async {
+    final id = path.nyxId;
+    if (id == _myId) return;
+    final existing = _peers[id];
+    if (existing != null && isPeerConnected(id)) {
+      if (existing.transport != 'aware') {
+        _peers[id] = existing.copyWith(transport: 'aware', ipAddress: path.dialAddress, lastSeen: DateTime.now());
+        notifyListeners();
+      }
+      return;
+    }
+    _peers[id] = (existing ??
+            Peer(nyxChatId: id, displayName: _trust.get(id)?.displayName ?? id, publicKeyHex: '',
+                ipAddress: path.dialAddress, port: path.port, lastSeen: DateTime.now()))
+        .copyWith(ipAddress: path.dialAddress, port: path.port, status: PeerStatus.discovered,
+            lastSeen: DateTime.now(), transport: 'aware');
+    notifyListeners();
+    await _dial(id, path.dialAddress, path.port);
+  }
+
+  Future<void> startAware() async {
+    if (_awareActive || !_networkActive || _stealth || !_aware.isSupported || !isAwareEnabled()) return;
+    final b = await _beacon(bits: DiscoveryBeacon.bleBloomBits);
+    if (!_bleActive) _bleBeaconSlot = b.slot;
+    _awareActive = await _aware.start(_myId, beacon: b.encodeBle(), listeningPort: AppConstants.defaultPort);
+    notifyListeners();
+  }
+
+  Future<void> stopAware() async {
+    await _aware.stop();
+    _awareActive = false;
+    notifyListeners();
+  }
+
+  /// The Wi-Fi Aware setting changed: apply it right away.
+  Future<void> applyAwareSetting() async {
+    if (isAwareEnabled()) {
+      await startAware();
+    } else {
+      await stopAware();
+    }
+  }
+
   Future<void> _startWifiDirect() async {
     try {
       await _wifiDirect.init(_myId);
@@ -338,6 +417,7 @@ class PeerService extends ChangeNotifier {
       await _discovery?.stop();
       _discovery = null;
       await stopBle();
+      await stopAware();
       try {
         await _wifiDirect.stop();
       } catch (_) {}
@@ -345,6 +425,7 @@ class PeerService extends ChangeNotifier {
       await _startDiscovery();
       await startBle();
       await _startWifiDirect();
+      await startAware();
     }
     notifyListeners();
   }
@@ -416,6 +497,7 @@ class PeerService extends ChangeNotifier {
     _discovery = null;
     await stopDHT();
     await stopBle();
+    await stopAware();
     try {
       await _wifiDirect.stop();
     } catch (_) {}

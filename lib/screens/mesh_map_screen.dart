@@ -54,6 +54,8 @@ class MeshMapScreen extends StatelessWidget {
                       '${l.isCentralRole ? 'we dialled' : 'they dialled'} · MTU ${l.mtu} · ${l.address}',
                       AppTheme.accentBlue,
                     )),
+                _tile(Icons.wifi_tethering_rounded, 'Wi-Fi Aware', peers.awareManager.statusText,
+                    peers.isAwareActive ? AppTheme.accentGreen : AppTheme.textMuted),
                 const SizedBox(height: 20),
                 _title('Routing table'),
                 if (router.routingTable.isEmpty) _hint('Routes are learned from the path recorded in every packet and from periodic beacons.'),

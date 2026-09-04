@@ -8,6 +8,7 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private var blePeripheral: BlePeripheral? = null
+    private var wifiAware: WifiAwareChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -44,5 +45,18 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler(peripheral)
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, BlePeripheral.EVENT_CHANNEL)
             .setStreamHandler(peripheral)
+
+        val aware = WifiAwareChannel(applicationContext)
+        wifiAware = aware
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, WifiAwareChannel.METHOD_CHANNEL)
+            .setMethodCallHandler(aware)
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, WifiAwareChannel.EVENT_CHANNEL)
+            .setStreamHandler(aware)
+    }
+
+    override fun onDestroy() {
+        wifiAware?.release()
+        wifiAware = null
+        super.onDestroy()
     }
 }

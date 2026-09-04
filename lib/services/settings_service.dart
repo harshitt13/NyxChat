@@ -15,6 +15,7 @@ class SettingsService extends ChangeNotifier {
   bool _lockOnBackground = true;
   bool _dummyTraffic = false;
   bool _longRangeBle = false;
+  bool _wifiAware = true;
   bool _discoverableToEveryone = true;
   bool _nostrEnabled = false;
   bool _nostrViaTor = false;
@@ -29,6 +30,7 @@ class SettingsService extends ChangeNotifier {
   bool get lockOnBackground => _lockOnBackground;
   bool get dummyTraffic => _dummyTraffic;
   bool get longRangeBle => _longRangeBle;
+  bool get wifiAware => _wifiAware;
   bool get discoverableToEveryone => _discoverableToEveryone;
   bool get nostrEnabled => _nostrEnabled;
   bool get nostrViaTor => _nostrViaTor;
@@ -42,6 +44,7 @@ class SettingsService extends ChangeNotifier {
     _lockOnBackground = _storage.getSetting('lockOnBackground') != 'false';
     _dummyTraffic = _storage.getSetting('dummyTraffic') == 'true';
     _longRangeBle = _storage.getSetting('longRangeBle') == 'true';
+    _wifiAware = _storage.getSetting('wifiAware') != 'false';
     _discoverableToEveryone = _storage.getSetting('discoverable') != 'false';
     _nostrEnabled = _storage.getSetting('nostrEnabled') == 'true';
     _nostrViaTor = _storage.getSetting('nostrViaTor') == 'true';
@@ -100,6 +103,12 @@ class SettingsService extends ChangeNotifier {
   Future<void> setLongRangeBle(bool v) async {
     _longRangeBle = v;
     await _set('longRangeBle', '$v');
+    notifyListeners();
+  }
+
+  Future<void> setWifiAware(bool v) async {
+    _wifiAware = v;
+    await _set('wifiAware', '$v');
     notifyListeners();
   }
 

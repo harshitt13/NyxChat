@@ -29,7 +29,8 @@ class P2PServer {
 
   Future<void> start() async {
     if (_serverSocket != null) return;
-    _serverSocket = await ServerSocket.bind(InternetAddress.anyIPv4, port,
+    // Dual-stack: LAN peers over IPv4, Wi-Fi Aware peers over link-local IPv6.
+    _serverSocket = await ServerSocket.bind(InternetAddress.anyIPv6, port,
         shared: true);
     debugPrint('[P2P] listening on $port');
     _serverSocket!.listen(_handle, onError: (e) {
@@ -84,7 +85,12 @@ class PeerConnection {
   bool get isConnected => !_disconnected.isCompleted;
   bool get isSecure => _channel != null;
   bool get isAuthenticated => handshake != null && _channel != null;
-  String get remoteAddress => socket.remoteAddress.address;
+  /// Peer address as dialled: IPv4 peers of the dual-stack server show up
+  /// as IPv4-mapped IPv6 (`::ffff:a.b.c.d`) and are reported plain.
+  String get remoteAddress {
+    final a = socket.remoteAddress.address;
+    return a.startsWith('::ffff:') && a.contains('.') ? a.substring(7) : a;
+  }
   int get remotePort => socket.remotePort;
   int get resetsSent => _resetsSent;
   void noteResetSent() => _resetsSent++;
