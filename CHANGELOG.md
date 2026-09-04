@@ -2,6 +2,25 @@
 
 ## 3.2.0 (unreleased)
 
+- Voice notes: hold the microphone in the composer to record (release
+  to send, slide left or tap the X to cancel) with elapsed time and a
+  level meter; mono AAC-LC at 16 kHz / 32 kbps in an .m4a container,
+  capped at five minutes. Notes travel as ordinary encrypted file
+  transfers (direct link, mesh, relay) with the duration in the
+  descriptor, and play inline with seek, remaining time and one-at-a-time
+  playback that continues while you scroll. New `voice` message type;
+  the chat list shows a microphone and the length, notifications say
+  "Voice message". RECORD_AUDIO permission added.
+- Image previews: photos carry a 256 px JPEG thumbnail (under 10 KiB,
+  EXIF orientation applied, all other EXIF stripped) inside the
+  end-to-end encrypted file descriptor, so the recipient sees the
+  picture with a progress overlay before the chunks finish; the full
+  image fades in when complete and opens in a full-screen viewer with
+  pinch zoom. Received images without a preview are thumbnailed locally.
+  The cap keeps every image descriptor inside the 16 KiB padding bucket.
+- Hostile media hints (non-JPEG or oversized previews, bad durations)
+  are dropped without rejecting the file.
+
 ### Appearance and languages
 - Light theme and a theme-mode setting (dark, light or system; dark stays
   the default). Colours are a `ThemeExtension` (`NyxColors`) resolved per

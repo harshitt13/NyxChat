@@ -14,7 +14,9 @@ import '../models/message.dart';
 import '../services/chat_service.dart';
 import '../services/peer_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/media_strings.dart';
 import '../widgets/message_bubble.dart';
+import '../widgets/voice_record_button.dart';
 import 'contact_verify_screen.dart';
 import 'group_info_screen.dart';
 
@@ -76,6 +78,14 @@ class _ChatScreenState extends State<ChatScreen> {
     if (sent == null && mounted) {
       _snack(context.l10n.filesNeedDirectConnection);
     }
+    _scrollToBottom();
+  }
+
+  Future<void> _sendVoice(String path, Duration duration) async {
+    final sent = await context
+        .read<ChatService>()
+        .sendVoiceNote(roomId: widget.roomId, filePath: path, duration: duration);
+    if (sent == null && mounted) _snack(MediaStrings.voiceNeedsCarrier);
     _scrollToBottom();
   }
 
@@ -381,6 +391,12 @@ class _ChatScreenState extends State<ChatScreen> {
                 maxLines: 5, minLines: 1,
               ),
             ),
+          ),
+          const SizedBox(width: 8),
+          VoiceRecordButton(
+            enabled: !room.left,
+            onRecorded: _sendVoice,
+            onError: _snack,
           ),
           const SizedBox(width: 8),
           GestureDetector(

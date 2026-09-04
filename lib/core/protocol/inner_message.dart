@@ -48,7 +48,9 @@ class InnerMessage {
         'groupId': ?groupId,
       });
 
-  /// Describes a file whose encrypted chunks are sent separately.
+  /// Describes a file whose encrypted chunks are sent separately. [meta]
+  /// carries optional media hints (inline image preview, voice-note
+  /// duration); see MediaMetadata.
   factory InnerMessage.file({
     required String id,
     required String fileId,
@@ -62,6 +64,7 @@ class InnerMessage {
     required String sha256Hex,
     String? groupId,
     String? caption,
+    Map<String, dynamic>? meta,
   }) =>
       InnerMessage(type: typeFile, id: id, body: {
         'fileId': fileId,
@@ -75,6 +78,7 @@ class InnerMessage {
         'sha256': sha256Hex,
         'groupId': ?groupId,
         'caption': ?caption,
+        'meta': ?meta,
       });
 
   factory InnerMessage.reaction({

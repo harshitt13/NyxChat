@@ -11,7 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nyxchat/core/crypto/prekey_store.dart';
 import 'package:nyxchat/models/message.dart';
 
-import 'loopback_test.dart' show Node, waitFor;
+import 'harness.dart';
 
 /// Take both nodes offline from each other on TCP and give them one
 /// simulated BLE link, with no pairwise session left on either side, so

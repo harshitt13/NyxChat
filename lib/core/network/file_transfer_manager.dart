@@ -102,6 +102,10 @@ class IncomingTransfer {
   DateTime lastUpdate = DateTime.now();
   RandomAccessFile? _raf;
 
+  /// Chunks are accepted one at a time per transfer: inbound handlers run
+  /// concurrently and a RandomAccessFile refuses overlapping operations.
+  Future<void> _queue = Future<void>.value();
+
   IncomingTransfer(this.descriptor, this.tempPath, this.finalPath);
 
   bool get isComplete => received.length == descriptor.totalChunks;
@@ -188,21 +192,28 @@ class FileTransferManager extends ChangeNotifier {
   bool isExpecting(String fileId) => _incoming.containsKey(fileId);
 
   /// Decrypt and store one chunk. Returns the transfer when it completes.
-  Future<IncomingTransfer?> accept(FileChunkFrame frame) async {
+  Future<IncomingTransfer?> accept(FileChunkFrame frame) {
     final t = _incoming[frame.fileId];
-    if (t == null) return null;
+    if (t == null) return Future.value(null);
+    final run = t._queue.then((_) => _accept(t, frame));
+    t._queue = run.then((_) {}, onError: (Object _) {});
+    return run;
+  }
+
+  Future<IncomingTransfer?> _accept(IncomingTransfer t, FileChunkFrame frame) async {
     final d = t.descriptor;
     if (frame.total != d.totalChunks || frame.index >= d.totalChunks) {
       throw const FormatException('chunk does not match descriptor');
     }
     if (t.received.contains(frame.index)) return null;
+    final raf = t._raf;
+    if (raf == null) return null; // finished or failed while this chunk waited
     final plain = await CryptoUtils.aesGcmDecrypt(
       key: d.key,
       nonce: chunkNonce(d.noncePrefix, frame.index),
       ciphertextWithTag: frame.data,
       aad: chunkAad(d.fileId, frame.index, d.totalChunks),
     );
-    final raf = t._raf!;
     await raf.setPosition(frame.index * d.chunkSize);
     await raf.writeFrom(plain);
     t.received.add(frame.index);

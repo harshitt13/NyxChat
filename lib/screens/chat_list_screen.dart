@@ -14,6 +14,7 @@ import '../services/chat_service.dart';
 import '../services/identity_service.dart';
 import '../services/peer_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/message_preview.dart';
 import 'chat_screen.dart';
 import 'contact_verify_screen.dart';
 import 'create_group_screen.dart';
@@ -415,9 +416,9 @@ class _RoomTile extends StatelessWidget {
                 ],
               ]),
               const SizedBox(height: 3),
-              Text(preview,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+              MessagePreview(
+                  message: lastMessage,
+                  text: preview,
                   style: TextStyle(color: context.nyx.textSecondary, fontSize: 13)),
             ]),
           ),

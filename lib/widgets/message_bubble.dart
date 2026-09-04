@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import '../l10n/l10n_context.dart';
 import '../models/message.dart';
 import '../theme/app_theme.dart';
+import 'image_attachment_view.dart';
+import 'voice_note_bubble.dart';
 
 /// One chat bubble: text or attachment, reply quote, reactions, status.
 class MessageBubble extends StatelessWidget {
@@ -92,6 +94,20 @@ class MessageBubble extends StatelessWidget {
     final att = message.attachment!;
     final path = att.filePath;
     final complete = att.isComplete;
+    if (message.messageType == MessageType.voice) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: VoiceNoteBubble(message: message, isMe: isMe),
+      );
+    }
+    if (att.isImage && (att.thumbnailB64 != null || (complete && path != null))) {
+      // Inline preview first (it arrives with the descriptor, before the
+      // chunks), then the full picture; tap opens the zoomable viewer.
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: ImageAttachmentView(message: message, fallback: _fileRow(context, att, complete)),
+      );
+    }
     if (att.isImage && complete && path != null && File(path).existsSync()) {
       return Padding(
         padding: const EdgeInsets.only(bottom: 6),
