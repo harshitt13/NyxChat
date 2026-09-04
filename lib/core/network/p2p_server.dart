@@ -1,186 +1,230 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
+
+import '../crypto/handshake.dart';
+import '../crypto/secure_channel.dart';
 import 'message_protocol.dart';
 
-/// TCP server that listens for incoming P2P connections.
+/// TCP listener for incoming direct connections.
 class P2PServer {
   ServerSocket? _serverSocket;
   final int port;
-  final String nyxChatId;
 
   final StreamController<PeerConnection> _connectionController =
       StreamController<PeerConnection>.broadcast();
-  final List<PeerConnection> _activeConnections = [];
+  final List<PeerConnection> _active = [];
 
   Stream<PeerConnection> get onNewConnection => _connectionController.stream;
-  List<PeerConnection> get activeConnections =>
-      List.unmodifiable(_activeConnections);
+  List<PeerConnection> get activeConnections => List.unmodifiable(_active);
+  bool get isRunning => _serverSocket != null;
 
-  P2PServer({required this.port, required this.nyxChatId});
+  P2PServer({required this.port});
 
-  /// Start listening for incoming connections
   Future<void> start() async {
-    try {
-      _serverSocket = await ServerSocket.bind(
-        InternetAddress.anyIPv4,
-        port,
-        shared: true,
-      );
-      debugPrint('NyxChat P2P Server listening on port $port');
-
-      _serverSocket!.listen(
-        _handleIncomingConnection,
-        onError: (error) {
-          debugPrint('Server error: $error');
-        },
-      );
-    } catch (e) {
-      debugPrint('Failed to start P2P server: $e');
-      rethrow;
-    }
-  }
-
-  void _handleIncomingConnection(Socket socket) {
-    debugPrint(
-      'Incoming connection from ${socket.remoteAddress.address}:${socket.remotePort}',
-    );
-    final connection = PeerConnection(
-      socket: socket,
-      isIncoming: true,
-    );
-    _activeConnections.add(connection);
-    _connectionController.add(connection);
-
-    connection.onDisconnect.then((_) {
-      _activeConnections.remove(connection);
+    if (_serverSocket != null) return;
+    _serverSocket = await ServerSocket.bind(InternetAddress.anyIPv4, port,
+        shared: true);
+    debugPrint('[P2P] listening on $port');
+    _serverSocket!.listen(_handle, onError: (e) {
+      debugPrint('[P2P] server error: $e');
     });
   }
 
-  /// Stop the server and close all connections
+  void _handle(Socket socket) {
+    final connection = PeerConnection(socket: socket, isIncoming: true);
+    _active.add(connection);
+    _connectionController.add(connection);
+    unawaited(connection.onDisconnect.then((_) => _active.remove(connection)));
+  }
+
   Future<void> stop() async {
-    for (final conn in _activeConnections) {
-      await conn.disconnect();
+    for (final c in _active.toList()) {
+      await c.disconnect();
     }
-    _activeConnections.clear();
+    _active.clear();
     await _serverSocket?.close();
     _serverSocket = null;
-    debugPrint('NyxChat P2P Server stopped');
   }
-
-  bool get isRunning => _serverSocket != null;
 }
 
-/// Represents a connection to a peer (either incoming or outgoing)
+/// One TCP link to a peer. Handles line framing, size limits, keep-alive
+/// and (after the handshake) link encryption. Handshake orchestration lives
+/// in ConnectionManager.
 class PeerConnection {
+  static const Duration pingInterval = Duration(seconds: 30);
+  static const Duration idleTimeout = Duration(seconds: 95);
+  static const Duration handshakeTimeout = Duration(seconds: 15);
+
   final Socket socket;
   final bool isIncoming;
+  final DateTime openedAt = DateTime.now();
+
   String? peerId;
-  String? peerDisplayName;
-  String? peerPublicKeyHex;
-  String? peerKyberPublicKeyHex;
-  /// Kyber KEM ciphertext (set by the responder for the initiator to decapsulate)
-  String? kyberCiphertextHex;
-  /// Pre-computed Kyber shared secret (set by the responder who performed encapsulation)
-  String? kyberSharedSecretHex;
+  HandshakeResult? handshake;
+  SecureChannel? _channel;
 
-  final StreamController<ProtocolMessage> _messageController =
+  final StreamController<ProtocolMessage> _messages =
       StreamController<ProtocolMessage>.broadcast();
-  final Completer<void> _disconnectCompleter = Completer<void>();
+  final Completer<void> _disconnected = Completer<void>();
+  final BytesBuilder _buffer = BytesBuilder(copy: false);
+  Timer? _pingTimer;
+  DateTime _lastActivity = DateTime.now();
+  bool _closing = false;
+  int _resetsSent = 0;
 
-  StringBuffer _buffer = StringBuffer();
-
-  Stream<ProtocolMessage> get onMessage => _messageController.stream;
-  Future<void> get onDisconnect => _disconnectCompleter.future;
-
+  Stream<ProtocolMessage> get onMessage => _messages.stream;
+  Future<void> get onDisconnect => _disconnected.future;
+  bool get isConnected => !_disconnected.isCompleted;
+  bool get isSecure => _channel != null;
+  bool get isAuthenticated => handshake != null && _channel != null;
   String get remoteAddress => socket.remoteAddress.address;
   int get remotePort => socket.remotePort;
+  int get resetsSent => _resetsSent;
+  void noteResetSent() => _resetsSent++;
 
-  PeerConnection({
-    required this.socket,
-    this.isIncoming = false,
-    this.peerId,
-    this.peerDisplayName,
-    this.peerPublicKeyHex,
-  }) {
-    _startListening();
+  PeerConnection({required this.socket, required this.isIncoming}) {
+    socket.setOption(SocketOption.tcpNoDelay, true);
+    socket.listen(_onData, onError: (e) {
+      debugPrint('[P2P] socket error ($peerId): $e');
+      _cleanup();
+    }, onDone: _cleanup);
+    _pingTimer = Timer.periodic(pingInterval, (_) => _tick());
   }
 
-  void _startListening() {
-    socket.listen(
-      (data) {
-        final incoming = utf8.decode(data);
-        _buffer.write(incoming);
-
-        // Process line-delimited JSON messages
-        final bufferStr = _buffer.toString();
-        final lines = bufferStr.split('\n');
-
-        // If the last element isn't empty, it's incomplete
-        if (lines.last.isNotEmpty) {
-          _buffer = StringBuffer(lines.removeLast());
-        } else {
-          lines.removeLast();
-          _buffer = StringBuffer();
-        }
-
-        for (final line in lines) {
-          if (line.trim().isEmpty) continue;
-          try {
-            final message = ProtocolMessage.decode(line);
-            _handleProtocolMessage(message);
-          } catch (e) {
-            debugPrint('Failed to parse message: $e');
-          }
-        }
-      },
-      onError: (error) {
-        debugPrint('Connection error: $error');
-        _cleanup();
-      },
-      onDone: () {
-        debugPrint('Connection closed by peer: $peerId');
-        _cleanup();
-      },
-    );
+  void installChannel(SecureChannel channel) {
+    _channel = channel;
   }
 
-  void _handleProtocolMessage(ProtocolMessage message) {
-    // Extract peer info from HELLO messages
-    if (message.type == ProtocolMessageType.hello) {
-      peerId = message.senderId;
-      peerDisplayName = message.payload['displayName'] as String?;
-      peerPublicKeyHex = message.payload['publicKeyHex'] as String?;
+  void _tick() {
+    if (!isConnected) return;
+    if (DateTime.now().difference(_lastActivity) > idleTimeout) {
+      debugPrint('[P2P] idle timeout for $peerId');
+      unawaited(disconnect());
+      return;
     }
-    _messageController.add(message);
+    if (isAuthenticated) unawaited(send(ProtocolMessage.ping()));
   }
 
-  /// Send a protocol message to the peer
-  void send(ProtocolMessage message) {
+  // Frames are processed strictly in order: socket events can arrive while
+  // an earlier line is still being decrypted, so each line is chained onto
+  // the previous one instead of being handled concurrently.
+  Future<void> _chain = Future.value();
+
+  void _onData(List<int> data) {
+    _lastActivity = DateTime.now();
+    _buffer.add(data);
+    if (_buffer.length > ProtocolMessage.maxFrameBytes) {
+      debugPrint('[P2P] frame limit exceeded, dropping $remoteAddress');
+      _buffer.clear();
+      unawaited(disconnect());
+      return;
+    }
+    final bytes = _buffer.takeBytes();
+    var start = 0;
+    for (var i = 0; i < bytes.length; i++) {
+      if (bytes[i] == 0x0A) {
+        if (i > start) {
+          final line = bytes.sublist(start, i);
+          _chain = _chain.then((_) => _handleLine(line));
+        }
+        start = i + 1;
+      }
+    }
+    if (start < bytes.length) _buffer.add(bytes.sublist(start));
+  }
+
+  Future<void> _handleLine(List<int> lineBytes) async {
+    if (!isConnected) return;
     try {
-      socket.write(message.encode());
+      var line = utf8.decode(lineBytes);
+      final json = jsonDecode(line) as Map<String, dynamic>;
+      Map<String, dynamic> frameJson = json;
+      if (SecureChannel.isSealedFrame(json)) {
+        final channel = _channel;
+        if (channel == null) {
+          debugPrint('[P2P] sealed frame before handshake, dropping link');
+          await disconnect();
+          return;
+        }
+        line = await channel.open(json);
+        frameJson = jsonDecode(line) as Map<String, dynamic>;
+      } else if (_channel != null) {
+        // Once sealed, plaintext frames are not acceptable any more.
+        debugPrint('[P2P] plaintext frame on sealed link, dropping link');
+        await disconnect();
+        return;
+      }
+      final message = ProtocolMessage.fromJson(frameJson);
+      switch (message.type) {
+        case ProtocolMessageType.ping:
+          if (isAuthenticated) await send(ProtocolMessage.pong());
+          return;
+        case ProtocolMessageType.pong:
+          return;
+        case ProtocolMessageType.disconnect:
+          await disconnect();
+          return;
+        case ProtocolMessageType.unknown:
+          return;
+        default:
+          _messages.add(message);
+      }
+    } on StateError catch (e) {
+      // Replay / tamper on the secure channel: the link is compromised.
+      debugPrint('[P2P] secure channel failure ($peerId): $e');
+      await disconnect();
     } catch (e) {
-      debugPrint('Failed to send message: $e');
+      debugPrint('[P2P] bad frame from $remoteAddress: $e');
     }
   }
 
-  /// Disconnect from the peer
-  Future<void> disconnect() async {
+  /// Send a frame, sealing it when the link is secured.
+  Future<void> send(ProtocolMessage message) async {
+    if (!isConnected) return;
     try {
-      send(ProtocolMessage.disconnect(senderId: peerId ?? 'unknown'));
-      await socket.flush();
+      final line = message.encode();
+      final channel = _channel;
+      if (channel != null) {
+        socket.write('${await channel.seal(line.trimRight())}\n');
+      } else {
+        socket.write(line);
+      }
+    } catch (e) {
+      debugPrint('[P2P] send failed ($peerId): $e');
+    }
+  }
+
+  /// Wait for the next frame of a given type (used during the handshake).
+  Future<ProtocolMessage> nextOfType(ProtocolMessageType type,
+      {Duration timeout = handshakeTimeout}) {
+    return onMessage
+        .firstWhere((m) => m.type == type)
+        .timeout(timeout, onTimeout: () {
+      throw TimeoutException('timed out waiting for ${type.name}');
+    });
+  }
+
+  Future<void> disconnect() async {
+    if (_closing) return;
+    _closing = true;
+    try {
+      if (isAuthenticated) await send(ProtocolMessage.disconnect());
+      await socket.flush().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    try {
       await socket.close();
     } catch (_) {}
     _cleanup();
   }
 
   void _cleanup() {
-    if (!_disconnectCompleter.isCompleted) {
-      _disconnectCompleter.complete();
-    }
-    _messageController.close();
+    _pingTimer?.cancel();
+    if (!_disconnected.isCompleted) _disconnected.complete();
+    if (!_messages.isClosed) _messages.close();
+    _channel?.dispose();
   }
-
-  bool get isConnected => !_disconnectCompleter.isCompleted;
 }

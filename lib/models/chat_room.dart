@@ -6,7 +6,9 @@ enum ChatRoomType { direct, group }
 class GroupMember {
   final String nyxChatId;
   final String displayName;
-  final String publicKeyHex;
+  final String publicKeyHex;      // X25519 identity key
+  final String signingKeyHex;     // Ed25519 (v3)
+  final String kyberKeyHex;       // Kyber-768 (v3)
   final bool isAdmin;
   final DateTime joinedAt;
 
@@ -14,14 +16,21 @@ class GroupMember {
     required this.nyxChatId,
     required this.displayName,
     required this.publicKeyHex,
+    this.signingKeyHex = '',
+    this.kyberKeyHex = '',
     this.isAdmin = false,
     required this.joinedAt,
   });
+
+  bool get hasFullKeys =>
+      publicKeyHex.isNotEmpty && signingKeyHex.isNotEmpty && kyberKeyHex.isNotEmpty;
 
   Map<String, dynamic> toJson() => {
     'nyxChatId': nyxChatId,
     'displayName': displayName,
     'publicKeyHex': publicKeyHex,
+    'signingKeyHex': signingKeyHex,
+    'kyberKeyHex': kyberKeyHex,
     'isAdmin': isAdmin,
     'joinedAt': joinedAt.toIso8601String(),
   };
@@ -29,7 +38,9 @@ class GroupMember {
   factory GroupMember.fromJson(Map<String, dynamic> json) => GroupMember(
     nyxChatId: json['nyxChatId'] as String,
     displayName: json['displayName'] as String,
-    publicKeyHex: json['publicKeyHex'] as String,
+    publicKeyHex: json['publicKeyHex'] as String? ?? '',
+    signingKeyHex: json['signingKeyHex'] as String? ?? '',
+    kyberKeyHex: json['kyberKeyHex'] as String? ?? '',
     isAdmin: json['isAdmin'] as bool? ?? false,
     joinedAt: DateTime.parse(json['joinedAt'] as String),
   );
@@ -47,6 +58,9 @@ class ChatRoom {
   final ChatRoomType roomType;
   final List<GroupMember> members; // For group chats
   final String? groupDescription;
+  final int disappearAfterSeconds;  // 0 = off
+  final bool muted;
+  final bool left;                  // We left / were removed from the group
 
   ChatRoom({
     required this.id,
@@ -60,6 +74,9 @@ class ChatRoom {
     this.roomType = ChatRoomType.direct,
     this.members = const [],
     this.groupDescription,
+    this.disappearAfterSeconds = 0,
+    this.muted = false,
+    this.left = false,
   });
 
   bool get isGroup => roomType == ChatRoomType.group;
@@ -94,6 +111,9 @@ class ChatRoom {
     ChatRoomType? roomType,
     List<GroupMember>? members,
     String? groupDescription,
+    int? disappearAfterSeconds,
+    bool? muted,
+    bool? left,
   }) {
     return ChatRoom(
       id: id ?? this.id,
@@ -107,6 +127,9 @@ class ChatRoom {
       roomType: roomType ?? this.roomType,
       members: members ?? this.members,
       groupDescription: groupDescription ?? this.groupDescription,
+      disappearAfterSeconds: disappearAfterSeconds ?? this.disappearAfterSeconds,
+      muted: muted ?? this.muted,
+      left: left ?? this.left,
     );
   }
 
@@ -121,6 +144,9 @@ class ChatRoom {
     'roomType': roomType.name,
     'members': members.map((m) => m.toJson()).toList(),
     'groupDescription': groupDescription,
+    'disappearAfterSeconds': disappearAfterSeconds,
+    'muted': muted,
+    'left': left,
   };
 
   factory ChatRoom.fromJson(Map<String, dynamic> json) => ChatRoom(
@@ -141,6 +167,9 @@ class ChatRoom {
         ?.map((m) => GroupMember.fromJson(m as Map<String, dynamic>))
         .toList() ?? [],
     groupDescription: json['groupDescription'] as String?,
+    disappearAfterSeconds: json['disappearAfterSeconds'] as int? ?? 0,
+    muted: json['muted'] as bool? ?? false,
+    left: json['left'] as bool? ?? false,
   );
 
   String encode() => jsonEncode(toJson());

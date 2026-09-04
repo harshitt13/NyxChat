@@ -1,124 +1,143 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
 import '../core/crypto/key_manager.dart';
+import '../core/crypto/nyx_id.dart';
 import '../core/storage/local_storage.dart';
+import '../core/storage/trust_store.dart';
 import '../models/user_identity.dart';
 
-/// Manages user identity: generation, storage, and retrieval.
+/// Owns the local identity: long-term keys (secure storage) and the
+/// profile record (encrypted database). If the database is ever reset the
+/// identity is reconstructed from the keys, so users never re-onboard.
 class IdentityService extends ChangeNotifier {
-  final KeyManager _keyManager = KeyManager();
+  final KeyManager _keyManager;
   final LocalStorage _storage;
-  final FlutterSecureStorage _secureStore = const FlutterSecureStorage();
+  final FlutterSecureStorage _secure;
   static const String _kDisplayName = 'nyxchat_display_name';
   UserIdentity? _identity;
 
-  IdentityService(this._storage);
+  IdentityService(this._storage,
+      {KeyManager? keyManager, FlutterSecureStorage? secureStorage})
+      : _keyManager = keyManager ?? KeyManager(),
+        _secure = secureStorage ?? const FlutterSecureStorage();
 
   UserIdentity? get identity => _identity;
   bool get hasIdentity => _identity != null;
   String get nyxChatId => _identity?.nyxChatId ?? '';
   String get displayName => _identity?.displayName ?? '';
+  KeyManager get keyManager => _keyManager;
 
-  /// Initialize: Load existing identity from Hive.
-  /// If Hive was reset (key mismatch) but crypto keys still exist in
-  /// secure storage, the identity is automatically reconstructed so the
-  /// user never has to re-onboard.
-  Future<bool> init() async {
+  /// [decoy] selects the duress profile's independent key set.
+  Future<bool> init({bool decoy = false}) async {
     try {
-      final hasKeys = await _keyManager.hasKeys();
-      if (!hasKeys) return false;
-
+      _keyManager.setProfile(decoy ? '_decoy' : '');
+      _identity = null;
+      if (!await _keyManager.hasKeys()) {
+        notifyListeners();
+        return false;
+      }
       await _keyManager.loadKeys();
 
-      // Try loading from Hive first (fast path)
-      _identity = await _storage.getUserIdentity();
-
-      if (_identity != null) {
-        // Ensure display name is synced to secure storage for future recovery
-        await _secureStore.write(key: _kDisplayName, value: _identity!.displayName);
+      final stored = await _storage.getUserIdentity();
+      if (stored != null) {
+        _identity = await _migrateIfNeeded(stored);
+        await _secure.write(key: _kDisplayName, value: _identity!.displayName);
         notifyListeners();
         return true;
       }
 
-      // Hive was empty (corrupted / reset) — reconstruct from keys
-      debugPrint('[Identity] Hive identity missing — reconstructing from crypto keys');
-      final publicKeyHex = await _keyManager.getPublicKeyHex();
-      final signingPublicKeyHex = await _keyManager.getSigningPublicKeyHex();
-
-      if (publicKeyHex.isEmpty) return false;
-
-      // Recover display name from secure storage (set during generate/update)
-      final savedName = await _secureStore.read(key: _kDisplayName) ?? 'User';
-
-      final recovered = UserIdentity(
-        nyxChatId: UserIdentity.generateNyxChatId(publicKeyHex),
-        displayName: savedName,
-        publicKeyHex: publicKeyHex,
-        signingPublicKeyHex: signingPublicKeyHex,
-        createdAt: DateTime.now(),
-      );
-
-      // Persist back to Hive so next load is fast
-      await _storage.saveUserIdentity(recovered);
-      _identity = recovered;
+      debugPrint('[Identity] profile missing, reconstructing from keys');
+      final name = await _secure.read(key: _kDisplayName) ?? 'User';
+      _identity = await _buildIdentity(name);
+      await _storage.saveUserIdentity(_identity!);
       notifyListeners();
-
-      debugPrint('[Identity] Recovered identity: ${recovered.nyxChatId}');
       return true;
     } catch (e) {
-      debugPrint('Failed to load identity: $e');
+      debugPrint('[Identity] init failed: $e');
       return false;
     }
   }
 
-  /// Generate a new identity
-  Future<UserIdentity> generateIdentity(String displayName) async {
-    // Generate cryptographic keys
-    await _keyManager.generateKeys();
-    await _keyManager.loadKeys();
-
-    final publicKeyHex = await _keyManager.getPublicKeyHex();
-    final signingPublicKeyHex = await _keyManager.getSigningPublicKeyHex();
-
-    final identity = UserIdentity(
-      nyxChatId: UserIdentity.generateNyxChatId(publicKeyHex),
-      displayName: displayName,
-      publicKeyHex: publicKeyHex,
-      signingPublicKeyHex: signingPublicKeyHex,
-      createdAt: DateTime.now(),
+  /// Identities created before v3 derived their handle from the X25519
+  /// key only. They keep that handle (peers verify legacy handles too) but
+  /// gain the missing signing-key field.
+  Future<UserIdentity> _migrateIfNeeded(UserIdentity stored) async {
+    if (stored.signingPublicKeyHex.isNotEmpty &&
+        stored.publicKeyHex == _keyManager.identityPublicKeyHex) {
+      return stored;
+    }
+    final rebuilt = stored.copyWith(
+      publicKeyHex: _keyManager.identityPublicKeyHex,
+      signingPublicKeyHex: _keyManager.signingPublicKeyHex,
     );
-
-    // Save to Hive and persist display name in secure storage for recovery
-    await _storage.saveUserIdentity(identity);
-    await _secureStore.write(key: _kDisplayName, value: displayName);
-    _identity = identity;
-    notifyListeners();
-
-    debugPrint('Identity generated: ${identity.nyxChatId}');
-    return identity;
+    await _storage.saveUserIdentity(rebuilt);
+    return rebuilt;
   }
 
-  /// Update display name
+  Future<UserIdentity> _buildIdentity(String displayName) async {
+    final id = await NyxId.derive(
+      signingPublicKey: _keyManager.signingPublicKey,
+      identityPublicKey: _keyManager.identityPublicKey,
+    );
+    return UserIdentity(
+      nyxChatId: id,
+      displayName: displayName,
+      publicKeyHex: _keyManager.identityPublicKeyHex,
+      signingPublicKeyHex: _keyManager.signingPublicKeyHex,
+      createdAt: DateTime.now(),
+    );
+  }
+
+  Future<UserIdentity> generateIdentity(String displayName) async {
+    await _keyManager.generateKeys();
+    _identity = await _buildIdentity(displayName);
+    await _storage.saveUserIdentity(_identity!);
+    await _secure.write(key: _kDisplayName, value: displayName);
+    notifyListeners();
+    debugPrint('[Identity] generated ${_identity!.nyxChatId}');
+    return _identity!;
+  }
+
   Future<void> updateDisplayName(String newName) async {
     if (_identity == null) return;
     _identity = _identity!.copyWith(displayName: newName);
     await _storage.saveUserIdentity(_identity!);
-    await _secureStore.write(key: _kDisplayName, value: newName);
+    await _secure.write(key: _kDisplayName, value: newName);
     notifyListeners();
   }
 
-  /// Get the key manager for crypto operations
-  KeyManager get keyManager => _keyManager;
-
-  /// Get public key hex
   Future<String> getPublicKeyHex() => _keyManager.getPublicKeyHex();
+  Future<String> getSigningPublicKeyHex() => _keyManager.getSigningPublicKeyHex();
+  Future<String> getKyberPublicKeyHex() => _keyManager.getKyberPublicKeyHex();
 
-  /// Get signing public key hex
-  Future<String> getSigningPublicKeyHex() =>
-      _keyManager.getSigningPublicKeyHex();
+  /// Our fingerprint (for safety numbers and QR contact cards).
+  Future<Uint8List> fingerprint() => NyxId.fingerprint(
+        signingPublicKey: _keyManager.signingPublicKey,
+        identityPublicKey: _keyManager.identityPublicKey,
+      );
 
-  /// Get Kyber-768 public key hex (ML-KEM / post-quantum)
-  Future<String> getKyberPublicKeyHex() =>
-      _keyManager.getKyberPublicKeyHex();
+  /// Contact card to share out of band (QR / copy). Contains only public
+  /// material.
+  Map<String, dynamic> contactCard() => {
+        'nyx': 3,
+        'id': nyxChatId,
+        'name': displayName,
+        'ik': _keyManager.identityPublicKeyHex,
+        'sk': _keyManager.signingPublicKeyHex,
+        'kpk': _keyManager.kyberPublicKeyHex,
+      };
+
+  /// Safety number between us and a pinned peer.
+  Future<String> safetyNumberWith(PinnedPeer peer) async =>
+      NyxId.safetyNumber(await fingerprint(), await peer.fingerprint());
+
+  /// Forget the identity (panic wipe).
+  Future<void> destroy() async {
+    await _keyManager.clearKeys();
+    await _secure.delete(key: _kDisplayName);
+    _identity = null;
+    notifyListeners();
+  }
 }

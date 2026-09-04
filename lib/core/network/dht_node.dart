@@ -1,351 +1,25 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
+
+import '../crypto/crypto_utils.dart';
+import '../crypto/key_manager.dart';
+import '../crypto/nyx_id.dart';
 import 'message_protocol.dart';
 
-/// A simplified DHT (Distributed Hash Table) node for
-/// global P2P peer discovery beyond the local network.
-///
-/// Each node maintains a routing table of known peers and
-/// can look up peers by their NyxChat ID. Peers are found
-/// by forwarding lookup requests through the network.
-class DHTNode extends ChangeNotifier {
-  final String nodeId;
-  final int port;
-  final String publicKeyHex;
-  final String displayName;
-
-  ServerSocket? _server;
-  final Map<String, DHTEntry> _routingTable = {};
-  final List<String> _bootstrapNodes;
-  final Map<String, Completer<DHTEntry?>> _pendingLookups = {};
-  Timer? _refreshTimer;
-  bool _isRunning = false;
-
-  // K-bucket size (standard Kademlia)
-  static const int kBucketSize = 20;
-  static const int maxHops = 5;
-
-  DHTNode({
-    required this.nodeId,
-    required this.port,
-    required this.publicKeyHex,
-    required this.displayName,
-    List<String>? bootstrapNodes,
-  }) : _bootstrapNodes = bootstrapNodes ?? [];
-
-  bool get isRunning => _isRunning;
-  int get knownPeersCount => _routingTable.length;
-  List<DHTEntry> get knownPeers => _routingTable.values.toList();
-
-  /// Start the DHT node
-  Future<void> start() async {
-    if (_isRunning) return;
-
-    try {
-      _server = await ServerSocket.bind(InternetAddress.anyIPv4, port + 1);
-      _isRunning = true;
-      notifyListeners();
-
-      _server!.listen(_handleConnection);
-      debugPrint('[DHT] Node started on port ${port + 1}');
-
-      // Announce self to bootstrap nodes
-      await _announceToBootstrap();
-
-      // Periodically refresh the routing table
-      _startRefreshTimer();
-    } catch (e) {
-      debugPrint('[DHT] Failed to start: $e');
-    }
-  }
-
-  /// Stop the DHT node
-  Future<void> stop() async {
-    _isRunning = false;
-    _refreshTimer?.cancel();
-    _refreshTimer = null;
-    await _server?.close();
-    _server = null;
-    notifyListeners();
-    debugPrint('[DHT] Node stopped');
-  }
-
-  /// Add a bootstrap node address
-  void addBootstrapNode(String address) {
-    if (!_bootstrapNodes.contains(address)) {
-      _bootstrapNodes.add(address);
-    }
-  }
-
-  /// Announce self to the network
-  Future<void> announce() async {
-    final announcement = ProtocolMessage.dhtAnnounce(
-      senderId: nodeId,
-      publicKeyHex: publicKeyHex,
-      displayName: displayName,
-      address: '', // Will be filled by receiver
-      port: port,
-    );
-
-    // Send to all known peers
-    for (final entry in _routingTable.values) {
-      try {
-        await _sendToPeer(entry.address, entry.dhtPort, announcement);
-      } catch (e) {
-        debugPrint('[DHT] Failed to announce to ${entry.nodeId}: $e');
-      }
-    }
-
-    // Send to bootstrap nodes
-    await _announceToBootstrap();
-  }
-
-  /// Look up a peer by their NyxChat ID
-  Future<DHTEntry?> lookup(String targetId) async {
-    // Check local routing table first
-    if (_routingTable.containsKey(targetId)) {
-      return _routingTable[targetId];
-    }
-
-    // Create a pending lookup
-    final completer = Completer<DHTEntry?>();
-    _pendingLookups[targetId] = completer;
-
-    // Send lookup to closest known peers
-    final lookupMsg = ProtocolMessage.dhtLookup(
-      senderId: nodeId,
-      targetId: targetId,
-    );
-
-    final closestPeers = _getClosestPeers(targetId, kBucketSize);
-    for (final peer in closestPeers) {
-      try {
-        await _sendToPeer(peer.address, peer.dhtPort, lookupMsg);
-      } catch (e) {
-        debugPrint('[DHT] Lookup send failed to ${peer.nodeId}: $e');
-      }
-    }
-
-    // Wait up to 10 seconds for response
-    try {
-      return await completer.future.timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {
-          _pendingLookups.remove(targetId);
-          return null;
-        },
-      );
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /// Store a peer entry in the routing table
-  void storePeer(DHTEntry entry) {
-    if (entry.nodeId == nodeId) return; // Don't store self
-    _routingTable[entry.nodeId] = entry;
-    notifyListeners();
-    debugPrint('[DHT] Stored peer: ${entry.nodeId} at ${entry.address}:${entry.port}');
-  }
-
-  /// Handle incoming DHT connections
-  void _handleConnection(Socket socket) {
-    final remoteAddress = socket.remoteAddress.address;
-    final buffer = StringBuffer();
-
-    socket.listen(
-      (data) {
-        buffer.write(utf8.decode(data));
-        final lines = buffer.toString().split('\n');
-        buffer.clear();
-
-        // Last element might be partial
-        if (lines.last.isNotEmpty) {
-          buffer.write(lines.last);
-        }
-
-        for (int i = 0; i < lines.length - 1; i++) {
-          if (lines[i].trim().isNotEmpty) {
-            _handleMessage(lines[i].trim(), remoteAddress, socket);
-          }
-        }
-      },
-      onDone: () => socket.destroy(),
-      onError: (_) => socket.destroy(),
-    );
-  }
-
-  /// Process incoming DHT messages
-  void _handleMessage(String data, String remoteAddress, Socket socket) {
-    try {
-      final msg = ProtocolMessage.decode(data);
-
-      switch (msg.type) {
-        case ProtocolMessageType.dhtAnnounce:
-          _handleAnnounce(msg, remoteAddress);
-          break;
-        case ProtocolMessageType.dhtLookup:
-          _handleLookup(msg, remoteAddress, socket);
-          break;
-        case ProtocolMessageType.dhtResponse:
-          _handleLookupResponse(msg);
-          break;
-        default:
-          break;
-      }
-    } catch (e) {
-      debugPrint('[DHT] Error handling message: $e');
-    }
-  }
-
-  /// Handle peer announcement
-  void _handleAnnounce(ProtocolMessage msg, String remoteAddress) {
-    final entry = DHTEntry(
-      nodeId: msg.senderId,
-      address: remoteAddress,
-      port: msg.payload['port'] as int,
-      dhtPort: (msg.payload['port'] as int) + 1,
-      publicKeyHex: msg.payload['publicKeyHex'] as String,
-      displayName: msg.payload['displayName'] as String,
-      lastSeen: DateTime.now(),
-    );
-    storePeer(entry);
-  }
-
-  /// Handle peer lookup request
-  void _handleLookup(
-      ProtocolMessage msg, String remoteAddress, Socket socket) {
-    final targetId = msg.payload['targetId'] as String;
-
-    // Check if we know the target
-    if (_routingTable.containsKey(targetId)) {
-      final target = _routingTable[targetId]!;
-      final response = ProtocolMessage.dhtResponse(
-        senderId: nodeId,
-        targetId: targetId,
-        peers: [target.toJson()],
-      );
-      socket.write(response.encode());
-    } else {
-      // Send closest known peers
-      final closest = _getClosestPeers(targetId, 3);
-      final response = ProtocolMessage.dhtResponse(
-        senderId: nodeId,
-        targetId: targetId,
-        peers: closest.map((p) => p.toJson()).toList(),
-      );
-      socket.write(response.encode());
-    }
-  }
-
-  /// Handle lookup response
-  void _handleLookupResponse(ProtocolMessage msg) {
-    final targetId = msg.payload['targetId'] as String;
-    final peers = (msg.payload['peers'] as List<dynamic>)
-        .map((p) => DHTEntry.fromJson(p as Map<String, dynamic>))
-        .toList();
-
-    // Store all returned peers
-    for (final peer in peers) {
-      storePeer(peer);
-    }
-
-    // If we found the target, complete the lookup
-    if (_pendingLookups.containsKey(targetId)) {
-      final target = peers.where((p) => p.nodeId == targetId).firstOrNull;
-      if (target != null) {
-        _pendingLookups[targetId]?.complete(target);
-        _pendingLookups.remove(targetId);
-      }
-    }
-  }
-
-  /// Send a message to a specific peer
-  Future<void> _sendToPeer(
-      String address, int port, ProtocolMessage msg) async {
-    try {
-      final socket = await Socket.connect(address, port,
-          timeout: const Duration(seconds: 5));
-      socket.write(msg.encode());
-      await socket.flush();
-      socket.destroy();
-    } catch (e) {
-      debugPrint('[DHT] Failed to send to $address:$port: $e');
-    }
-  }
-
-  /// Announce to bootstrap nodes
-  Future<void> _announceToBootstrap() async {
-    final announcement = ProtocolMessage.dhtAnnounce(
-      senderId: nodeId,
-      publicKeyHex: publicKeyHex,
-      displayName: displayName,
-      address: '',
-      port: port,
-    );
-
-    for (final node in _bootstrapNodes) {
-      try {
-        final parts = node.split(':');
-        if (parts.length == 2) {
-          await _sendToPeer(parts[0], int.parse(parts[1]), announcement);
-        }
-      } catch (e) {
-        debugPrint('[DHT] Bootstrap announce failed for $node: $e');
-      }
-    }
-  }
-
-  /// Get closest peers to a target using XOR distance
-  List<DHTEntry> _getClosestPeers(String targetId, int count) {
-    final entries = _routingTable.values.toList();
-    entries.sort((a, b) {
-      final distA = _xorDistance(a.nodeId, targetId);
-      final distB = _xorDistance(b.nodeId, targetId);
-      return distA.compareTo(distB);
-    });
-    return entries.take(count).toList();
-  }
-
-  /// XOR distance between two node IDs (proper Kademlia big-integer XOR)
-  int _xorDistance(String id1, String id2) {
-    // Compute XOR on the raw bytes and return a comparable distance 
-    // by treating the first differing XOR byte as most significant
-    final len = min(id1.length, id2.length);
-    for (int i = 0; i < len; i++) {
-      final xor = id1.codeUnitAt(i) ^ id2.codeUnitAt(i);
-      if (xor != 0) {
-        // Return distance weighted by position: earlier differences = larger distance
-        return (len - i) * 256 + xor;
-      }
-    }
-    // If one is a prefix of the other, the longer one is further
-    return (id1.length - id2.length).abs();
-  }
-
-  /// Periodically refresh the routing table
-  void _startRefreshTimer() {
-    _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
-      if (!_isRunning) {
-        timer.cancel();
-        return;
-      }
-      announce();
-    });
-  }
-}
-
-/// Represents a peer entry in the DHT routing table
+/// Peer record learned through the DHT.
 class DHTEntry {
   final String nodeId;
   final String address;
   final int port;
   final int dhtPort;
-  final String publicKeyHex;
+  final String identityKeyHex;
+  final String signingKeyHex;
+  final String kyberKeyHex;
   final String displayName;
   final DateTime lastSeen;
 
@@ -354,30 +28,352 @@ class DHTEntry {
     required this.address,
     required this.port,
     required this.dhtPort,
-    required this.publicKeyHex,
+    required this.identityKeyHex,
+    required this.signingKeyHex,
+    required this.kyberKeyHex,
     required this.displayName,
     required this.lastSeen,
   });
 
   Map<String, dynamic> toJson() => {
-    'nodeId': nodeId,
-    'address': address,
-    'port': port,
-    'dhtPort': dhtPort,
-    'publicKeyHex': publicKeyHex,
-    'displayName': displayName,
-    'lastSeen': lastSeen.toIso8601String(),
-  };
+        'nodeId': nodeId,
+        'address': address,
+        'port': port,
+        'dhtPort': dhtPort,
+        'ik': identityKeyHex,
+        'sk': signingKeyHex,
+        'kpk': kyberKeyHex,
+        'displayName': displayName,
+        'lastSeen': lastSeen.toIso8601String(),
+      };
 
-  factory DHTEntry.fromJson(Map<String, dynamic> json) => DHTEntry(
-    nodeId: json['nodeId'] as String,
-    address: json['address'] as String,
-    port: json['port'] as int,
-    dhtPort: json['dhtPort'] as int? ?? (json['port'] as int) + 1,
-    publicKeyHex: json['publicKeyHex'] as String,
-    displayName: json['displayName'] as String,
-    lastSeen: json['lastSeen'] != null
-        ? DateTime.parse(json['lastSeen'] as String)
-        : DateTime.now(),
-  );
+  factory DHTEntry.fromJson(Map<String, dynamic> j) => DHTEntry(
+        nodeId: j['nodeId'] as String,
+        address: j['address'] as String,
+        port: j['port'] as int,
+        dhtPort: j['dhtPort'] as int? ?? (j['port'] as int) + 1,
+        identityKeyHex: j['ik'] as String? ?? j['publicKeyHex'] as String? ?? '',
+        signingKeyHex: j['sk'] as String? ?? '',
+        kyberKeyHex: j['kpk'] as String? ?? '',
+        displayName: j['displayName'] as String? ?? '',
+        lastSeen: j['lastSeen'] != null
+            ? DateTime.parse(j['lastSeen'] as String)
+            : DateTime.now(),
+      );
+}
+
+/// Simplified Kademlia-style directory for finding peers outside the local
+/// network.
+///
+/// Announcements are signed with the announcer's Ed25519 key and the node
+/// id must be bound to the presented keys, so entries cannot be spoofed.
+/// Lookup responses are hints only: the real trust decision is the signed
+/// handshake with the peer itself.
+///
+/// Status: experimental. Without a reachable bootstrap node and NAT
+/// traversal this only works on networks where peers are directly
+/// routable.
+class DHTNode extends ChangeNotifier {
+  final String nodeId;
+  final int port;
+  final KeyManager keys;
+  final String displayName;
+
+  ServerSocket? _server;
+  final Map<String, DHTEntry> _table = {};
+  final List<String> _bootstrap;
+  final Map<String, Completer<DHTEntry?>> _pending = {};
+  Timer? _refresh;
+  bool _running = false;
+
+  static const int kBucketSize = 20;
+  static const Duration entryTtl = Duration(hours: 1);
+  static const Duration announceFreshness = Duration(minutes: 10);
+  static const int maxFrameBytes = 64 * 1024;
+
+  DHTNode({
+    required this.nodeId,
+    required this.port,
+    required this.keys,
+    required this.displayName,
+    List<String>? bootstrapNodes,
+  }) : _bootstrap = bootstrapNodes ?? [];
+
+  bool get isRunning => _running;
+  int get knownPeersCount => _table.length;
+  List<DHTEntry> get knownPeers => _table.values.toList();
+  List<String> get bootstrapNodes => List.unmodifiable(_bootstrap);
+
+  Future<void> start() async {
+    if (_running) return;
+    _server = await ServerSocket.bind(InternetAddress.anyIPv4, port + 1);
+    _running = true;
+    _server!.listen(_handleConnection);
+    debugPrint('[DHT] listening on ${port + 1}');
+    await announce();
+    _refresh?.cancel();
+    _refresh = Timer.periodic(const Duration(minutes: 5), (_) {
+      _table.removeWhere((_, e) => DateTime.now().difference(e.lastSeen) > entryTtl);
+      announce();
+    });
+    notifyListeners();
+  }
+
+  Future<void> stop() async {
+    _running = false;
+    _refresh?.cancel();
+    await _server?.close();
+    _server = null;
+    notifyListeners();
+  }
+
+  void addBootstrapNode(String address) {
+    if (!_bootstrap.contains(address)) _bootstrap.add(address);
+  }
+
+  Future<ProtocolMessage> _signedAnnounce() async {
+    final iat = DateTime.now().toUtc().millisecondsSinceEpoch;
+    final sig = await keys.sign(_announceTranscript(
+      nodeId: nodeId,
+      identityKey: keys.identityPublicKey,
+      signingKey: keys.signingPublicKey,
+      kyberKey: keys.kyberPublicKey,
+      displayName: displayName,
+      port: port,
+      iat: iat,
+    ));
+    return ProtocolMessage.dhtAnnounce(
+      senderId: nodeId,
+      identityKeyHex: keys.identityPublicKeyHex,
+      signingKeyHex: keys.signingPublicKeyHex,
+      kyberKeyHex: keys.kyberPublicKeyHex,
+      displayName: displayName,
+      port: port,
+      issuedAtMs: iat,
+      signatureHex: CryptoUtils.toHex(sig),
+    );
+  }
+
+  static List<int> _announceTranscript({
+    required String nodeId,
+    required List<int> identityKey,
+    required List<int> signingKey,
+    required List<int> kyberKey,
+    required String displayName,
+    required int port,
+    required int iat,
+  }) =>
+      CryptoUtils.lengthPrefixed([
+        'NyxChat-DHT-Announce-v3'.codeUnits,
+        utf8.encode(nodeId),
+        identityKey,
+        signingKey,
+        kyberKey,
+        utf8.encode(displayName),
+        CryptoUtils.int32be(port),
+        CryptoUtils.int64be(iat),
+      ]);
+
+  Future<void> announce() async {
+    if (!_running) return;
+    final msg = await _signedAnnounce();
+    for (final e in _table.values.toList()) {
+      await _send(e.address, e.dhtPort, msg);
+    }
+    for (final b in _bootstrap) {
+      final parts = b.split(':');
+      if (parts.length == 2) {
+        final p = int.tryParse(parts[1]);
+        if (p != null) await _send(parts[0], p, msg);
+      }
+    }
+  }
+
+  Future<DHTEntry?> lookup(String targetId) async {
+    if (_table.containsKey(targetId)) return _table[targetId];
+    final completer = Completer<DHTEntry?>();
+    _pending[targetId] = completer;
+    final msg = ProtocolMessage.dhtLookup(senderId: nodeId, targetId: targetId);
+    for (final peer in _closest(targetId, kBucketSize)) {
+      await _send(peer.address, peer.dhtPort, msg);
+    }
+    try {
+      return await completer.future.timeout(const Duration(seconds: 10),
+          onTimeout: () {
+        _pending.remove(targetId);
+        return null;
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _handleConnection(Socket socket) {
+    final remote = socket.remoteAddress.address;
+    final buffer = BytesBuilder(copy: false);
+    socket.listen((data) {
+      buffer.add(data);
+      if (buffer.length > maxFrameBytes) {
+        socket.destroy();
+        return;
+      }
+      final bytes = buffer.takeBytes();
+      var start = 0;
+      for (var i = 0; i < bytes.length; i++) {
+        if (bytes[i] == 0x0A) {
+          if (i > start) {
+            _handleLine(utf8.decode(bytes.sublist(start, i)), remote, socket);
+          }
+          start = i + 1;
+        }
+      }
+      if (start < bytes.length) buffer.add(bytes.sublist(start));
+    }, onDone: socket.destroy, onError: (_) => socket.destroy());
+  }
+
+  Future<void> _handleLine(String line, String remote, Socket socket) async {
+    try {
+      final msg = ProtocolMessage.decode(line);
+      switch (msg.type) {
+        case ProtocolMessageType.dhtAnnounce:
+          await _handleAnnounce(msg, remote);
+          break;
+        case ProtocolMessageType.dhtLookup:
+          _handleLookup(msg, socket);
+          break;
+        case ProtocolMessageType.dhtResponse:
+          await _handleResponse(msg);
+          break;
+        default:
+          break;
+      }
+    } catch (e) {
+      debugPrint('[DHT] bad message from $remote: $e');
+    }
+  }
+
+  /// Validate an announcement: key lengths, id binding, freshness and
+  /// signature. Returns the entry or null.
+  static Future<DHTEntry?> validateAnnounce(
+      Map<String, dynamic> p, String address) async {
+    final id = p['senderId'];
+    final port = p['port'];
+    final iat = p['iat'];
+    final name = p['displayName'];
+    if (id is! String || !NyxId.isValidFormat(id)) return null;
+    if (port is! int || port < 1 || port > 65535) return null;
+    if (iat is! int) return null;
+    if (name is! String || name.length > 64) return null;
+    final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+    if ((now - iat).abs() > announceFreshness.inMilliseconds) return null;
+    final ik = CryptoUtils.decodeKey(p['ik'] as String, 32, 'ik');
+    final sk = CryptoUtils.decodeKey(p['sk'] as String, 32, 'sk');
+    final kpk = CryptoUtils.decodeKey(
+        p['kpk'] as String, CryptoUtils.kyber768PublicKeyLength, 'kpk');
+    final sig = CryptoUtils.decodeKey(p['sig'] as String, 64, 'sig');
+    if (!await NyxId.verify(id: id, signingPublicKey: sk, identityPublicKey: ik)) {
+      return null;
+    }
+    final ok = await CryptoUtils.ed25519Verify(
+      publicKey: sk,
+      message: _announceTranscript(
+        nodeId: id,
+        identityKey: ik,
+        signingKey: sk,
+        kyberKey: kpk,
+        displayName: name,
+        port: port,
+        iat: iat,
+      ),
+      signature: sig,
+    );
+    if (!ok) return null;
+    return DHTEntry(
+      nodeId: id,
+      address: address,
+      port: port,
+      dhtPort: port + 1,
+      identityKeyHex: CryptoUtils.toHex(ik),
+      signingKeyHex: CryptoUtils.toHex(sk),
+      kyberKeyHex: CryptoUtils.toHex(kpk),
+      displayName: name,
+      lastSeen: DateTime.now(),
+    );
+  }
+
+  Future<void> _handleAnnounce(ProtocolMessage msg, String remote) async {
+    final entry = await validateAnnounce(msg.payload, remote);
+    if (entry == null) {
+      debugPrint('[DHT] rejected announce from $remote');
+      return;
+    }
+    storePeer(entry);
+  }
+
+  void storePeer(DHTEntry entry) {
+    if (entry.nodeId == nodeId) return;
+    if (_table.length >= kBucketSize * 8 && !_table.containsKey(entry.nodeId)) {
+      final oldest = _table.values.reduce(
+          (a, b) => a.lastSeen.isBefore(b.lastSeen) ? a : b);
+      _table.remove(oldest.nodeId);
+    }
+    _table[entry.nodeId] = entry;
+    notifyListeners();
+  }
+
+  void _handleLookup(ProtocolMessage msg, Socket socket) {
+    final target = msg.payload['targetId'];
+    if (target is! String) return;
+    final hit = _table[target];
+    final peers = hit != null ? [hit] : _closest(target, 3);
+    socket.write(ProtocolMessage.dhtResponse(
+      senderId: nodeId,
+      targetId: target,
+      peers: peers.map((p) => p.toJson()).toList(),
+    ).encode());
+  }
+
+  Future<void> _handleResponse(ProtocolMessage msg) async {
+    final target = msg.payload['targetId'];
+    final peers = msg.payload['peers'];
+    if (target is! String || peers is! List) return;
+    // Entries relayed by third parties are unverified hints: keep them but
+    // never treat their keys as pinned. The handshake decides.
+    for (final p in peers.take(kBucketSize)) {
+      try {
+        final e = DHTEntry.fromJson(p as Map<String, dynamic>);
+        if (NyxId.isValidFormat(e.nodeId)) storePeer(e);
+      } catch (_) {}
+    }
+    final c = _pending.remove(target);
+    if (c != null && !c.isCompleted) c.complete(_table[target]);
+  }
+
+  Future<void> _send(String address, int port, ProtocolMessage msg) async {
+    try {
+      final socket = await Socket.connect(address, port,
+          timeout: const Duration(seconds: 5));
+      socket.write(msg.encode());
+      await socket.flush();
+      socket.destroy();
+    } catch (e) {
+      debugPrint('[DHT] send to $address:$port failed: $e');
+    }
+  }
+
+  List<DHTEntry> _closest(String targetId, int count) {
+    final list = _table.values.toList()
+      ..sort((a, b) => _distance(a.nodeId, targetId)
+          .compareTo(_distance(b.nodeId, targetId)));
+    return list.take(count).toList();
+  }
+
+  static int _distance(String a, String b) {
+    final len = min(a.length, b.length);
+    for (var i = 0; i < len; i++) {
+      final x = a.codeUnitAt(i) ^ b.codeUnitAt(i);
+      if (x != 0) return (len - i) * 256 + x;
+    }
+    return (a.length - b.length).abs();
+  }
 }

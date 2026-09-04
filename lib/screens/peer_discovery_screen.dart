@@ -1,48 +1,80 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
-import '../theme/app_theme.dart';
-import '../services/identity_service.dart';
-import '../services/peer_service.dart';
-import '../services/chat_service.dart';
-import '../models/peer.dart';
-import 'chat_screen.dart';
 
+import '../core/network/ble_manager.dart';
+import '../core/storage/trust_store.dart';
+import '../models/peer.dart';
+import '../services/chat_service.dart';
+import '../services/peer_service.dart';
+import '../theme/app_theme.dart';
+import 'chat_screen.dart';
+import 'contact_verify_screen.dart';
+
+/// Find people: LAN discovery, Bluetooth neighbours, pinned contacts,
+/// manual connection, contact-card import and the experimental DHT.
 class PeerDiscoveryScreen extends StatefulWidget {
   const PeerDiscoveryScreen({super.key});
-
   @override
   State<PeerDiscoveryScreen> createState() => _PeerDiscoveryScreenState();
 }
 
-class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _scanController;
-  final _ipController = TextEditingController();
-  final _portController = TextEditingController(text: '42420');
-  final _dhtBootstrapController = TextEditingController();
-  final _dhtLookupController = TextEditingController();
-  bool _isDHTStarting = false;
-  bool _isLookingUp = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _scanController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 3),
-    )..repeat();
-  }
+class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen> {
+  final _address = TextEditingController();
+  final _port = TextEditingController(text: '42420');
+  final _card = TextEditingController();
+  final _lookup = TextEditingController();
+  final _bootstrap = TextEditingController();
+  bool _busy = false;
 
   @override
   void dispose() {
-    _scanController.dispose();
-    _ipController.dispose();
-    _portController.dispose();
-    _dhtBootstrapController.dispose();
-    _dhtLookupController.dispose();
+    for (final c in [_address, _port, _card, _lookup, _bootstrap]) {
+      c.dispose();
+    }
     super.dispose();
+  }
+
+  void _snack(String t, {Color color = AppTheme.surface}) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(t), backgroundColor: color, behavior: SnackBarBehavior.floating,
+      ));
+
+  Future<void> _openChat(String peerId, String name) async {
+    final room = await context.read<ChatService>().getOrCreateDirectRoom(peerId: peerId, displayName: name);
+    if (!mounted) return;
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => ChatScreen(roomId: room.id)));
+  }
+
+  Future<void> _manualConnect() async {
+    final addr = _address.text.trim();
+    final port = int.tryParse(_port.text.trim()) ?? 42420;
+    if (addr.isEmpty) return;
+    setState(() => _busy = true);
+    final ok = await context.read<PeerService>().connectToPeer(address: addr, port: port);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    _snack(ok ? 'Connected and authenticated' : 'Connection failed (unreachable, refused, or key mismatch)',
+        color: ok ? AppTheme.accentGreen.withValues(alpha: 0.3) : AppTheme.error.withValues(alpha: 0.3));
+  }
+
+  Future<void> _importCard() async {
+    final raw = _card.text.trim();
+    if (raw.isEmpty) return;
+    try {
+      Map<String, dynamic> card;
+      if (raw.startsWith('nyx3;')) {
+        final parts = raw.split(';');
+        if (parts.length != 6) throw const FormatException('bad card');
+        card = {'nyx': 3, 'id': parts[1], 'name': parts[2], 'ik': parts[3], 'sk': parts[4], 'kpk': parts[5]};
+      } else {
+        throw const FormatException('unrecognised format');
+      }
+      final peer = await context.read<TrustStore>().pinFromContactCard(card, verified: true);
+      _card.clear();
+      _snack('Pinned and verified ${peer.displayName}', color: AppTheme.accentGreen.withValues(alpha: 0.3));
+    } catch (e) {
+      _snack('Invalid contact card: $e', color: AppTheme.error.withValues(alpha: 0.3));
+    }
   }
 
   @override
@@ -51,760 +83,201 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen>
       backgroundColor: AppTheme.background,
       appBar: AppBar(
         backgroundColor: AppTheme.background,
-        leading: IconButton(
-          onPressed: () => Navigator.pop(context),
-          icon: const Icon(Icons.arrow_back_ios_rounded,
-              color: AppTheme.textPrimary, size: 20),
-        ),
-        title: const Text('Discover Peers',
-            style: TextStyle(
-                color: AppTheme.textPrimary,
-                fontSize: 20,
-                fontWeight: FontWeight.w700)),
+        elevation: 0,
+        title: const Text('Find people', style: TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildScanningSection(),
-            const SizedBox(height: 20),
-            _buildBleSection(),
-            const SizedBox(height: 28),
-            _buildDiscoveredPeers(),
-            const SizedBox(height: 28),
-            _buildManualConnect(),
-            const SizedBox(height: 28),
-            _buildDHTSection(),
-            const SizedBox(height: 40),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildScanningSection() {
-    return Center(
-      child: Column(
-        children: [
-          SizedBox(
-            width: 120,
-            height: 120,
-            child: AnimatedBuilder(
-              animation: _scanController,
-              builder: (context, child) {
-                return Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    ...List.generate(3, (i) {
-                      final p = (_scanController.value + i * 0.33) % 1.0;
-                      return Container(
-                        width: 80 + (p * 40),
-                        height: 80 + (p * 40),
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: Colors.white
-                                .withValues(alpha: 0.06 * (1 - p)),
-                            width: 0.5,
-                          ),
-                        ),
-                      );
-                    }),
-                    Container(
-                      width: 56,
-                      height: 56,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: AppTheme.surface,
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.06),
-                        ),
-                      ),
-                      child: Icon(Icons.radar_rounded,
-                          color: AppTheme.textMuted, size: 24),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-          const SizedBox(height: 16),
-          const Text('Scanning local network',
-              style: TextStyle(
-                  color: AppTheme.textSecondary,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w400)),
-          const SizedBox(height: 4),
-          Text('Same Wi-Fi required',
-              style: TextStyle(
-                  color: AppTheme.textMuted.withValues(alpha: 0.6),
-                  fontSize: 12)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBleSection() {
-    return Consumer<PeerService>(
-      builder: (context, peerService, _) {
-        final bleManager = peerService.bleManager;
-        return Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: AppTheme.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: peerService.isBleActive
-                  ? AppTheme.accentBlue.withValues(alpha: 0.15)
-                  : Colors.white.withValues(alpha: 0.04),
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+      body: Consumer3<PeerService, TrustStore, BleManager>(
+        builder: (context, peers, trust, ble, _) {
+          final nearby = peers.peerList.where((p) => !p.ipAddress.startsWith('ble://')).toList()
+            ..sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
+          final contacts = trust.all..sort((a, b) => a.displayName.compareTo(b.displayName));
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
             children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.bluetooth_rounded,
-                    size: 18,
-                    color: peerService.isBleActive
-                        ? AppTheme.accentBlue
-                        : AppTheme.textMuted,
-                  ),
+              _status(peers, ble),
+              const SizedBox(height: 18),
+              _section('Nearby on Wi-Fi'),
+              if (nearby.isEmpty) _hint('Nobody discovered yet. Peers on the same Wi-Fi appear here automatically.'),
+              ...nearby.map((p) => _peerTile(p, peers, trust)),
+              const SizedBox(height: 18),
+              _section('Bluetooth mesh'),
+              if (!ble.isSupported) _hint('Bluetooth LE is not available on this device.'),
+              if (ble.isSupported && ble.links.isEmpty && ble.discoveredPeers.isEmpty)
+                _hint('Scanning${ble.isAdvertising ? ' and advertising' : ''}. Other NyxChat devices within range will link automatically.'),
+              ...ble.links.map((l) => _bleTile(l.nyxId ?? l.address, 'linked · ${l.isCentralRole ? 'central' : 'peripheral'} · MTU ${l.mtu}', true)),
+              ...ble.discoveredPeers.where((d) => ble.linkForNyxId(d.nyxId ?? '') == null)
+                  .map((d) => _bleTile(d.nyxId ?? d.deviceName, '${d.rssi} dBm', false)),
+              const SizedBox(height: 18),
+              _section('Contacts'),
+              if (contacts.isEmpty) _hint('Keys of every peer you connect to are pinned here.'),
+              ...contacts.map((c) => _contactTile(c, peers)),
+              const SizedBox(height: 18),
+              _section('Add contact from card'),
+              _hint('Paste the text of a contact card (shown as QR in Verify). This pins and verifies their keys.'),
+              _input(_card, 'nyx3;NC-...;name;...', maxLines: 3),
+              const SizedBox(height: 8),
+              _button('Import card', _importCard),
+              const SizedBox(height: 18),
+              _section('Manual connection'),
+              Row(children: [
+                Expanded(flex: 3, child: _input(_address, 'IP address')),
+                const SizedBox(width: 8),
+                Expanded(child: _input(_port, 'Port')),
+              ]),
+              const SizedBox(height: 8),
+              _button(_busy ? 'Connecting...' : 'Connect', _busy ? null : _manualConnect),
+              const SizedBox(height: 18),
+              _section('Global directory (DHT, experimental)'),
+              _hint('Needs a reachable bootstrap node. Announcements are signed; the handshake still decides trust.'),
+              Row(children: [
+                Expanded(child: Text(peers.isDHTActive ? 'Running · ${peers.dhtNode?.knownPeersCount ?? 0} nodes' : 'Stopped',
+                    style: TextStyle(color: peers.isDHTActive ? AppTheme.accentGreen : AppTheme.textMuted, fontSize: 13))),
+                TextButton(
+                  onPressed: () => peers.isDHTActive ? peers.stopDHT() : peers.startDHT(),
+                  child: Text(peers.isDHTActive ? 'Stop' : 'Start'),
+                ),
+              ]),
+              if (peers.isDHTActive) ...[
+                Row(children: [
+                  Expanded(child: _input(_bootstrap, 'bootstrap host:port')),
                   const SizedBox(width: 8),
-                  const Text('BLE Mesh',
-                      style: TextStyle(
-                        color: AppTheme.textPrimary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      )),
-                  const Spacer(),
-                  if (peerService.isBleActive && bleManager.isScanning)
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        SizedBox(
-                          width: 10, height: 10,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 1.5,
-                            color: AppTheme.accentBlue.withValues(alpha: 0.5),
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          '${bleManager.nearbyCount} nearby',
-                          style: TextStyle(
-                            color: AppTheme.textMuted.withValues(alpha: 0.7),
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
-                  if (!peerService.isBleSupported)
-                    Text('Not available',
-                        style: TextStyle(
-                          color: AppTheme.textMuted.withValues(alpha: 0.5),
-                          fontSize: 12,
-                        )),
-                ],
-              ),
-              if (peerService.isBleActive &&
-                  bleManager.discoveredPeers.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                ...bleManager.discoveredPeers.map((blePeer) => Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 6, height: 6,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: blePeer.isConnected
-                                  ? AppTheme.accentGreen
-                                  : AppTheme.textMuted,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              blePeer.nyxId ?? blePeer.deviceName,
-                              style: const TextStyle(
-                                color: AppTheme.textSecondary,
-                                fontSize: 13,
-                                fontFamily: 'monospace',
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          Text(
-                            '${blePeer.rssi} dBm',
-                            style: TextStyle(
-                              color: AppTheme.textMuted.withValues(alpha: 0.5),
-                              fontSize: 11,
-                            ),
-                          ),
-                          if (!blePeer.isConnected) ...[
-                            const SizedBox(width: 8),
-                            GestureDetector(
-                              onTap: () => bleManager.connectToPeer(blePeer),
-                              child: const Icon(Icons.link_rounded,
-                                  size: 16, color: AppTheme.accentBlue),
-                            ),
-                          ],
-                        ],
-                      ),
-                    )),
-              ],
-              if (!peerService.isBleActive && peerService.isBleSupported) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'BLE mesh starts automatically with the network',
-                  style: TextStyle(
-                    color: AppTheme.textMuted.withValues(alpha: 0.5),
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildDiscoveredPeers() {
-    return Consumer<PeerService>(
-      builder: (context, peerService, _) {
-        final peers = peerService.peerList;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: [
-              const Text('Discovered Peers',
-                  style: TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700)),
-              const SizedBox(width: 8),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: AppTheme.accentBlue.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text('${peers.length}',
-                    style: const TextStyle(
-                        color: AppTheme.accentBlue,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700)),
-              ),
-            ]),
-            const SizedBox(height: 12),
-            if (peers.isEmpty)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(24),
-                decoration: AppTheme.glassDecoration(
-                    opacity: 0.04, borderRadius: 16),
-                child: const Column(children: [
-                  Icon(Icons.person_search_rounded,
-                      size: 40, color: AppTheme.textMuted),
-                  SizedBox(height: 12),
-                  Text('No peers found yet',
-                      style:
-                          TextStyle(color: AppTheme.textMuted, fontSize: 14)),
+                  TextButton(onPressed: () {
+                    if (_bootstrap.text.contains(':')) {
+                      peers.addBootstrapNode(_bootstrap.text.trim());
+                      _bootstrap.clear();
+                      _snack('Bootstrap node added');
+                    }
+                  }, child: const Text('Add')),
                 ]),
-              )
-            else
-              ...peers.map((p) => _buildPeerCard(p, peerService)),
-          ],
-        );
-      },
+                Row(children: [
+                  Expanded(child: _input(_lookup, 'NC-... to look up')),
+                  const SizedBox(width: 8),
+                  TextButton(onPressed: () async {
+                    final p = await peers.lookupGlobalPeer(_lookup.text.trim());
+                    if (!mounted) return;
+                    _snack(p == null ? 'Not found' : 'Found ${p.displayName} at ${p.ipAddress}:${p.port}');
+                  }, child: const Text('Find')),
+                ]),
+              ],
+            ],
+          );
+        },
+      ),
     );
   }
 
-  Widget _buildPeerCard(Peer peer, PeerService peerService) {
-    final connected = peerService.isPeerConnected(peer.nyxChatId);
+  Widget _status(PeerService peers, BleManager ble) => Container(
+        padding: const EdgeInsets.all(14),
+        decoration: AppTheme.glassDecoration(opacity: 0.04, borderRadius: 14),
+        child: Row(children: [
+          _stat(Icons.wifi_rounded, peers.isNetworkActive ? 'LAN on' : 'LAN off', peers.isNetworkActive),
+          _stat(Icons.bluetooth_rounded, ble.isAdvertising ? 'BLE on' : ble.isScanning ? 'BLE scan' : 'BLE off', ble.isScanning || ble.isAdvertising),
+          _stat(Icons.hub_outlined, '${peers.bleLinkCount} links', peers.bleLinkCount > 0),
+          _stat(Icons.visibility_off_outlined, peers.isStealth ? 'stealth' : 'visible', !peers.isStealth),
+        ]),
+      );
+
+  Widget _stat(IconData icon, String label, bool on) => Expanded(
+        child: Column(children: [
+          Icon(icon, size: 18, color: on ? AppTheme.accentGreen : AppTheme.textMuted),
+          const SizedBox(height: 4),
+          Text(label, style: TextStyle(color: on ? AppTheme.textPrimary : AppTheme.textMuted, fontSize: 11)),
+        ]),
+      );
+
+  Widget _peerTile(Peer p, PeerService peers, TrustStore trust) {
+    final connected = peers.isPeerConnected(p.nyxChatId);
+    final pinned = trust.get(p.nyxChatId);
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: connected
-              ? AppTheme.accentGreen.withValues(alpha: 0.15)
-              : Colors.white.withValues(alpha: 0.04),
-        ),
-      ),
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.all(12),
+      decoration: AppTheme.glassDecoration(opacity: 0.03, borderRadius: 12),
       child: Row(children: [
-        Container(
-          width: 40, height: 40,
-          decoration: BoxDecoration(
-            color: AppTheme.surfaceLight,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: 0.06),
-            ),
-          ),
-          child: Center(
-            child: Text(
-              peer.displayName.isNotEmpty
-                  ? peer.displayName[0].toUpperCase()
-                  : '?',
-              style: const TextStyle(
-                  color: AppTheme.textSecondary,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500),
-            ),
-          ),
-        ),
-        const SizedBox(width: 14),
+        Container(width: 8, height: 8, decoration: BoxDecoration(color: connected ? AppTheme.online : AppTheme.offline, shape: BoxShape.circle)),
+        const SizedBox(width: 12),
         Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(peer.displayName,
-                  style: const TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600)),
-              const SizedBox(height: 3),
-              Text(peer.nyxChatId,
-                  style: const TextStyle(
-                      color: AppTheme.textMuted,
-                      fontSize: 12,
-                      fontFamily: 'monospace')),
-            ],
-          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(p.displayName, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14, fontWeight: FontWeight.w500)),
+            Text('${p.nyxChatId} · ${p.ipAddress}:${p.port}', style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+          ]),
         ),
-        connected
-            ? ElevatedButton(
-                onPressed: () => _startChat(peer),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      AppTheme.accentBlue.withValues(alpha: 0.15),
-                  foregroundColor: AppTheme.accentBlue,
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 8),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                ),
-                child: const Text('Chat',
-                    style: TextStyle(fontWeight: FontWeight.w600)),
-              )
-            : Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: AppTheme.warning.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text('Connecting...',
-                    style: TextStyle(
-                        color: AppTheme.warning,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500)),
-              ),
+        if (!connected)
+          TextButton(onPressed: () => peers.connectToKnownPeer(p.nyxChatId), child: const Text('Connect'))
+        else if (pinned != null)
+          IconButton(icon: const Icon(Icons.chat_bubble_outline_rounded, color: AppTheme.accentBlue, size: 20),
+              onPressed: () => _openChat(p.nyxChatId, pinned.displayName)),
       ]),
     );
   }
 
-  Widget _buildManualConnect() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('Manual Connect',
-            style: TextStyle(
-                color: AppTheme.textPrimary,
-                fontSize: 18,
-                fontWeight: FontWeight.w700)),
-        const SizedBox(height: 8),
-        const Text("Enter a peer's IP address to connect directly",
-            style: TextStyle(color: AppTheme.textMuted, fontSize: 13)),
-        const SizedBox(height: 16),
-        Row(children: [
-          Expanded(
-            flex: 3,
-            child: TextField(
-              controller: _ipController,
-              style: const TextStyle(
-                  color: AppTheme.textPrimary, fontFamily: 'monospace'),
-              decoration: InputDecoration(
-                hintText: '192.168.1.100',
-                labelText: 'IP Address',
-                labelStyle: const TextStyle(color: AppTheme.textSecondary),
-                filled: true,
-                fillColor: AppTheme.surfaceLight,
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none),
-              ),
-              keyboardType: TextInputType.number,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            flex: 1,
-            child: TextField(
-              controller: _portController,
-              style: const TextStyle(
-                  color: AppTheme.textPrimary, fontFamily: 'monospace'),
-              decoration: InputDecoration(
-                labelText: 'Port',
-                labelStyle: const TextStyle(color: AppTheme.textSecondary),
-                filled: true,
-                fillColor: AppTheme.surfaceLight,
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none),
-              ),
-              keyboardType: TextInputType.number,
-            ),
-          ),
+  Widget _bleTile(String title, String subtitle, bool linked) => Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.all(12),
+        decoration: AppTheme.glassDecoration(opacity: 0.03, borderRadius: 12),
+        child: Row(children: [
+          Icon(Icons.bluetooth_rounded, size: 18, color: linked ? AppTheme.accentBlue : AppTheme.textMuted),
+          const SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontFamily: 'monospace')),
+            Text(subtitle, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+          ])),
         ]),
-        const SizedBox(height: 16),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: _manualConnect,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.surfaceLight,
-              foregroundColor: AppTheme.textPrimary,
-              elevation: 0,
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-                side: BorderSide(
-                    color: Colors.white.withValues(alpha: 0.06)),
-              ),
-            ),
-            icon: const Icon(Icons.link_rounded,
-                color: AppTheme.textSecondary, size: 18),
-            label: const Text('Connect',
-                style: TextStyle(
-                    fontWeight: FontWeight.w500, fontSize: 14)),
-          ),
+      );
+
+  Widget _contactTile(PinnedPeer c, PeerService peers) {
+    final reachable = peers.isPeerConnected(c.nyxChatId) || peers.isReachableByMesh(c.nyxChatId);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.all(12),
+      decoration: AppTheme.glassDecoration(opacity: 0.03, borderRadius: 12),
+      child: Row(children: [
+        Icon(c.verified ? Icons.verified_rounded : Icons.person_outline_rounded, size: 18,
+            color: c.verified ? AppTheme.accentGreen : AppTheme.textMuted),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(c.displayName, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14, fontWeight: FontWeight.w500)),
+          Text('${c.nyxChatId} · ${reachable ? 'reachable' : 'offline, queued delivery'}',
+              style: TextStyle(color: reachable ? AppTheme.accentGreen : AppTheme.textMuted, fontSize: 11)),
+        ])),
+        IconButton(icon: const Icon(Icons.verified_user_outlined, color: AppTheme.textSecondary, size: 20),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ContactVerifyScreen(peerId: c.nyxChatId)))),
+        IconButton(icon: const Icon(Icons.chat_bubble_outline_rounded, color: AppTheme.accentBlue, size: 20),
+            onPressed: () => _openChat(c.nyxChatId, c.displayName)),
+      ]),
+    );
+  }
+
+  Widget _section(String t) => Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Text(t.toUpperCase(), style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1)),
+      );
+
+  Widget _hint(String t) => Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Text(t, style: const TextStyle(color: AppTheme.textMuted, fontSize: 12, height: 1.4)),
+      );
+
+  Widget _input(TextEditingController c, String hint, {int maxLines = 1}) => Container(
+        decoration: BoxDecoration(color: AppTheme.surface, borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.06))),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: TextField(
+          controller: c, maxLines: maxLines,
+          style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontFamily: 'monospace'),
+          decoration: InputDecoration(hintText: hint, hintStyle: const TextStyle(color: AppTheme.textMuted, fontFamily: 'monospace'), border: InputBorder.none),
         ),
-      ],
-    );
-  }
+      );
 
-  Future<void> _startChat(Peer peer) async {
-    final chatService = context.read<ChatService>();
-    final room = await chatService.getOrCreateRoom(
-      peerId: peer.nyxChatId,
-      peerDisplayName: peer.displayName,
-      peerPublicKeyHex: peer.publicKeyHex,
-    );
-    if (mounted) {
-      Navigator.pushReplacement(context,
-          MaterialPageRoute(builder: (_) => ChatScreen(room: room)));
-    }
-  }
-
-  Future<void> _manualConnect() async {
-    final ip = _ipController.text.trim();
-    final port = int.tryParse(_portController.text.trim()) ?? 42420;
-    if (ip.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: const Text('Please enter an IP address'),
-        backgroundColor: AppTheme.error,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ));
-      return;
-    }
-    final idSvc = context.read<IdentityService>();
-    final peerSvc = context.read<PeerService>();
-    final pubKey = await idSvc.getPublicKeyHex();
-    final signPubKey = await idSvc.getSigningPublicKeyHex();
-    final kyberPubKey = await idSvc.getKyberPublicKeyHex();
-    final ok = await peerSvc.connectToPeer(
-      address: ip, port: port,
-      myNyxChatId: idSvc.nyxChatId, myDisplayName: idSvc.displayName,
-      myPublicKeyHex: pubKey, mySigningPublicKeyHex: signPubKey,
-      myKyberPublicKeyHex: kyberPubKey,
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(ok ? 'Connected!' : 'Connection failed'),
-        backgroundColor: ok ? AppTheme.accentGreen : AppTheme.error,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ));
-    }
-  }
-
-  Widget _buildDHTSection() {
-    return Consumer<PeerService>(
-      builder: (context, peerService, _) {
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                ShaderMask(
-                  shaderCallback: (bounds) => const LinearGradient(
-                    colors: [AppTheme.accentPurple, AppTheme.accentPink],
-                  ).createShader(bounds),
-                  child: const Icon(Icons.language_rounded,
-                      color: Colors.white, size: 22),
-                ),
-                const SizedBox(width: 8),
-                const Text('Global Network (DHT)',
-                    style: TextStyle(
-                        color: AppTheme.textPrimary,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700)),
-              ],
-            ),
-            const SizedBox(height: 6),
-            const Text(
-                'Connect to peers beyond your local network using DHT',
-                style: TextStyle(color: AppTheme.textMuted, fontSize: 13)),
-            const SizedBox(height: 16),
-
-            // DHT Status
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: AppTheme.glassDecoration(
-                  opacity: 0.04, borderRadius: 14),
-              child: Row(
-                children: [
-                  Container(
-                    width: 10, height: 10,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: peerService.isDHTActive
-                          ? AppTheme.accentGreen
-                          : AppTheme.textMuted,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    peerService.isDHTActive
-                        ? 'DHT Active — ${peerService.dhtNode?.knownPeersCount ?? 0} peers'
-                        : 'DHT Inactive',
-                    style: TextStyle(
-                      color: peerService.isDHTActive
-                          ? AppTheme.accentGreen
-                          : AppTheme.textSecondary,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: _isDHTStarting
-                        ? null
-                        : () => peerService.isDHTActive
-                            ? _stopDHT()
-                            : _startDHT(),
-                    child: _isDHTStarting
-                        ? const SizedBox(
-                            width: 18, height: 18,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: AppTheme.accentBlue))
-                        : Text(
-                            peerService.isDHTActive ? 'Stop' : 'Start',
-                            style: TextStyle(
-                              color: peerService.isDHTActive
-                                  ? AppTheme.error
-                                  : AppTheme.accentBlue,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-
-            // Bootstrap Node
-            TextField(
-              controller: _dhtBootstrapController,
-              style: const TextStyle(
-                  color: AppTheme.textPrimary, fontFamily: 'monospace'),
-              decoration: InputDecoration(
-                hintText: '192.168.1.1:42421',
-                labelText: 'Bootstrap Node (IP:Port)',
-                labelStyle: const TextStyle(color: AppTheme.textSecondary),
-                filled: true,
-                fillColor: AppTheme.surfaceLight,
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none),
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.add_circle_outline_rounded,
-                      color: AppTheme.accentBlue),
-                  onPressed: () {
-                    final addr = _dhtBootstrapController.text.trim();
-                    if (addr.isNotEmpty) {
-                      peerService.addBootstrapNode(addr);
-                      _dhtBootstrapController.clear();
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                        content: const Text('Bootstrap node added'),
-                        backgroundColor: AppTheme.accentGreen,
-                        behavior: SnackBarBehavior.floating,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                      ));
-                    }
-                  },
-                ),
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'A bootstrap node is an existing peer in the DHT network '
-              'that helps your device discover other peers. Enter the '
-              'IP:Port of a known node to join the global network.',
-              style: TextStyle(
-                color: AppTheme.textMuted.withValues(alpha: 0.6),
-                fontSize: 11,
-                height: 1.4,
-              ),
-            ),
-            const SizedBox(height: 14),
-
-            // Peer Lookup
-            TextField(
-              controller: _dhtLookupController,
-              style: const TextStyle(
-                  color: AppTheme.textPrimary, fontFamily: 'monospace'),
-              decoration: InputDecoration(
-                hintText: 'Enter Nyx ID (e.g. BC-1A2B...C3D4)',
-                labelText: 'Look Up Peer',
-                labelStyle: const TextStyle(color: AppTheme.textSecondary),
-                filled: true,
-                fillColor: AppTheme.surfaceLight,
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none),
-                suffixIcon: IconButton(
-                  icon: _isLookingUp
-                      ? const SizedBox(
-                          width: 18, height: 18,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: AppTheme.accentBlue))
-                      : const Icon(Icons.search_rounded,
-                          color: AppTheme.accentBlue),
-                  onPressed: _isLookingUp ? null : _lookupDHTPeer,
-                ),
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Search for a specific peer by their Nyx ID. The DHT '
-              'network will query other nodes to find the peer\'s '
-              'current IP address and connect you directly.',
-              style: TextStyle(
-                color: AppTheme.textMuted.withValues(alpha: 0.6),
-                fontSize: 11,
-                height: 1.4,
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _startDHT() async {
-    setState(() => _isDHTStarting = true);
-    final idSvc = context.read<IdentityService>();
-    final peerSvc = context.read<PeerService>();
-    final pubKey = await idSvc.getPublicKeyHex();
-
-    await peerSvc.startDHT(
-      nyxChatId: idSvc.nyxChatId,
-      publicKeyHex: pubKey,
-      displayName: idSvc.displayName,
-    );
-    if (mounted) setState(() => _isDHTStarting = false);
-
-    // Prompt user to disable battery optimization for background DHT
-    if (mounted && Platform.isAndroid) {
-      _promptBatteryOptimization();
-    }
-  }
-
-  Future<void> _promptBatteryOptimization() async {
-    final status = await Permission.ignoreBatteryOptimizations.status;
-    if (status.isGranted) return;
-
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
-          'Disable Battery Optimization',
-          style: TextStyle(
-            color: AppTheme.textPrimary,
-            fontSize: 17,
-            fontWeight: FontWeight.w600,
+  Widget _button(String label, VoidCallback? onTap) => SizedBox(
+        width: double.infinity,
+        child: OutlinedButton(
+          onPressed: onTap,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: AppTheme.textPrimary,
+            side: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
+          child: Text(label),
         ),
-        content: const Text(
-          'DHT needs to run in the background to keep you discoverable '
-          'by other peers. Please disable battery optimization for NyxChat '
-          'so the system does not kill the DHT service when the app is '
-          'in the background.',
-          style: TextStyle(
-            color: AppTheme.textSecondary,
-            fontSize: 13,
-            height: 1.5,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Later',
-                style: TextStyle(color: AppTheme.textMuted)),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await Permission.ignoreBatteryOptimizations.request();
-            },
-            child: const Text('Disable Optimization',
-                style: TextStyle(
-                    color: AppTheme.accentBlue,
-                    fontWeight: FontWeight.w600)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _stopDHT() async {
-    await context.read<PeerService>().stopDHT();
-  }
-
-  Future<void> _lookupDHTPeer() async {
-    final targetId = _dhtLookupController.text.trim();
-    if (targetId.isEmpty) return;
-
-    setState(() => _isLookingUp = true);
-    final peerSvc = context.read<PeerService>();
-    final peer = await peerSvc.lookupGlobalPeer(targetId);
-
-    if (mounted) {
-      setState(() => _isLookingUp = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(peer != null
-            ? 'Found: ${peer.displayName} at ${peer.ipAddress}'
-            : 'Peer not found in DHT'),
-        backgroundColor: peer != null ? AppTheme.accentGreen : AppTheme.warning,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ));
-    }
-  }
+      );
 }

@@ -33,8 +33,14 @@ class FileAttachment {
   final String mimeType;
   final int fileSize;
   final String? filePath;     // Local path
-  final String? fileDataB64;  // Base64-encoded for transfer
+  final String? fileDataB64;  // Legacy field (unused in v3)
   final String? thumbnailB64; // Thumbnail for images
+  final String? fileId;       // Transfer id (v3)
+  final String? fileKeyB64;   // Per-file AES key (v3, needed for retries)
+  final String? fileNonceB64; // Per-file nonce prefix (v3)
+  final String? sha256Hex;    // Integrity of the plaintext file (v3)
+  final int totalChunks;      // Chunks in the transfer (v3)
+  final int receivedChunks;   // Progress (v3)
 
   FileAttachment({
     required this.fileName,
@@ -43,7 +49,32 @@ class FileAttachment {
     this.filePath,
     this.fileDataB64,
     this.thumbnailB64,
+    this.fileId,
+    this.fileKeyB64,
+    this.fileNonceB64,
+    this.sha256Hex,
+    this.totalChunks = 0,
+    this.receivedChunks = 0,
   });
+
+  bool get isComplete => totalChunks == 0 || receivedChunks >= totalChunks;
+  double get progress => totalChunks == 0 ? 1.0 : receivedChunks / totalChunks;
+
+  FileAttachment copyWith({String? filePath, int? receivedChunks}) =>
+      FileAttachment(
+        fileName: fileName,
+        mimeType: mimeType,
+        fileSize: fileSize,
+        filePath: filePath ?? this.filePath,
+        fileDataB64: fileDataB64,
+        thumbnailB64: thumbnailB64,
+        fileId: fileId,
+        fileKeyB64: fileKeyB64,
+        fileNonceB64: fileNonceB64,
+        sha256Hex: sha256Hex,
+        totalChunks: totalChunks,
+        receivedChunks: receivedChunks ?? this.receivedChunks,
+      );
 
   bool get isImage =>
       mimeType.startsWith('image/');
@@ -59,8 +90,13 @@ class FileAttachment {
     'mimeType': mimeType,
     'fileSize': fileSize,
     'filePath': filePath,
-    'fileDataB64': fileDataB64,
     'thumbnailB64': thumbnailB64,
+    'fileId': fileId,
+    'fileKeyB64': fileKeyB64,
+    'fileNonceB64': fileNonceB64,
+    'sha256Hex': sha256Hex,
+    'totalChunks': totalChunks,
+    'receivedChunks': receivedChunks,
   };
 
   factory FileAttachment.fromJson(Map<String, dynamic> json) =>
@@ -69,8 +105,13 @@ class FileAttachment {
         mimeType: json['mimeType'] as String,
         fileSize: json['fileSize'] as int,
         filePath: json['filePath'] as String?,
-        fileDataB64: json['fileDataB64'] as String?,
         thumbnailB64: json['thumbnailB64'] as String?,
+        fileId: json['fileId'] as String?,
+        fileKeyB64: json['fileKeyB64'] as String?,
+        fileNonceB64: json['fileNonceB64'] as String?,
+        sha256Hex: json['sha256Hex'] as String?,
+        totalChunks: json['totalChunks'] as int? ?? 0,
+        receivedChunks: json['receivedChunks'] as int? ?? 0,
       );
 }
 
@@ -86,6 +127,9 @@ class ChatMessage {
   final FileAttachment? attachment;
   final List<MessageReaction> reactions;
   final String? replyToId;
+  final DateTime? expiresAt;      // Disappearing messages
+  final List<String> deliveredTo; // Group delivery receipts
+  final List<String> readBy;      // Group read receipts
 
   ChatMessage({
     required this.id,
@@ -99,7 +143,12 @@ class ChatMessage {
     this.attachment,
     this.reactions = const [],
     this.replyToId,
+    this.expiresAt,
+    this.deliveredTo = const [],
+    this.readBy = const [],
   });
+
+  bool get isExpired => expiresAt != null && DateTime.now().isAfter(expiresAt!);
 
   ChatMessage copyWith({
     String? id,
@@ -113,6 +162,9 @@ class ChatMessage {
     FileAttachment? attachment,
     List<MessageReaction>? reactions,
     String? replyToId,
+    DateTime? expiresAt,
+    List<String>? deliveredTo,
+    List<String>? readBy,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -126,6 +178,9 @@ class ChatMessage {
       attachment: attachment ?? this.attachment,
       reactions: reactions ?? this.reactions,
       replyToId: replyToId ?? this.replyToId,
+      expiresAt: expiresAt ?? this.expiresAt,
+      deliveredTo: deliveredTo ?? this.deliveredTo,
+      readBy: readBy ?? this.readBy,
     );
   }
 
@@ -166,6 +221,9 @@ class ChatMessage {
     'attachment': attachment?.toJson(),
     'reactions': reactions.map((r) => r.toJson()).toList(),
     'replyToId': replyToId,
+    'expiresAt': expiresAt?.toIso8601String(),
+    'deliveredTo': deliveredTo,
+    'readBy': readBy,
   };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -190,6 +248,11 @@ class ChatMessage {
         ?.map((r) => MessageReaction.fromJson(r as Map<String, dynamic>))
         .toList() ?? [],
     replyToId: json['replyToId'] as String?,
+    expiresAt: json['expiresAt'] == null
+        ? null
+        : DateTime.parse(json['expiresAt'] as String),
+    deliveredTo: (json['deliveredTo'] as List<dynamic>?)?.cast<String>() ?? const [],
+    readBy: (json['readBy'] as List<dynamic>?)?.cast<String>() ?? const [],
   );
 
   String encode() => jsonEncode(toJson());

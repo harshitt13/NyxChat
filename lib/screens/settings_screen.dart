@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import '../theme/app_theme.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+
+import '../core/constants.dart';
+import '../core/network/ble_manager.dart';
 import '../services/identity_service.dart';
 import '../services/peer_service.dart';
-import '../services/app_lock_service.dart';
-import 'password_screen.dart';
+import '../services/settings_service.dart';
+import '../theme/app_theme.dart';
+import 'mesh_map_screen.dart';
+import 'security_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -16,481 +21,62 @@ class SettingsScreen extends StatelessWidget {
       backgroundColor: AppTheme.background,
       appBar: AppBar(
         backgroundColor: AppTheme.background,
-        leading: IconButton(
-          onPressed: () => Navigator.pop(context),
-          icon: const Icon(Icons.arrow_back_ios_rounded,
-              color: AppTheme.textPrimary, size: 20),
-        ),
-        title: const Text('Settings',
-            style: TextStyle(
-                color: AppTheme.textPrimary,
-                fontSize: 18,
-                fontWeight: FontWeight.w600)),
+        elevation: 0,
+        title: const Text('Settings', style: TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
       ),
-      body: Consumer<IdentityService>(
-        builder: (context, identityService, _) {
-          final identity = identityService.identity;
-          if (identity == null) return const SizedBox.shrink();
-
+      body: Consumer4<IdentityService, SettingsService, PeerService, BleManager>(
+        builder: (context, identity, settings, peers, ble, _) {
+          final id = identity.identity;
+          if (id == null) return const SizedBox.shrink();
           return ListView(
             padding: const EdgeInsets.all(20),
             children: [
-              // Profile Card
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: AppTheme.surface,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.04),
-                  ),
-                ),
-                child: Column(
-                  children: [
-                    Container(
-                      width: 64, height: 64,
-                      decoration: BoxDecoration(
-                        color: AppTheme.surfaceLight,
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.06),
-                        ),
-                      ),
-                      child: Center(
-                        child: Text(identity.initials,
-                            style: const TextStyle(
-                                color: AppTheme.textSecondary,
-                                fontSize: 22,
-                                fontWeight: FontWeight.w500)),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(identity.displayName,
-                        style: const TextStyle(
-                            color: AppTheme.textPrimary,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w500)),
-                    const SizedBox(height: 8),
-                    GestureDetector(
-                      onTap: () {
-                        Clipboard.setData(
-                            ClipboardData(text: identity.nyxChatId));
-                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                          content: const Text('Nyx ID copied!'),
-                          backgroundColor: AppTheme.accentGreen,
-                          behavior: SnackBarBehavior.floating,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                        ));
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: AppTheme.surfaceLight,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(identity.nyxChatId,
-                                style: const TextStyle(
-                                    color: AppTheme.accentBlue,
-                                    fontSize: 14,
-                                    fontFamily: 'monospace',
-                                    fontWeight: FontWeight.w500)),
-                            const SizedBox(width: 8),
-                            const Icon(Icons.copy_rounded,
-                                size: 16, color: AppTheme.accentBlue),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              _profile(context, identity),
               const SizedBox(height: 24),
-              // Network Status
-              const Text('Network',
-                  style: TextStyle(
-                      color: AppTheme.textSecondary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 1)),
-              const SizedBox(height: 10),
-              Consumer<PeerService>(
-                builder: (_, peerService, _) {
-                  return Container(
-                    decoration: AppTheme.glassDecoration(
-                        opacity: 0.04, borderRadius: 14),
-                    child: Column(
-                      children: [
-                        _settingsTile(
-                          icon: Icons.wifi_rounded,
-                          title: 'Network Status',
-                          trailing: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: peerService.isNetworkActive
-                                  ? AppTheme.accentGreen
-                                      .withValues(alpha: 0.15)
-                                  : AppTheme.error.withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              peerService.isNetworkActive
-                                  ? 'Active'
-                                  : 'Inactive',
-                              style: TextStyle(
-                                color: peerService.isNetworkActive
-                                    ? AppTheme.accentGreen
-                                    : AppTheme.error,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ),
-                        _divider(),
-                        _settingsTile(
-                          icon: Icons.people_alt_rounded,
-                          title: 'Connected Peers',
-                          trailing: Text(
-                            '${peerService.peerList.where((p) => peerService.isPeerConnected(p.nyxChatId)).length}',
-                            style: const TextStyle(
-                                color: AppTheme.accentBlue,
-                                fontSize: 15,
-                                fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                        _divider(),
-                        _settingsTile(
-                          icon: Icons.router_rounded,
-                          title: 'Listening Port',
-                          trailing: const Text('42420',
-                              style: TextStyle(
-                                  color: AppTheme.textSecondary,
-                                  fontSize: 14,
-                                  fontFamily: 'monospace')),
-                        ),
-                        _divider(),
-                        _settingsTile(
-                          icon: Icons.language_rounded,
-                          title: 'Global DHT',
-                          trailing: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: peerService.isDHTActive
-                                  ? AppTheme.accentGreen
-                                      .withValues(alpha: 0.15)
-                                  : AppTheme.surfaceLight,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              peerService.isDHTActive
-                                  ? 'Active'
-                                  : 'Inactive',
-                              style: TextStyle(
-                                color: peerService.isDHTActive
-                                    ? AppTheme.accentGreen
-                                    : AppTheme.textMuted,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
+              _title('Privacy'),
+              _card([
+                _toggle(Icons.screenshot_monitor_outlined, 'Block screenshots', settings.blockScreenshots, settings.setBlockScreenshots,
+                    subtitle: 'Hides the app in recents and prevents screen capture'),
+                _toggle(Icons.done_all_rounded, 'Send read receipts', settings.readReceipts, settings.setReadReceipts),
+                _toggle(Icons.notifications_none_rounded, 'Notifications', settings.notifications, settings.setNotifications),
+                _toggle(Icons.visibility_outlined, 'Show message text in notifications', settings.notificationPreview, settings.setNotificationPreview),
+                _toggle(Icons.blur_on_rounded, 'Cover traffic', settings.dummyTraffic, settings.setDummyTraffic,
+                    subtitle: 'Random mesh packets so idle and active periods look alike'),
+                _toggle(Icons.visibility_off_outlined, 'Stealth mode', peers.isStealth, (v) => peers.setStealth(v),
+                    subtitle: 'No advertising or scanning. Existing links stay up.'),
+              ]),
               const SizedBox(height: 24),
-              // Security
-              const Text('Security',
-                  style: TextStyle(
-                      color: AppTheme.textSecondary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 1)),
-              const SizedBox(height: 10),
-              Container(
-                decoration: AppTheme.glassDecoration(
-                    opacity: 0.04, borderRadius: 14),
-                child: Column(
-                  children: [
-                    _settingsTile(
-                      icon: Icons.vpn_key_rounded,
-                      title: 'Public Key',
-                      subtitle: '${identity.publicKeyHex.substring(0, 16)}...',
-                      onTap: () {
-                        Clipboard.setData(
-                            ClipboardData(text: identity.publicKeyHex));
-                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                          content: const Text('Public key copied!'),
-                          backgroundColor: AppTheme.accentGreen,
-                          behavior: SnackBarBehavior.floating,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                        ));
-                      },
-                    ),
-                    _divider(),
-                    _settingsTile(
-                      icon: Icons.enhanced_encryption_rounded,
-                      title: 'Encryption',
-                      trailing: const Text('AES-256-GCM',
-                          style: TextStyle(
-                              color: AppTheme.accentGreen,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500)),
-                    ),
-                    _divider(),
-                    _settingsTile(
-                      icon: Icons.fingerprint_rounded,
-                      title: 'Key Exchange',
-                      trailing: const Text('X25519 ECDH',
-                          style: TextStyle(
-                              color: AppTheme.accentGreen,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500)),
-                    ),
-                    _divider(),
-                    _settingsTile(
-                      icon: Icons.autorenew_rounded,
-                      title: 'Forward Secrecy',
-                      trailing: const Text('Active (Rotating)',
-                          style: TextStyle(
-                              color: AppTheme.accentGreen,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500)),
-                    ),
-                  ],
-                ),
-              ),
+              _title('Network'),
+              _card([
+                _row(Icons.wifi_rounded, 'Local network', peers.isNetworkActive ? 'Active' : 'Inactive',
+                    color: peers.isNetworkActive ? AppTheme.accentGreen : AppTheme.textMuted),
+                _row(Icons.people_alt_outlined, 'Direct links', '${peers.connectedPeers.length}'),
+                _row(Icons.bluetooth_rounded, 'Bluetooth mesh',
+                    !ble.isSupported ? 'Unsupported' : ble.isAdvertising ? 'Advertising · ${ble.linkCount} links' : ble.isScanning ? 'Scanning · ${ble.linkCount} links' : 'Off',
+                    color: ble.isScanning || ble.isAdvertising ? AppTheme.accentGreen : AppTheme.textMuted),
+                _toggle(Icons.settings_input_antenna_rounded, 'BLE long range (Coded PHY)', settings.longRangeBle, (v) async {
+                  await settings.setLongRangeBle(v);
+                  ble.setLongRange(v);
+                }, subtitle: 'Bluetooth 5 S=8 coding; lower throughput, longer reach'),
+                _row(Icons.router_rounded, 'Listening port', '${AppConstants.defaultPort}'),
+                _row(Icons.language_rounded, 'Global DHT', peers.isDHTActive ? 'Active' : 'Inactive',
+                    color: peers.isDHTActive ? AppTheme.accentGreen : AppTheme.textMuted),
+                _nav(Icons.hub_outlined, 'Mesh diagnostics', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MeshMapScreen()))),
+              ]),
               const SizedBox(height: 24),
-              // BLE Mesh
-              const Text('BLE Mesh',
-                  style: TextStyle(
-                      color: AppTheme.textSecondary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 1)),
-              const SizedBox(height: 10),
-              Consumer<PeerService>(
-                builder: (_, peerService, _) {
-                  return Container(
-                    decoration: AppTheme.glassDecoration(
-                        opacity: 0.04, borderRadius: 14),
-                    child: Column(
-                      children: [
-                        _settingsTile(
-                          icon: Icons.bluetooth_rounded,
-                          title: 'BLE Status',
-                          trailing: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: peerService.isBleActive
-                                  ? AppTheme.accentBlue.withValues(alpha: 0.15)
-                                  : AppTheme.surfaceLight,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              peerService.isBleActive
-                                  ? 'Active'
-                                  : peerService.isBleSupported
-                                      ? 'Ready'
-                                      : 'Not available',
-                              style: TextStyle(
-                                color: peerService.isBleActive
-                                    ? AppTheme.accentBlue
-                                    : AppTheme.textMuted,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ),
-                        _divider(),
-                        _settingsTile(
-                          icon: Icons.hub_rounded,
-                          title: 'Mesh Packets Stored',
-                          trailing: Text(
-                            '${peerService.meshStore.packetCount}',
-                            style: const TextStyle(
-                                color: AppTheme.textSecondary,
-                                fontSize: 14,
-                                fontFamily: 'monospace'),
-                          ),
-                        ),
-                        _divider(),
-                        _settingsTile(
-                          icon: Icons.alt_route_rounded,
-                          title: 'Forwarded / Delivered',
-                          trailing: Text(
-                            '${peerService.meshRouter.totalForwarded} / ${peerService.meshRouter.totalDelivered}',
-                            style: const TextStyle(
-                                color: AppTheme.textSecondary,
-                                fontSize: 14,
-                                fontFamily: 'monospace'),
-                          ),
-                        ),
-                        _divider(),
-                        _settingsTile(
-                          icon: Icons.near_me_rounded,
-                          title: 'Nearby BLE Nodes',
-                          trailing: Text(
-                            '${peerService.nearbyBleCount}',
-                            style: const TextStyle(
-                                color: AppTheme.accentBlue,
-                                fontSize: 15,
-                                fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
+              _title('Security'),
+              _card([
+                _nav(Icons.lock_outline_rounded, 'App lock, duress password, panic wipe',
+                    () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SecurityScreen()))),
+              ]),
               const SizedBox(height: 24),
-              // Privacy
-              const Text('Privacy',
-                  style: TextStyle(
-                      color: AppTheme.textSecondary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 1)),
-              const SizedBox(height: 10),
-              Container(
-                decoration: AppTheme.glassDecoration(
-                    opacity: 0.04, borderRadius: 14),
-                child: Column(
-                  children: [
-                    _settingsTile(
-                      icon: Icons.shield_rounded,
-                      title: 'Data Collection',
-                      trailing: const Text('Zero',
-                          style: TextStyle(
-                              color: AppTheme.accentGreen,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600)),
-                    ),
-                    _divider(),
-                    _settingsTile(
-                      icon: Icons.location_off_rounded,
-                      title: 'Location Tracking',
-                      trailing: const Text('None',
-                          style: TextStyle(
-                              color: AppTheme.accentGreen,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600)),
-                    ),
-                    _divider(),
-                    _settingsTile(
-                      icon: Icons.hub_outlined,
-                      title: 'Mesh Routing',
-                      subtitle: 'Anonymous hash-based addressing',
-                    ),
-                    _divider(),
-                    _settingsTile(
-                      icon: Icons.timer_rounded,
-                      title: 'Anti-Timing',
-                      subtitle: 'Random delays on mesh forwarding',
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-              // Application Lock
-              const Text('Application Lock (Zero-Knowledge)',
-                  style: TextStyle(
-                      color: AppTheme.textSecondary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 1)),
-              const SizedBox(height: 10),
-              Consumer<AppLockService>(
-                builder: (_, lockService, _) {
-                  return Container(
-                    decoration: AppTheme.glassDecoration(
-                        opacity: 0.04, borderRadius: 14),
-                     child: Column(
-                       children: [
-                         _settingsTile(
-                            icon: Icons.lock_rounded,
-                            title: 'Enable App Lock',
-                            subtitle: 'Encrypt databases with password',
-                            trailing: Switch(
-                              value: lockService.isLockEnabled,
-                              activeTrackColor: AppTheme.accentBlue,
-                              onChanged: (val) {
-                                if (val) {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                       builder: (_) => const PasswordScreen(isSetupMode: true),
-                                    )
-                                  );
-                                } else {
-                                  lockService.setLockEnabled(false);
-                                }
-                              }
-                            )
-                         ),
-                         if (lockService.isLockEnabled) ...[
-                           _divider(),
-                           _settingsTile(
-                              icon: Icons.password_rounded,
-                              title: 'Change App Password',
-                              subtitle: 'Derives new PBKDF2 Master Key',
-                              onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                       builder: (_) => const PasswordScreen(isSetupMode: true),
-                                    )
-                                  );
-                              }
-                           ),
-                           _divider(),
-                           _settingsTile(
-                              icon: Icons.delete_forever_rounded,
-                              title: 'Panic Wipe',
-                              subtitle: 'Wipe data after 5 failed attempts',
-                              trailing: Switch(
-                                value: lockService.wipeOnFailure,
-                                activeTrackColor: AppTheme.error,
-                                onChanged: (val) => lockService.setWipeOnFailure(val),
-                              )
-                           ),
-                         ]
-                       ]
-                     )
-                  );
-                }
-              ),
-              const SizedBox(height: 24),
-              // About
-              const Text('About',
-                  style: TextStyle(
-                      color: AppTheme.textSecondary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 1)),
-              const SizedBox(height: 10),
-              Container(
-                decoration: AppTheme.glassDecoration(
-                    opacity: 0.04, borderRadius: 14),
-                child: _settingsTile(
-                  icon: Icons.info_outline_rounded,
-                  title: 'NyxChat',
-                  subtitle: 'v2.0.0 • Decentralized P2P Messaging',
-                ),
-              ),
-              const SizedBox(height: 40),
+              _title('About'),
+              _card([
+                _row(Icons.info_outline_rounded, 'Version', AppConstants.appVersion),
+                _row(Icons.shield_outlined, 'Protocol', 'v${AppConstants.protocolVersion} · X25519+Kyber-768 · Double Ratchet · Sender Keys'),
+                _row(Icons.code_rounded, 'License', 'GPL-3.0'),
+              ]),
+              const SizedBox(height: 32),
             ],
           );
         },
@@ -498,46 +84,120 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  Widget _settingsTile({
-    required IconData icon,
-    required String title,
-    String? subtitle,
-    Widget? trailing,
-    VoidCallback? onTap,
-  }) {
-    return ListTile(
-      onTap: onTap,
-      leading: Container(
-        width: 38, height: 38,
-        decoration: BoxDecoration(
-          color: AppTheme.surfaceLight,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Icon(icon, color: AppTheme.accentBlue, size: 20),
+  Widget _profile(BuildContext context, IdentityService identity) {
+    final id = identity.identity!;
+    final card = identity.contactCard();
+    final cardText = 'nyx3;${card['id']};${card['name']};${card['ik']};${card['sk']};${card['kpk']}';
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.04)),
       ),
-      title: Text(title,
-          style: const TextStyle(
-              color: AppTheme.textPrimary,
-              fontSize: 15,
-              fontWeight: FontWeight.w500)),
-      subtitle: subtitle != null
-          ? Text(subtitle,
-              style: const TextStyle(
-                  color: AppTheme.textMuted,
-                  fontSize: 12,
-                  fontFamily: 'monospace'))
-          : null,
-      trailing: trailing,
-      contentPadding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      child: Column(children: [
+        Row(children: [
+          Container(
+            width: 56, height: 56,
+            decoration: BoxDecoration(color: AppTheme.surfaceLight, borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.06))),
+            child: Center(child: Text(id.initials, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 20, fontWeight: FontWeight.w500))),
+          ),
+          const SizedBox(width: 14),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Flexible(child: Text(id.displayName, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w500))),
+              IconButton(
+                icon: const Icon(Icons.edit_outlined, size: 16, color: AppTheme.textMuted),
+                onPressed: () => _rename(context, identity),
+              ),
+            ]),
+            GestureDetector(
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: id.nyxChatId));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('NyxChat ID copied')));
+              },
+              child: Text(id.nyxChatId, style: const TextStyle(color: AppTheme.accentBlue, fontSize: 13, fontFamily: 'monospace')),
+            ),
+          ])),
+        ]),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
+          child: QrImageView(data: cardText, size: 180, backgroundColor: Colors.white),
+        ),
+        const SizedBox(height: 10),
+        TextButton.icon(
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: cardText));
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Contact card copied')));
+          },
+          icon: const Icon(Icons.copy_rounded, size: 16),
+          label: const Text('Copy contact card'),
+        ),
+        const Text('Share this so others can pin and verify your keys out of band.',
+            textAlign: TextAlign.center, style: TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+      ]),
     );
   }
 
-  Widget _divider() {
-    return Divider(
-      height: 1,
-      indent: 70,
-      color: Colors.white.withValues(alpha: 0.04),
+  Future<void> _rename(BuildContext context, IdentityService identity) async {
+    final ctrl = TextEditingController(text: identity.displayName);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: const Text('Display name', style: TextStyle(color: AppTheme.textPrimary)),
+        content: TextField(controller: ctrl, maxLength: 64, style: const TextStyle(color: AppTheme.textPrimary)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('Save')),
+        ],
+      ),
     );
+    if (name != null && name.isNotEmpty) await identity.updateDisplayName(name);
   }
+
+  Widget _title(String t) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Text(t.toUpperCase(), style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1)),
+      );
+
+  Widget _card(List<Widget> children) => Container(
+        decoration: AppTheme.glassDecoration(opacity: 0.04, borderRadius: 14),
+        child: Column(children: [
+          for (var i = 0; i < children.length; i++) ...[
+            children[i],
+            if (i < children.length - 1) Divider(height: 1, color: Colors.white.withValues(alpha: 0.04)),
+          ],
+        ]),
+      );
+
+  Widget _toggle(IconData icon, String title, bool value, Future<void> Function(bool) onChanged, {String? subtitle}) =>
+      SwitchListTile(
+        secondary: Icon(icon, color: AppTheme.textSecondary, size: 20),
+        title: Text(title, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
+        subtitle: subtitle == null ? null : Text(subtitle, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+        value: value,
+        activeThumbColor: AppTheme.accentBlue,
+        onChanged: (v) => onChanged(v),
+      );
+
+  Widget _row(IconData icon, String title, String value, {Color color = AppTheme.textSecondary}) => ListTile(
+        leading: Icon(icon, color: AppTheme.textSecondary, size: 20),
+        title: Text(title, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
+        trailing: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 200),
+          child: Text(value, textAlign: TextAlign.end, style: TextStyle(color: color, fontSize: 12)),
+        ),
+      );
+
+  Widget _nav(IconData icon, String title, VoidCallback onTap) => ListTile(
+        leading: Icon(icon, color: AppTheme.textSecondary, size: 20),
+        title: Text(title, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
+        trailing: const Icon(Icons.chevron_right_rounded, color: AppTheme.textMuted),
+        onTap: onTap,
+      );
 }

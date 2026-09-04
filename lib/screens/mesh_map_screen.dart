@@ -1,156 +1,110 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
+import '../core/network/ble_manager.dart';
 import '../services/peer_service.dart';
 import '../theme/app_theme.dart';
 
-class MeshMapScreen extends StatefulWidget {
+/// Live view of the mesh: links, routes, store-and-forward queue, counters.
+class MeshMapScreen extends StatelessWidget {
   const MeshMapScreen({super.key});
-
-  @override
-  State<MeshMapScreen> createState() => _MeshMapScreenState();
-}
-
-class _MeshMapScreenState extends State<MeshMapScreen>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _pulseController;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.background,
       appBar: AppBar(
-        title: const Text('Mesh Topography'),
         backgroundColor: AppTheme.background,
         elevation: 0,
+        title: const Text('Mesh diagnostics', style: TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
       ),
-      body: Consumer<PeerService>(
-        builder: (context, peerService, _) {
-          final wifiPeersCount = peerService.wifiDirectManager.getConnectedPeersCount();
-          final blePeersCount = peerService.nearbyBleCount;
-          final totalNodes = wifiPeersCount + blePeersCount;
-          
-          return Center(
-            child: totalNodes == 0
-                ? _buildEmptyState()
-                : _buildMeshGraph(peerService),
+      body: Consumer2<PeerService, BleManager>(
+        builder: (context, peers, ble, _) {
+          final router = peers.meshRouter;
+          final store = peers.meshStore;
+          return ListenableBuilder(
+            listenable: Listenable.merge([router, store]),
+            builder: (context, _) => ListView(
+              padding: const EdgeInsets.all(20),
+              children: [
+                GridView.count(
+                  crossAxisCount: 2,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  childAspectRatio: 1.9,
+                  mainAxisSpacing: 8,
+                  crossAxisSpacing: 8,
+                  children: [
+                    _stat('BLE links', '${ble.linkCount}', AppTheme.accentBlue),
+                    _stat('Known routes', '${router.knownRoutes}', AppTheme.accentPurple),
+                    _stat('Stored packets', '${store.packetCount}', AppTheme.warning),
+                    _stat('Delivered to me', '${router.totalDelivered}', AppTheme.accentGreen),
+                    _stat('Received', '${router.totalReceived}', AppTheme.textSecondary),
+                    _stat('Forwarded', '${router.totalForwarded}', AppTheme.textSecondary),
+                    _stat('Duplicates dropped', '${router.totalDuplicates}', AppTheme.textMuted),
+                    _stat('Seen ids', '${store.seenCount}', AppTheme.textMuted),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                _title('Links'),
+                if (ble.links.isEmpty) _hint('No Bluetooth links. Devices within range link automatically while scanning and advertising are on.'),
+                ...ble.links.map((l) => _tile(
+                      Icons.bluetooth_connected_rounded,
+                      l.nyxId ?? l.address,
+                      '${l.isCentralRole ? 'we dialled' : 'they dialled'} · MTU ${l.mtu} · ${l.address}',
+                      AppTheme.accentBlue,
+                    )),
+                const SizedBox(height: 20),
+                _title('Routing table'),
+                if (router.routingTable.isEmpty) _hint('Routes are learned from the path recorded in every packet and from periodic beacons.'),
+                ...router.routingTable.entries.map((e) => _tile(
+                      Icons.alt_route_rounded,
+                      '${e.key.substring(0, 12)}...',
+                      'via ${e.value.nextHopHash.substring(0, 12)}... · ${e.value.hopCount} hops',
+                      AppTheme.accentPurple,
+                    )),
+                const SizedBox(height: 20),
+                _title('How it works'),
+                _hint('Packets are addressed by SHA-256 hashes and carry an end-to-end encrypted envelope. '
+                    'A relay stores each packet, forwards it to the learned next hop or sprays up to '
+                    '${router.sprayCount} copies, and drops it after ${router.defaultTtl} hops or 24 hours. '
+                    'Relays cannot read, alter or re-address what they carry.'),
+              ],
+            ),
           );
         },
       ),
     );
   }
 
-  Widget _buildEmptyState() {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        AnimatedBuilder(
-          animation: _pulseController,
-          builder: (context, child) {
-            return Container(
-              width: 100 + (_pulseController.value * 20),
-              height: 100 + (_pulseController.value * 20),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppTheme.accentBlue.withValues(alpha: 0.1),
-                border: Border.all(
-                  color: AppTheme.accentBlue.withValues(alpha: 0.3),
-                  width: 2,
-                ),
-              ),
-              child: const Icon(Icons.wifi_tethering_off, size: 40, color: AppTheme.textMuted),
-            );
-          },
-        ),
-        const SizedBox(height: 24),
-        const Text(
-          'No Local Nodes Found',
-          style: TextStyle(
-            color: AppTheme.textSecondary,
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: 8),
-        const Text(
-          'Your device is isolated from the mesh.',
-          style: TextStyle(color: AppTheme.textMuted),
-        ),
-      ],
-    );
-  }
+  Widget _stat(String label, String value, Color color) => Container(
+        padding: const EdgeInsets.all(12),
+        decoration: AppTheme.glassDecoration(opacity: 0.04, borderRadius: 12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text(value, style: TextStyle(color: color, fontSize: 22, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 2),
+          Text(label, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+        ]),
+      );
 
-  Widget _buildMeshGraph(PeerService peerService) {
-    // In a real implementation this would draw a complex CustomPaint node graph based on 
-    // `peerService.meshRouter.routingTable`. For now we visualize direct connections.
-    
-    return CustomPaint(
-      painter: _MeshGraphPainter(
-        pulseValue: _pulseController.value,
-        directPeers: peerService.nearbyBleCount + peerService.wifiDirectManager.getConnectedPeersCount(),
-      ),
-      size: Size(MediaQuery.of(context).size.width, MediaQuery.of(context).size.height),
-    );
-  }
-}
+  Widget _title(String t) => Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Text(t.toUpperCase(), style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1)),
+      );
 
-class _MeshGraphPainter extends CustomPainter {
-  final double pulseValue;
-  final int directPeers;
-  final Random _rnd = Random(42);
+  Widget _hint(String t) => Text(t, style: const TextStyle(color: AppTheme.textMuted, fontSize: 12, height: 1.4));
 
-  _MeshGraphPainter({required this.pulseValue, required this.directPeers});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    
-    final linePaint = Paint()
-      ..color = AppTheme.accentGreen.withValues(alpha: 0.3)
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
-      
-    final myNodePaint = Paint()
-      ..color = AppTheme.accentBlue
-      ..style = PaintingStyle.fill;
-      
-    final peerNodePaint = Paint()
-      ..color = AppTheme.accentGreen
-      ..style = PaintingStyle.fill;
-
-    // Draw lines to peers
-    for (int i = 0; i < directPeers; i++) {
-        final angle = (i * (2 * pi / directPeers)) + (pulseValue * 0.1);
-        final radius = 100.0 + _rnd.nextInt(50);
-        final peerOffset = Offset(
-           center.dx + radius * cos(angle),
-           center.dy + radius * sin(angle),
-        );
-        
-        canvas.drawLine(center, peerOffset, linePaint);
-        canvas.drawCircle(peerOffset, 12, peerNodePaint);
-    }
-    
-    // Draw central node (this device)
-    canvas.drawCircle(center, 24 + (pulseValue * 4), myNodePaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _MeshGraphPainter oldDelegate) => 
-      oldDelegate.pulseValue != pulseValue || oldDelegate.directPeers != directPeers;
+  Widget _tile(IconData icon, String title, String subtitle, Color color) => Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.all(12),
+        decoration: AppTheme.glassDecoration(opacity: 0.03, borderRadius: 12),
+        child: Row(children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontFamily: 'monospace')),
+            Text(subtitle, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+          ])),
+        ]),
+      );
 }

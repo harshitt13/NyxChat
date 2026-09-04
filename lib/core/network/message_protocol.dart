@@ -1,352 +1,158 @@
 import 'dart:convert';
 
-/// Wire protocol for NyxChat P2P communication.
-/// Messages are JSON-encoded with a type field.
+import '../crypto/handshake.dart';
+import '../mesh/mesh_packet.dart';
+import '../protocol/envelope.dart';
+
+/// Frame types on a direct (TCP / Wi-Fi Direct) link.
+///
+/// After the handshake every frame is sealed by the link [SecureChannel];
+/// the only frames sent in the clear are the two hellos.
 enum ProtocolMessageType {
-  hello,         // Initial handshake
-  message,       // Chat message (text)
-  ack,           // Message acknowledgment
-  keyExchange,   // Key exchange request/response
-  peerList,      // Share known peers
-  ping,          // Keep-alive
-  pong,          // Keep-alive response
-  disconnect,    // Graceful disconnect
-  // New message types for advanced features
-  groupCreate,   // Create a group chat
-  groupInvite,   // Invite peers to a group
-  groupMessage,  // Message in a group chat
-  groupLeave,    // Leave a group
-  fileTransfer,  // File/media transfer metadata
-  fileChunk,     // File fragmentation chunk
-  reaction,      // Message reaction
-  keyRotation,   // Session key rotation (forward secrecy)
-  dhtAnnounce,   // DHT peer announcement
-  dhtLookup,     // DHT peer lookup
-  dhtResponse,   // DHT lookup response
+  hello,
+  envelope,
+  fileChunk,
+  ping,
+  pong,
+  disconnect,
+  sessionReset,
+  meshPacket,
+  dhtAnnounce,
+  dhtLookup,
+  dhtResponse,
+  unknown,
 }
 
 class ProtocolMessage {
+  /// Hard cap on a single line on the wire (before link decryption).
+  static const int maxFrameBytes = 1024 * 1024;
+
   final ProtocolMessageType type;
-  final String senderId;
   final Map<String, dynamic> payload;
   final DateTime timestamp;
-  final String? messageId;
-  final String? dhPubKey; // For Double Ratchet step
 
   ProtocolMessage({
     required this.type,
-    required this.senderId,
     required this.payload,
     DateTime? timestamp,
-    this.messageId,
-    this.dhPubKey,
-  }) : timestamp = timestamp ?? DateTime.now();
+  }) : timestamp = timestamp ?? DateTime.now().toUtc();
 
-  // ─── Original factory constructors ─────────────────────────────
+  factory ProtocolMessage.hello(HelloMessage hello) =>
+      ProtocolMessage(type: ProtocolMessageType.hello, payload: hello.toJson());
 
-  factory ProtocolMessage.hello({
-    required String senderId,
-    required String displayName,
-    required String publicKeyHex,
-    required String signingPublicKeyHex,
-    required int listeningPort,
-    String? kyberPublicKeyHex,
-    String? kyberCiphertextHex,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.hello,
-      senderId: senderId,
-      payload: {
-        'displayName': displayName,
-        'publicKeyHex': publicKeyHex,
-        'signingPublicKeyHex': signingPublicKeyHex,
-        'listeningPort': listeningPort,
-        'protocolVersion': '2.1',
-        if (kyberPublicKeyHex != null && kyberPublicKeyHex.isNotEmpty)
-          'kyberPublicKeyHex': kyberPublicKeyHex,
-        if (kyberCiphertextHex != null && kyberCiphertextHex.isNotEmpty)
-          'kyberCiphertextHex': kyberCiphertextHex,
-      },
-    );
-  }
+  factory ProtocolMessage.envelope(Envelope envelope) => ProtocolMessage(
+      type: ProtocolMessageType.envelope, payload: envelope.toJson());
 
-  factory ProtocolMessage.chatMessage({
-    required String senderId,
-    required String receiverId,
-    required String encryptedContent,
-    required String messageId,
-    String? messageType,
-    String? dhPubKey, // Include ephemeral key
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.message,
-      senderId: senderId,
-      messageId: messageId,
-      dhPubKey: dhPubKey,
-      payload: {
-        'receiverId': receiverId,
-        'encryptedContent': encryptedContent,
-        'messageType': messageType ?? 'text',
-      },
-    );
-  }
+  factory ProtocolMessage.fileChunk(Map<String, dynamic> chunkJson) =>
+      ProtocolMessage(type: ProtocolMessageType.fileChunk, payload: chunkJson);
 
-  factory ProtocolMessage.ack({
-    required String senderId,
-    required String messageId,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.ack,
-      senderId: senderId,
-      messageId: messageId,
-      payload: {},
-    );
-  }
+  factory ProtocolMessage.ping() =>
+      ProtocolMessage(type: ProtocolMessageType.ping, payload: const {});
 
-  factory ProtocolMessage.ping({required String senderId}) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.ping,
-      senderId: senderId,
-      payload: {},
-    );
-  }
+  factory ProtocolMessage.pong() =>
+      ProtocolMessage(type: ProtocolMessageType.pong, payload: const {});
 
-  factory ProtocolMessage.pong({required String senderId}) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.pong,
-      senderId: senderId,
-      payload: {},
-    );
-  }
+  factory ProtocolMessage.disconnect() =>
+      ProtocolMessage(type: ProtocolMessageType.disconnect, payload: const {});
 
-  factory ProtocolMessage.disconnect({required String senderId}) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.disconnect,
-      senderId: senderId,
-      payload: {},
-    );
-  }
+  /// Ask the peer to re-establish the pairwise ratchet from the current
+  /// link handshake (sent after an undecryptable envelope).
+  factory ProtocolMessage.sessionReset({required String reason}) =>
+      ProtocolMessage(
+          type: ProtocolMessageType.sessionReset, payload: {'reason': reason});
 
-  // ─── Group chat factories ─────────────────────────────────────
+  factory ProtocolMessage.meshPacket(MeshPacket packet) => ProtocolMessage(
+      type: ProtocolMessageType.meshPacket, payload: packet.toJson());
 
-  factory ProtocolMessage.groupCreate({
-    required String senderId,
-    required String groupId,
-    required String groupName,
-    required List<String> memberIds,
-    String? description,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.groupCreate,
-      senderId: senderId,
-      payload: {
-        'groupId': groupId,
-        'groupName': groupName,
-        'memberIds': memberIds,
-        'description': description,
-      },
-    );
-  }
-
-  factory ProtocolMessage.groupInvite({
-    required String senderId,
-    required String groupId,
-    required String groupName,
-    required List<Map<String, dynamic>> members,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.groupInvite,
-      senderId: senderId,
-      payload: {
-        'groupId': groupId,
-        'groupName': groupName,
-        'members': members,
-      },
-    );
-  }
-
-  factory ProtocolMessage.groupMessage({
-    required String senderId,
-    required String groupId,
-    required String encryptedContent,
-    required String messageId,
-    String? messageType,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.groupMessage,
-      senderId: senderId,
-      messageId: messageId,
-      payload: {
-        'groupId': groupId,
-        'encryptedContent': encryptedContent,
-        'messageType': messageType ?? 'text',
-      },
-    );
-  }
-
-  // ─── File transfer factory ────────────────────────────────────
-
-  factory ProtocolMessage.fileTransfer({
-    required String senderId,
-    required String receiverId,
-    required String messageId,
-    required String fileName,
-    required String mimeType,
-    required int fileSize,
-    required String encryptedDataB64,
-    String? thumbnailB64,
-    String? groupId,
-    String? dhPubKey,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.fileTransfer,
-      senderId: senderId,
-      messageId: messageId,
-      dhPubKey: dhPubKey,
-      payload: {
-        'receiverId': receiverId,
-        'fileName': fileName,
-        'mimeType': mimeType,
-        'fileSize': fileSize,
-        'encryptedDataB64': encryptedDataB64,
-        'thumbnailB64': thumbnailB64,
-        'groupId': groupId,
-        'dhPubKey': dhPubKey,
-      },
-    );
-  }
-
-  factory ProtocolMessage.fileChunk({
-    required String senderId,
-    required String receiverId,
-    required Map<String, dynamic> chunkDataJson,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.fileChunk,
-      senderId: senderId,
-      payload: {
-        'receiverId': receiverId,
-        'chunk': chunkDataJson,
-      },
-    );
-  }
-
-  // ─── Reaction factory ─────────────────────────────────────────
-
-  factory ProtocolMessage.reaction({
-    required String senderId,
-    required String targetMessageId,
-    required String emoji,
-    required String roomId,
-    bool remove = false,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.reaction,
-      senderId: senderId,
-      messageId: targetMessageId,
-      payload: {
-        'emoji': emoji,
-        'roomId': roomId,
-        'remove': remove,
-      },
-    );
-  }
-
-  // ─── Forward secrecy: key rotation ────────────────────────────
-
-  factory ProtocolMessage.keyRotation({
-    required String senderId,
-    required String newPublicKeyHex,
-    required int sessionId,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.keyRotation,
-      senderId: senderId,
-      payload: {
-        'newPublicKeyHex': newPublicKeyHex,
-        'sessionId': sessionId,
-      },
-    );
-  }
-
-  // ─── DHT factories ───────────────────────────────────────────
+  // DHT frames carry their own sender id and signature because DHT
+  // connections are short-lived and not handshaked.
 
   factory ProtocolMessage.dhtAnnounce({
     required String senderId,
-    required String publicKeyHex,
+    required String identityKeyHex,
+    required String signingKeyHex,
+    required String kyberKeyHex,
     required String displayName,
-    required String address,
     required int port,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.dhtAnnounce,
-      senderId: senderId,
-      payload: {
-        'publicKeyHex': publicKeyHex,
+    required int issuedAtMs,
+    required String signatureHex,
+  }) =>
+      ProtocolMessage(type: ProtocolMessageType.dhtAnnounce, payload: {
+        'senderId': senderId,
+        'ik': identityKeyHex,
+        'sk': signingKeyHex,
+        'kpk': kyberKeyHex,
         'displayName': displayName,
-        'address': address,
         'port': port,
-      },
-    );
-  }
+        'iat': issuedAtMs,
+        'sig': signatureHex,
+      });
 
   factory ProtocolMessage.dhtLookup({
     required String senderId,
     required String targetId,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.dhtLookup,
-      senderId: senderId,
-      payload: {'targetId': targetId},
-    );
-  }
+  }) =>
+      ProtocolMessage(type: ProtocolMessageType.dhtLookup, payload: {
+        'senderId': senderId,
+        'targetId': targetId,
+      });
 
   factory ProtocolMessage.dhtResponse({
     required String senderId,
     required String targetId,
     required List<Map<String, dynamic>> peers,
-  }) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.dhtResponse,
-      senderId: senderId,
-      payload: {
+  }) =>
+      ProtocolMessage(type: ProtocolMessageType.dhtResponse, payload: {
+        'senderId': senderId,
         'targetId': targetId,
         'peers': peers,
-      },
-    );
-  }
+      });
 
-  // ─── Serialization ─────────────────────────────────────────────
+  // Typed accessors
+
+  HelloMessage asHello() => HelloMessage.fromJson(payload);
+  Envelope asEnvelope() => Envelope.fromJson(payload);
+  MeshPacket asMeshPacket() => MeshPacket.fromJson(payload);
+
+  // Serialisation
 
   Map<String, dynamic> toJson() => {
-    'type': type.name,
-    'senderId': senderId,
-    'payload': payload,
-    'timestamp': timestamp.toIso8601String(),
-    'messageId': messageId,
-    if (dhPubKey != null) 'dhPubKey': dhPubKey,
-  };
+        't': type.name,
+        'p': payload,
+        'ts': timestamp.toIso8601String(),
+      };
 
   factory ProtocolMessage.fromJson(Map<String, dynamic> json) {
-    return ProtocolMessage(
-      type: ProtocolMessageType.values.firstWhere(
-        (e) => e.name == json['type'],
-        orElse: () => ProtocolMessageType.message,
-      ),
-      senderId: json['senderId'] as String,
-      payload: json['payload'] as Map<String, dynamic>,
-      timestamp: DateTime.parse(json['timestamp'] as String),
-      messageId: json['messageId'] as String?,
-      dhPubKey: json['dhPubKey'] as String?,
+    final t = json['t'];
+    final p = json['p'];
+    if (t is! String) throw const FormatException('frame: missing type');
+    if (p is! Map<String, dynamic>) {
+      throw const FormatException('frame: missing payload');
+    }
+    final type = ProtocolMessageType.values.firstWhere(
+      (e) => e.name == t,
+      orElse: () => ProtocolMessageType.unknown,
     );
+    DateTime ts;
+    try {
+      ts = DateTime.parse(json['ts'] as String);
+    } catch (_) {
+      ts = DateTime.now().toUtc();
+    }
+    return ProtocolMessage(type: type, payload: p, timestamp: ts);
   }
 
+  /// One frame = one line. The trailing newline is the delimiter.
   String encode() => '${jsonEncode(toJson())}\n';
 
-  factory ProtocolMessage.decode(String data) =>
-      ProtocolMessage.fromJson(jsonDecode(data.trim()) as Map<String, dynamic>);
+  factory ProtocolMessage.decode(String line) {
+    if (line.length > maxFrameBytes) {
+      throw const FormatException('frame too large');
+    }
+    return ProtocolMessage.fromJson(
+        jsonDecode(line.trim()) as Map<String, dynamic>);
+  }
 
   @override
-  String toString() =>
-      'ProtocolMessage(${type.name}, from: $senderId, id: $messageId)';
+  String toString() => 'ProtocolMessage(${type.name})';
 }

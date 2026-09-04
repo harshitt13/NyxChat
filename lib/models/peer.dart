@@ -7,6 +7,7 @@ class Peer {
   final String displayName;
   final String publicKeyHex;
   final String kyberPublicKeyHex;
+  final String signingPublicKeyHex;
   final String ipAddress;
   final int port;
   final PeerStatus status;
@@ -19,6 +20,7 @@ class Peer {
     required this.displayName,
     required this.publicKeyHex,
     this.kyberPublicKeyHex = '',
+    this.signingPublicKeyHex = '',
     required this.ipAddress,
     required this.port,
     this.status = PeerStatus.discovered,
@@ -32,6 +34,7 @@ class Peer {
     String? displayName,
     String? publicKeyHex,
     String? kyberPublicKeyHex,
+    String? signingPublicKeyHex,
     String? ipAddress,
     int? port,
     PeerStatus? status,
@@ -44,6 +47,7 @@ class Peer {
       displayName: displayName ?? this.displayName,
       publicKeyHex: publicKeyHex ?? this.publicKeyHex,
       kyberPublicKeyHex: kyberPublicKeyHex ?? this.kyberPublicKeyHex,
+      signingPublicKeyHex: signingPublicKeyHex ?? this.signingPublicKeyHex,
       ipAddress: ipAddress ?? this.ipAddress,
       port: port ?? this.port,
       status: status ?? this.status,
@@ -62,6 +66,7 @@ class Peer {
     'displayName': displayName,
     'publicKeyHex': publicKeyHex,
     'kyberPublicKeyHex': kyberPublicKeyHex,
+    'signingPublicKeyHex': signingPublicKeyHex,
     'ipAddress': ipAddress,
     'port': port,
     'status': status.name,
@@ -75,6 +80,7 @@ class Peer {
     displayName: json['displayName'] as String,
     publicKeyHex: json['publicKeyHex'] as String,
     kyberPublicKeyHex: (json['kyberPublicKeyHex'] as String?) ?? '',
+    signingPublicKeyHex: (json['signingPublicKeyHex'] as String?) ?? '',
     ipAddress: json['ipAddress'] as String,
     port: json['port'] as int,
     status: PeerStatus.values.firstWhere(

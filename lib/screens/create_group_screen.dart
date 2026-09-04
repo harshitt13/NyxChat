@@ -1,103 +1,58 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../theme/app_theme.dart';
-import '../services/identity_service.dart';
+
+import '../core/storage/trust_store.dart';
 import '../services/chat_service.dart';
-import '../services/peer_service.dart';
-import '../models/chat_room.dart';
+import '../theme/app_theme.dart';
 import 'chat_screen.dart';
 
 class CreateGroupScreen extends StatefulWidget {
   const CreateGroupScreen({super.key});
-
   @override
   State<CreateGroupScreen> createState() => _CreateGroupScreenState();
 }
 
 class _CreateGroupScreenState extends State<CreateGroupScreen> {
-  final _nameController = TextEditingController();
-  final _descriptionController = TextEditingController();
-  final Set<String> _selectedPeerIds = {};
-  bool _isCreating = false;
+  final _name = TextEditingController();
+  final _description = TextEditingController();
+  final Set<String> _selected = {};
+  bool _busy = false;
 
   @override
   void dispose() {
-    _nameController.dispose();
-    _descriptionController.dispose();
+    _name.dispose();
+    _description.dispose();
     super.dispose();
   }
 
-  Future<void> _createGroup() async {
-    if (_nameController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Please enter a group name'),
-          backgroundColor: AppTheme.error,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        ),
-      );
+  Future<void> _create() async {
+    final name = _name.text.trim();
+    if (name.isEmpty) {
+      _snack('Give the group a name');
       return;
     }
-
-    if (_selectedPeerIds.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Please select at least one member'),
-          backgroundColor: AppTheme.error,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        ),
-      );
+    if (_selected.isEmpty) {
+      _snack('Select at least one member');
       return;
     }
-
-    setState(() => _isCreating = true);
-
-    final identity = context.read<IdentityService>().identity!;
-    final peerService = context.read<PeerService>();
-    final chatService = context.read<ChatService>();
-
-    // Build member list including self
-    final members = <GroupMember>[
-      GroupMember(
-        nyxChatId: identity.nyxChatId,
-        displayName: identity.displayName,
-        publicKeyHex: identity.publicKeyHex,
-        isAdmin: true,
-        joinedAt: DateTime.now(),
-      ),
-    ];
-
-    for (final peerId in _selectedPeerIds) {
-      final peer = peerService.peers[peerId];
-      if (peer != null) {
-        members.add(GroupMember(
-          nyxChatId: peer.nyxChatId,
-          displayName: peer.displayName,
-          publicKeyHex: peer.publicKeyHex,
-          joinedAt: DateTime.now(),
-        ));
-      }
-    }
-
-    final room = await chatService.createGroupChat(
-      groupName: _nameController.text.trim(),
+    setState(() => _busy = true);
+    final trust = context.read<TrustStore>();
+    final chat = context.read<ChatService>();
+    final members = _selected.map(trust.get).whereType<PinnedPeer>().toList();
+    final room = await chat.createGroup(
+      name: name,
       members: members,
-      myNyxChatId: identity.nyxChatId,
-      description: _descriptionController.text.trim().isNotEmpty
-          ? _descriptionController.text.trim()
-          : null,
+      description: _description.text.trim().isEmpty ? null : _description.text.trim(),
     );
-
-    if (mounted) {
-      Navigator.pop(context);
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => ChatScreen(room: room)),
-      );
-    }
+    if (!mounted) return;
+    await Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => ChatScreen(roomId: room.id)));
   }
+
+  void _snack(String t) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(t),
+        backgroundColor: AppTheme.surface,
+        behavior: SnackBarBehavior.floating,
+      ));
 
   @override
   Widget build(BuildContext context) {
@@ -105,216 +60,97 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
       backgroundColor: AppTheme.background,
       appBar: AppBar(
         backgroundColor: AppTheme.background,
-        leading: IconButton(
-          onPressed: () => Navigator.pop(context),
-          icon: const Icon(Icons.arrow_back_ios_rounded,
-              color: AppTheme.textPrimary, size: 20),
-        ),
-        title: const Text('New Group',
-            style: TextStyle(
-                color: AppTheme.textPrimary,
-                fontSize: 20,
-                fontWeight: FontWeight.w700)),
+        elevation: 0,
+        title: const Text('New group', style: TextStyle(color: AppTheme.textPrimary, fontSize: 17, fontWeight: FontWeight.w600)),
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: TextButton(
-              onPressed: _isCreating ? null : _createGroup,
-              child: _isCreating
-                  ? const SizedBox(
-                      width: 20, height: 20,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: AppTheme.accentBlue))
-                  : const Text('Create',
-                      style: TextStyle(
-                          color: AppTheme.accentBlue,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600)),
-            ),
+          TextButton(
+            onPressed: _busy ? null : _create,
+            child: const Text('Create', style: TextStyle(color: AppTheme.accentBlue, fontWeight: FontWeight.w600)),
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // Group Info Section
-          Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 52, height: 52,
-                      decoration: BoxDecoration(
-                        color: AppTheme.surface,
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.06),
-                        ),
-                      ),
-                      child: Icon(Icons.group_outlined,
-                          color: AppTheme.textMuted, size: 24),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: TextField(
-                        controller: _nameController,
-                        style: const TextStyle(
-                            color: AppTheme.textPrimary, fontSize: 18),
-                        decoration: const InputDecoration(
-                          hintText: 'Group name',
-                          hintStyle: TextStyle(color: AppTheme.textMuted),
-                          filled: false,
-                          border: InputBorder.none,
-                        ),
-                      ),
-                    ),
-                  ],
+      body: Consumer<TrustStore>(
+        builder: (context, trust, _) {
+          final contacts = trust.all..sort((a, b) => a.displayName.compareTo(b.displayName));
+          return ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              _field(_name, 'Group name', maxLength: 64),
+              const SizedBox(height: 10),
+              _field(_description, 'Description (optional)', maxLength: 200),
+              const SizedBox(height: 20),
+              Text('MEMBERS · ${_selected.length} selected',
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1)),
+              const SizedBox(height: 8),
+              if (contacts.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text('No contacts yet. Connect to someone first so their keys are pinned.',
+                      style: TextStyle(color: AppTheme.textMuted, fontSize: 13)),
                 ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _descriptionController,
-                  style: const TextStyle(
-                      color: AppTheme.textSecondary, fontSize: 14),
-                  maxLines: 2,
-                  decoration: InputDecoration(
-                    hintText: 'Description (optional)',
-                    hintStyle: const TextStyle(color: AppTheme.textMuted),
-                    filled: true,
-                    fillColor: AppTheme.surfaceLight,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide.none,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Divider
-          Container(
-            height: 1,
-            color: Colors.white.withValues(alpha: 0.04),
-          ),
-
-          // Members Header
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-            child: Row(
-              children: [
-                const Text('SELECT MEMBERS',
-                    style: TextStyle(
-                        color: AppTheme.textSecondary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 1)),
-                const Spacer(),
-                Text('${_selectedPeerIds.length} selected',
-                    style: const TextStyle(
-                        color: AppTheme.accentBlue,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-              ],
-            ),
-          ),
-
-          // Peer List
-          Expanded(
-            child: Consumer<PeerService>(
-              builder: (_, peerService, _) {
-                final connectedPeers = peerService.connectedPeers;
-
-                if (connectedPeers.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.people_outline_rounded,
-                            size: 48, color: AppTheme.textMuted.withValues(alpha: 0.5)),
-                        const SizedBox(height: 12),
-                        const Text('No connected peers',
-                            style: TextStyle(
-                                color: AppTheme.textSecondary, fontSize: 15)),
-                        const SizedBox(height: 4),
-                        const Text('Connect to peers first to add them',
-                            style: TextStyle(
-                                color: AppTheme.textMuted, fontSize: 13)),
-                      ],
-                    ),
-                  );
-                }
-
-                return ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  itemCount: connectedPeers.length,
-                  itemBuilder: (_, i) {
-                    final peer = connectedPeers[i];
-                    final isSelected =
-                        _selectedPeerIds.contains(peer.nyxChatId);
-
-                    return ListTile(
-                      onTap: () {
-                        setState(() {
-                          if (isSelected) {
-                            _selectedPeerIds.remove(peer.nyxChatId);
-                          } else {
-                            _selectedPeerIds.add(peer.nyxChatId);
-                          }
-                        });
-                      },
-                      leading: Container(
-                        width: 44, height: 44,
-                        decoration: BoxDecoration(
-                          color: isSelected
-                              ? AppTheme.accentBlue.withValues(alpha: 0.2)
-                              : AppTheme.surfaceLight,
-                          borderRadius: BorderRadius.circular(14),
-                          border: isSelected
-                              ? Border.all(
-                                  color: AppTheme.accentBlue, width: 2)
-                              : null,
-                        ),
+              ...contacts.map((p) {
+                final on = _selected.contains(p.nyxChatId);
+                return InkWell(
+                  onTap: () => setState(() => on ? _selected.remove(p.nyxChatId) : _selected.add(p.nyxChatId)),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.all(12),
+                    decoration: AppTheme.glassDecoration(
+                        opacity: on ? 0.08 : 0.03,
+                        borderRadius: 12,
+                        borderColor: on ? AppTheme.accentBlue.withValues(alpha: 0.5) : null),
+                    child: Row(children: [
+                      Container(
+                        width: 36, height: 36,
+                        decoration: BoxDecoration(color: AppTheme.surfaceLight, borderRadius: BorderRadius.circular(10)),
                         child: Center(
-                          child: isSelected
-                              ? const Icon(Icons.check_rounded,
-                                  color: AppTheme.accentBlue, size: 22)
-                              : Text(
-                                  peer.displayName.isNotEmpty
-                                      ? peer.displayName[0].toUpperCase()
-                                      : '?',
-                                  style: const TextStyle(
-                                      color: AppTheme.textPrimary,
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w600)),
+                          child: Text(p.displayName.isNotEmpty ? p.displayName[0].toUpperCase() : '?',
+                              style: const TextStyle(color: AppTheme.accentBlue, fontWeight: FontWeight.w600)),
                         ),
                       ),
-                      title: Text(peer.displayName,
-                          style: const TextStyle(
-                              color: AppTheme.textPrimary,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w500)),
-                      subtitle: Text(peer.nyxChatId,
-                          style: const TextStyle(
-                              color: AppTheme.textMuted,
-                              fontSize: 12,
-                              fontFamily: 'monospace'),
-                          overflow: TextOverflow.ellipsis),
-                      trailing: Container(
-                        width: 8, height: 8,
-                        decoration: const BoxDecoration(
-                          color: AppTheme.accentGreen,
-                          shape: BoxShape.circle,
-                        ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Row(children: [
+                            Flexible(child: Text(p.displayName, overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14, fontWeight: FontWeight.w500))),
+                            if (p.verified) ...[const SizedBox(width: 6),
+                              const Icon(Icons.verified_rounded, size: 13, color: AppTheme.accentGreen)],
+                          ]),
+                          Text(p.nyxChatId, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11, fontFamily: 'monospace')),
+                        ]),
                       ),
-                    );
-                  },
+                      Icon(on ? Icons.check_circle_rounded : Icons.circle_outlined,
+                          color: on ? AppTheme.accentBlue : AppTheme.textMuted, size: 22),
+                    ]),
+                  ),
                 );
-              },
-            ),
-          ),
-        ],
+              }),
+            ],
+          );
+        },
       ),
     );
   }
+
+  Widget _field(TextEditingController c, String hint, {int? maxLength}) => Container(
+        decoration: BoxDecoration(
+          color: AppTheme.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        child: TextField(
+          controller: c,
+          maxLength: maxLength,
+          style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: const TextStyle(color: AppTheme.textMuted),
+            border: InputBorder.none,
+            counterText: '',
+          ),
+        ),
+      );
 }

@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'dart:isolate';
+
 import 'package:flutter/foundation.dart';
-import 'package:cryptography/cryptography.dart';
+
+import '../crypto/crypto_utils.dart';
 import 'mesh_packet.dart';
 import 'mesh_store.dart';
 
@@ -11,40 +12,42 @@ class RoutingEntry {
   final String nextHopHash;
   final int hopCount;
   final DateTime lastUpdated;
-
   RoutingEntry({required this.nextHopHash, required this.hopCount})
       : lastUpdated = DateTime.now();
-
-  bool get isStale => DateTime.now().difference(lastUpdated).inMinutes > 60;
+  bool get isStale => DateTime.now().difference(lastUpdated).inMinutes > 30;
 }
 
-/// MANET Distance-Vector mesh router for NyxChat.
+/// Delay-tolerant mesh router.
 ///
-/// Implements intelligent path-finding:
-/// - **Route Discovery**: Periodic broadcasts to build distance-vector routing tables
-/// - **Unicast Forwarding**: If path known, send only to next hop (saves battery)
-/// - **Fallback Spray**: If path unknown, fallback to restricted L-copies spray.
+/// * Distance-vector route learning from the `routePath` of every packet
+///   (and periodic route-discovery beacons).
+/// * Unicast to the learned next hop when a route is known, otherwise
+///   restricted flooding (Spray-and-Wait with L = [sprayCount]).
+/// * Store-and-forward: undelivered packets are kept in [MeshStore] and
+///   offered to every newly connected neighbour.
+/// * Anti-timing jitter before each forward.
 class MeshRouter extends ChangeNotifier {
   final MeshStore _store;
   final Map<String, RoutingEntry> _routingTable = {};
   final int defaultTtl;
-  final int sprayCount; // L copies in spray phase
+  final int sprayCount;
   final Random _random = Random.secure();
   Timer? _refreshTimer;
 
-  String? _myIdHash; // SHA256 of my NyxChat ID
+  String? _myHash;
   String? _myNyxId;
 
-  // Public getters
-  String? get myNyxId => _myNyxId;
-  // Callbacks
-  Function(MeshPacket packet)? onPacketForMe;
-  Function(MeshPacket packet)? onForwardPacket;
+  /// Packet addressed to us (payload is an end-to-end encrypted envelope).
+  void Function(MeshPacket packet)? onPacketForMe;
 
-  // Stats
+  /// Packet to hand to the transport. [nextHopHash] is null for
+  /// spray/broadcast, otherwise the neighbour that should receive it.
+  void Function(MeshPacket packet, String? nextHopHash)? onForwardPacket;
+
   int _totalReceived = 0;
   int _totalForwarded = 0;
   int _totalDelivered = 0;
+  int _totalDuplicates = 0;
 
   MeshRouter({
     required MeshStore store,
@@ -52,129 +55,122 @@ class MeshRouter extends ChangeNotifier {
     this.sprayCount = 3,
   }) : _store = store;
 
+  String? get myNyxId => _myNyxId;
+  String? get myHash => _myHash;
   int get totalReceived => _totalReceived;
   int get totalForwarded => _totalForwarded;
   int get totalDelivered => _totalDelivered;
+  int get totalDuplicates => _totalDuplicates;
   int get storedPackets => _store.packetCount;
+  int get knownRoutes => _routingTable.length;
+  Map<String, RoutingEntry> get routingTable => Map.unmodifiable(_routingTable);
 
-  /// Initialize with the local user's NyxChat ID.
   Future<void> init(String myNyxId) async {
     _myNyxId = myNyxId;
-    _myIdHash = await _hashId(myNyxId);
-    debugPrint('[Mesh] Router initialized, hash: ${_myIdHash?.substring(0, 8)}');
-    
-    // Periodically prune stale route entries and broadcast discovery pulses
+    _myHash = await hashId(myNyxId);
     _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(const Duration(minutes: 5), (_) => _cleanAndBroadcastRoutes());
+    _refreshTimer = Timer.periodic(
+        const Duration(minutes: 5), (_) => _cleanAndBeacon());
   }
 
-  Future<void> _cleanAndBroadcastRoutes() async {
-    _routingTable.removeWhere((key, entry) => entry.isStale);
-    if (_myIdHash != null) {
-      final packet = await createPacket(
-        recipientId: 'BROADCAST', 
-        encryptedPayload: Uint8List(0), 
-        type: 'route_discovery'
-      );
-      handlePacket(packet); // Hand it over to the forwarding logic
-    }
+  Future<void> _cleanAndBeacon() async {
+    _routingTable.removeWhere((_, e) => e.isStale);
+    if (_myHash == null) return;
+    final beacon = await createPacket(
+      recipientId: 'BROADCAST',
+      payload: Uint8List(0),
+      type: MeshPacket.typeRouteDiscovery,
+      ttl: 3,
+    );
+    _store.markSeen(beacon.id);
+    onForwardPacket?.call(beacon.forward(_myHash!), null);
   }
 
-  /// Create a mesh packet for a specific recipient.
   Future<MeshPacket> createPacket({
     required String recipientId,
-    required Uint8List encryptedPayload,
-    String type = 'message',
+    required Uint8List payload,
+    String type = MeshPacket.typeMessage,
+    int? ttl,
   }) async {
-    final recipientHash = await _hashId(recipientId);
-    final senderHash = _myIdHash ?? '';
-
     return MeshPacket(
       id: _generatePacketId(),
-      recipientHash: recipientHash,
-      senderHash: senderHash,
-      ttl: defaultTtl,
-      maxTtl: defaultTtl,
-      payload: encryptedPayload,
-      timestamp: DateTime.now(),
+      recipientHash: await hashId(recipientId),
+      senderHash: _myHash ?? '',
+      ttl: ttl ?? defaultTtl,
+      maxTtl: ttl ?? defaultTtl,
+      payload: payload,
+      timestamp: DateTime.now().toUtc(),
       type: type,
     );
   }
 
-  /// Handle an incoming mesh packet.
-  ///
-  /// If addressed to us: deliver locally.
-  /// Otherwise: store and forward with anti-timing delay.
+  /// Originate a packet: store it and forward immediately.
+  Future<MeshPacket> send({
+    required String recipientId,
+    required Uint8List payload,
+  }) async {
+    if (payload.length > MeshPacket.maxPayloadBytes) {
+      throw ArgumentError('payload exceeds mesh packet limit');
+    }
+    final packet = await createPacket(recipientId: recipientId, payload: payload);
+    _store.store(packet);
+    _forward(packet, immediate: true);
+    notifyListeners();
+    return packet;
+  }
+
+  /// Handle a packet received from a neighbour.
   Future<void> handlePacket(MeshPacket packet) async {
     _totalReceived++;
-
-    // Dedup check
     if (_store.hasSeen(packet.id)) {
-      debugPrint('[Mesh] Packet ${packet.id.substring(0, 8)} already seen, dropping');
+      _totalDuplicates++;
       return;
     }
+    _store.markSeen(packet.id);
 
-    // Process Route Discovery to build distance-vector maps
-    if (packet.senderHash.isNotEmpty && packet.routePath.isNotEmpty) {
-       final previousHop = packet.routePath.last;
-       final hops = packet.maxTtl - packet.ttl;
-       
-       // If we don't have a route, or this route is shorter, learn it!
-       if (!_routingTable.containsKey(packet.senderHash) || 
-           hops < _routingTable[packet.senderHash]!.hopCount) {
-          _routingTable[packet.senderHash] = RoutingEntry(
-            nextHopHash: previousHop, 
-            hopCount: hops
-          );
-          debugPrint('[Mesh] Learned route to ${packet.senderHash.substring(0, 8)} via ${previousHop.substring(0, 8)} in $hops hops.');
-       }
+    if (packet.senderHash.isNotEmpty && packet.routePath.isNotEmpty &&
+        packet.senderHash != _myHash) {
+      final previousHop = packet.routePath.last;
+      final hops = packet.hops;
+      final known = _routingTable[packet.senderHash];
+      if (known == null || hops < known.hopCount || known.isStale) {
+        _routingTable[packet.senderHash] =
+            RoutingEntry(nextHopHash: previousHop, hopCount: hops);
+      }
     }
 
-    // Check if addressed to us
-    if (packet.recipientHash == _myIdHash) {
+    if (packet.recipientHash == _myHash) {
       _totalDelivered++;
       _store.markDelivered(packet.id);
-      if (packet.type != 'route_discovery') onPacketForMe?.call(packet);
-      debugPrint('[Mesh] Packet ${packet.id.substring(0, 8)} is for me!');
+      if (!packet.isBroadcast) onPacketForMe?.call(packet);
+      notifyListeners();
       return;
     }
 
-    // Not for us — evaluate Distance-Vector strategy
-    if (packet.canForward) {
-      final stored = _store.store(packet);
-      if (stored) {
-        final delay = Duration(milliseconds: _random.nextInt(2000));
-        Timer(delay, () {
-          final forwarded = packet.forward(_myIdHash ?? 'unknown');
-          _totalForwarded++;
-
-          // Targeted Next-Hop routing if we know the path!
-          if (_routingTable.containsKey(packet.recipientHash)) {
-            final nextHop = _routingTable[packet.recipientHash]!.nextHopHash;
-            // In a real device implementation, we'd specifically BLE unicast to the `nextHop`.
-            // For now, we still broadcast, but tag the packet so other nodes can ignore it if targeted.
-            onForwardPacket?.call(forwarded); 
-            debugPrint('[Mesh] MANET: Targeted route used for ${packet.id.substring(0, 8)} via ${nextHop.substring(0, 8)} after delay');
-          } else {
-            // Unmapped path: Fallback to constrained spray-and-wait
-            onForwardPacket?.call(forwarded);
-            debugPrint('[Mesh] Spraying ${packet.id.substring(0, 8)} after ${delay.inMs}ms delay');
-          }
-        });
-      }
-    } else {
-      debugPrint('[Mesh] Packet ${packet.id.substring(0, 8)} TTL expired, dropping');
+    if (packet.canForward && !packet.isExpired) {
+      if (!packet.isBroadcast) _store.store(packet);
+      _forward(packet);
     }
-
     notifyListeners();
   }
 
-  /// Get stored packets to exchange with a newly connected peer.
-  /// Used during the spray phase — sends up to [sprayCount] copies.
+  void _forward(MeshPacket packet, {bool immediate = false}) {
+    final delay = immediate
+        ? Duration.zero
+        : Duration(milliseconds: 200 + _random.nextInt(1800));
+    Timer(delay, () {
+      final forwarded = packet.forward(_myHash ?? '');
+      _totalForwarded++;
+      final route = _routingTable[packet.recipientHash];
+      final nextHop = (route != null && !route.isStale) ? route.nextHopHash : null;
+      onForwardPacket?.call(forwarded, nextHop);
+    });
+  }
+
+  /// Packets to offer to a neighbour that just connected (spray phase).
   List<MeshPacket> getPacketsForNewPeer() {
-    if (_myIdHash == null) return [];
-    final forwardable = _store.getForwardable(_myIdHash!);
-    // Spray: limit to sprayCount per batch
+    if (_myHash == null) return [];
+    final forwardable = _store.getForwardable(_myHash!);
     if (forwardable.length > sprayCount) {
       forwardable.shuffle(_random);
       return forwardable.sublist(0, sprayCount);
@@ -182,28 +178,23 @@ class MeshRouter extends ChangeNotifier {
     return forwardable;
   }
 
-  /// Hash a NyxChat ID for anonymous addressing via Isolate to prevent dropping frames.
-  Future<String> _hashId(String id) async {
-    return Isolate.run(() async {
-      final hash = await Sha256().hash(utf8.encode(id));
-      return base64Encode(hash.bytes);
-    });
-  }
+  /// Anonymous address for an id: base64(SHA-256(id)).
+  static Future<String> hashId(String id) async =>
+      base64Encode(await CryptoUtils.sha256(utf8.encode(id)));
 
-  /// Generate a unique packet ID.
   String _generatePacketId() {
-    final timestamp = DateTime.now().microsecondsSinceEpoch;
-    final random = _random.nextInt(0xFFFFFF);
-    return '${timestamp.toRadixString(36)}-${random.toRadixString(36)}';
+    final ts = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    final rnd = CryptoUtils.toHex(CryptoUtils.randomBytes(6));
+    return '$ts-$rnd';
   }
 
-  /// Clear all mesh state (for panic wipe).
   void clearAll() {
-    _refreshTimer?.cancel();
     _store.clear();
+    _routingTable.clear();
     _totalReceived = 0;
     _totalForwarded = 0;
     _totalDelivered = 0;
+    _totalDuplicates = 0;
     notifyListeners();
   }
 
@@ -212,8 +203,4 @@ class MeshRouter extends ChangeNotifier {
     _refreshTimer?.cancel();
     super.dispose();
   }
-}
-
-extension on Duration {
-  int get inMs => inMilliseconds;
 }

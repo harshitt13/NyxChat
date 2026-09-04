@@ -1,124 +1,96 @@
 import 'dart:async';
 import 'dart:io';
+
 import 'package:flutter/foundation.dart';
+
 import 'message_protocol.dart';
 import 'p2p_server.dart';
 
-/// TCP client that connects to discovered peers.
+/// Registry of authenticated direct links, keyed by peer id.
 class P2PClient {
   final Map<String, PeerConnection> _connections = {};
+  final StreamController<String> _peerUp = StreamController.broadcast();
+  final StreamController<String> _peerDown = StreamController.broadcast();
 
-  /// Get all active connections
-  Map<String, PeerConnection> get connections =>
-      Map.unmodifiable(_connections);
+  Map<String, PeerConnection> get connections => Map.unmodifiable(_connections);
+  Stream<String> get onPeerConnected => _peerUp.stream;
+  Stream<String> get onPeerDisconnected => _peerDown.stream;
 
-  /// Connect to a peer at the given address and port
-  Future<PeerConnection> connectToPeer({
+  /// Open a raw TCP link. The caller performs the handshake.
+  Future<PeerConnection> open({
     required String address,
     required int port,
-    required ProtocolMessage helloMessage,
     Duration timeout = const Duration(seconds: 10),
   }) async {
-    try {
-      final socket = await Socket.connect(
-        address,
-        port,
-        timeout: timeout,
-      );
+    final socket = await Socket.connect(address, port, timeout: timeout);
+    return PeerConnection(socket: socket, isIncoming: false);
+  }
 
-      debugPrint('Connected to peer at $address:$port');
-
-      final connection = PeerConnection(
-        socket: socket,
-        isIncoming: false,
-      );
-
-      // Send hello message
-      connection.send(helloMessage);
-
-      // Wait for their hello response
-      final completer = Completer<PeerConnection>();
-      late StreamSubscription sub;
-
-      sub = connection.onMessage.listen((msg) {
-        if (msg.type == ProtocolMessageType.hello) {
-          connection.peerId = msg.senderId;
-          connection.peerDisplayName =
-              msg.payload['displayName'] as String?;
-          connection.peerPublicKeyHex =
-              msg.payload['publicKeyHex'] as String?;
-          connection.peerKyberPublicKeyHex =
-              msg.payload['kyberPublicKeyHex'] as String?;
-          connection.kyberCiphertextHex =
-              msg.payload['kyberCiphertextHex'] as String?;
-
-          _connections[msg.senderId] = connection;
-
-          if (!completer.isCompleted) {
-            completer.complete(connection);
-          }
-          sub.cancel();
-        }
-      });
-
-      // Also handle disconnect before hello
-      connection.onDisconnect.then((_) {
-        if (!completer.isCompleted) {
-          completer.completeError('Peer disconnected before handshake');
-        }
-        _connections.remove(connection.peerId);
-      });
-
-      return await completer.future.timeout(timeout, onTimeout: () {
-        connection.disconnect();
-        throw TimeoutException('Handshake timeout');
-      });
-    } catch (e) {
-      debugPrint('Failed to connect to $address:$port: $e');
-      rethrow;
+  /// Register an authenticated link. If another link to the same peer
+  /// exists, the deterministic rule "the link initiated by the smaller id
+  /// survives" decides which one is kept, so both sides agree.
+  bool register(PeerConnection connection, {required String myId}) {
+    final peerId = connection.peerId;
+    if (peerId == null) return false;
+    final existing = _connections[peerId];
+    if (existing != null && existing.isConnected && existing != connection) {
+      final keepNew = _shouldPrefer(connection, existing, myId, peerId);
+      if (!keepNew) {
+        debugPrint('[P2P] duplicate link to $peerId, dropping newer');
+        unawaited(connection.disconnect());
+        return false;
+      }
+      debugPrint('[P2P] duplicate link to $peerId, replacing older');
+      unawaited(existing.disconnect());
     }
+    _connections[peerId] = connection;
+    _peerUp.add(peerId);
+    unawaited(connection.onDisconnect.then((_) {
+      if (_connections[peerId] == connection) {
+        _connections.remove(peerId);
+        _peerDown.add(peerId);
+      }
+    }));
+    return true;
   }
 
-  /// Register an incoming connection (from P2PServer)
-  void registerIncomingConnection(PeerConnection connection) {
-    if (connection.peerId != null) {
-      _connections[connection.peerId!] = connection;
-    }
-
-    connection.onDisconnect.then((_) {
-      _connections.remove(connection.peerId);
-    });
+  /// Prefer the link whose initiator has the smaller id.
+  static bool _shouldPrefer(
+      PeerConnection candidate, PeerConnection existing, String myId, String peerId) {
+    final iAmSmaller = myId.compareTo(peerId) < 0;
+    bool initiatedBySmaller(PeerConnection c) =>
+        c.isIncoming ? !iAmSmaller : iAmSmaller;
+    final candidateWins = initiatedBySmaller(candidate);
+    final existingWins = initiatedBySmaller(existing);
+    if (candidateWins && !existingWins) return true;
+    if (!candidateWins && existingWins) return false;
+    return false; // tie (should not happen): keep existing
   }
 
-  /// Send a message to a specific peer
-  void sendToPeer(String peerId, ProtocolMessage message) {
-    final connection = _connections[peerId];
-    if (connection != null && connection.isConnected) {
-      connection.send(message);
-    } else {
-      debugPrint('Peer $peerId not connected');
-    }
+  Future<void> sendToPeer(String peerId, ProtocolMessage message) async {
+    final c = _connections[peerId];
+    if (c == null || !c.isConnected) return;
+    await c.send(message);
   }
 
-  /// Check if a peer is connected
-  bool isPeerConnected(String peerId) {
-    final connection = _connections[peerId];
-    return connection != null && connection.isConnected;
-  }
+  bool isPeerConnected(String peerId) =>
+      _connections[peerId]?.isConnected ?? false;
 
-  /// Get a specific peer connection
   PeerConnection? getConnection(String peerId) => _connections[peerId];
 
-  /// Disconnect from a specific peer
+  List<String> get connectedPeerIds => _connections.entries
+      .where((e) => e.value.isConnected)
+      .map((e) => e.key)
+      .toList();
+
   Future<void> disconnectPeer(String peerId) async {
-    final connection = _connections.remove(peerId);
-    await connection?.disconnect();
+    final c = _connections.remove(peerId);
+    await c?.disconnect();
   }
 
-  /// Disconnect from all peers
   Future<void> disconnectAll() async {
-    for (final connection in _connections.values) {
-      await connection.disconnect();
+    for (final c in _connections.values.toList()) {
+      await c.disconnect();
     }
     _connections.clear();
   }

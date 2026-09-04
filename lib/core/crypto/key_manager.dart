@@ -1,178 +1,190 @@
 import 'dart:typed_data';
+
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:convert/convert.dart';
+
+import 'crypto_utils.dart';
 import 'hybrid_key_exchange.dart';
 
-/// Manages cryptographic key generation, storage, and retrieval.
-/// Uses X25519 for key exchange, Ed25519 for signing, and
-/// ML-KEM (Kyber-768) for post-quantum hybrid key exchange.
+/// Long-term identity keys.
+///
+/// * X25519  - identity key used in the handshake and async session setup
+/// * Ed25519 - signing key used to authenticate handshakes, group sender
+///             keys and DHT announcements
+/// * Kyber-768 - post-quantum KEM key used in the hybrid handshake
+///
+/// Private keys are stored only in the platform keystore-backed
+/// [FlutterSecureStorage]. They are loaded into memory once per launch.
 class KeyManager {
-  static const _storageKeyExchangePrivate = 'nyxchat_kx_private';
-  static const _storageKeyExchangePublic = 'nyxchat_kx_public';
-  static const _storageSigningPrivate = 'nyxchat_sign_private';
-  static const _storageSigningPublic = 'nyxchat_sign_public';
-  static const _storageKyberPrivate = 'nyxchat_kyber_private';
-  static const _storageKyberPublic = 'nyxchat_kyber_public';
+  /// Profile suffix ('' for the real profile, '_decoy' for the duress
+  /// profile) so that each profile has independent identity keys.
+  String _profile = '';
 
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
-  final X25519 _keyExchangeAlgo = X25519();
-  final Ed25519 _signingAlgo = Ed25519();
-  final HybridKeyExchange _hybridKex = HybridKeyExchange();
+  String get _storageKeyExchangePrivate => 'nyxchat_kx_private$_profile';
+  String get _storageKeyExchangePublic => 'nyxchat_kx_public$_profile';
+  String get _storageSigningPrivate => 'nyxchat_sign_private$_profile';
+  String get _storageSigningPublic => 'nyxchat_sign_public$_profile';
+  String get _storageKyberPrivate => 'nyxchat_kyber_private$_profile';
+  String get _storageKyberPublic => 'nyxchat_kyber_public$_profile';
 
-  SimpleKeyPair? _keyExchangeKeyPair;
-  SimpleKeyPair? _signingKeyPair;
+  final FlutterSecureStorage _storage;
+
+  String get profile => _profile;
+
+  /// Switch storage namespace. Clears loaded keys.
+  void setProfile(String suffix) {
+    if (_profile == suffix) return;
+    _profile = suffix;
+    _identityKeyPair = null;
+    _signingKeyPair = null;
+    _kyberKeyPair = null;
+  }
+
+  SimpleKeyPairData? _identityKeyPair;
+  SimpleKeyPairData? _signingKeyPair;
   KyberKeyPair? _kyberKeyPair;
 
-  /// Check if keys have been generated
-  Future<bool> hasKeys() async {
-    final kxPrivate = await _storage.read(key: _storageKeyExchangePrivate);
-    return kxPrivate != null;
+  KeyManager({FlutterSecureStorage? storage})
+      : _storage = storage ?? const FlutterSecureStorage();
+
+  /// Construct from in-memory keys (used by tests and the mesh simulator).
+  KeyManager.fromKeys({
+    required SimpleKeyPairData identityKeyPair,
+    required SimpleKeyPairData signingKeyPair,
+    required KyberKeyPair kyberKeyPair,
+    FlutterSecureStorage? storage,
+  })  : _storage = storage ?? const FlutterSecureStorage(),
+        _identityKeyPair = identityKeyPair,
+        _signingKeyPair = signingKeyPair,
+        _kyberKeyPair = kyberKeyPair;
+
+  /// Generate a complete in-memory key set without touching storage.
+  static Future<KeyManager> generateEphemeral() async {
+    return KeyManager.fromKeys(
+      identityKeyPair: await CryptoUtils.newX25519KeyPair(),
+      signingKeyPair: await CryptoUtils.newEd25519KeyPair(),
+      kyberKeyPair: await KyberKem.generateKeyPair(),
+    );
   }
 
-  /// Generate new key pairs for the user
+  bool get isLoaded =>
+      _identityKeyPair != null && _signingKeyPair != null && _kyberKeyPair != null;
+
+  Future<bool> hasKeys() async =>
+      await _storage.read(key: _storageKeyExchangePrivate) != null;
+
+  /// Generate and persist a fresh key set.
   Future<void> generateKeys() async {
-    // Generate X25519 key pair for key exchange
-    final kxPair = await _keyExchangeAlgo.newKeyPair();
-    final kxPrivate = await kxPair.extractPrivateKeyBytes();
-    final kxPublic = await kxPair.extractPublicKey();
+    final identity = await CryptoUtils.newX25519KeyPair();
+    final signing = await CryptoUtils.newEd25519KeyPair();
+    final kyber = await KyberKem.generateKeyPair();
 
-    // Generate Ed25519 key pair for signing
-    final signPair = await _signingAlgo.newKeyPair();
-    final signPrivate = await signPair.extractPrivateKeyBytes();
-    final signPublic = await signPair.extractPublicKey();
+    await _storage.write(
+        key: _storageKeyExchangePrivate,
+        value: CryptoUtils.toHex(identity.bytes));
+    await _storage.write(
+        key: _storageKeyExchangePublic,
+        value: CryptoUtils.toHex(identity.publicKey.bytes));
+    await _storage.write(
+        key: _storageSigningPrivate, value: CryptoUtils.toHex(signing.bytes));
+    await _storage.write(
+        key: _storageSigningPublic,
+        value: CryptoUtils.toHex(signing.publicKey.bytes));
+    await _storage.write(
+        key: _storageKyberPrivate, value: CryptoUtils.toHex(kyber.privateKey));
+    await _storage.write(
+        key: _storageKyberPublic, value: CryptoUtils.toHex(kyber.publicKey));
 
-    // Generate ML-KEM (Kyber-768) key pair for post-quantum key exchange
-    final kyberPair = await _hybridKex.generateKyberKeyPair();
-
-    // Store keys securely
-    await _storage.write(
-      key: _storageKeyExchangePrivate,
-      value: hex.encode(kxPrivate),
-    );
-    await _storage.write(
-      key: _storageKeyExchangePublic,
-      value: hex.encode(kxPublic.bytes),
-    );
-    await _storage.write(
-      key: _storageSigningPrivate,
-      value: hex.encode(signPrivate),
-    );
-    await _storage.write(
-      key: _storageSigningPublic,
-      value: hex.encode(signPublic.bytes),
-    );
-    await _storage.write(
-      key: _storageKyberPrivate,
-      value: hex.encode(kyberPair.privateKey),
-    );
-    await _storage.write(
-      key: _storageKyberPublic,
-      value: hex.encode(kyberPair.publicKey),
-    );
-
-    _keyExchangeKeyPair = SimpleKeyPairData(
-      kxPrivate,
-      publicKey: SimplePublicKey(kxPublic.bytes, type: KeyPairType.x25519),
-      type: KeyPairType.x25519,
-    );
-    _signingKeyPair = SimpleKeyPairData(
-      signPrivate,
-      publicKey: SimplePublicKey(signPublic.bytes, type: KeyPairType.ed25519),
-      type: KeyPairType.ed25519,
-    );
-    _kyberKeyPair = kyberPair;
+    _identityKeyPair = identity;
+    _signingKeyPair = signing;
+    _kyberKeyPair = kyber;
   }
 
-  /// Load existing key pairs from secure storage
+  /// Load keys from secure storage. Older installs without a Kyber key get
+  /// one generated on first launch.
   Future<void> loadKeys() async {
-    final kxPrivateHex = await _storage.read(key: _storageKeyExchangePrivate);
-    final kxPublicHex = await _storage.read(key: _storageKeyExchangePublic);
-    final signPrivateHex = await _storage.read(key: _storageSigningPrivate);
-    final signPublicHex = await _storage.read(key: _storageSigningPublic);
-
-    if (kxPrivateHex == null || kxPublicHex == null ||
-        signPrivateHex == null || signPublicHex == null) {
+    final kxPrivate = await _storage.read(key: _storageKeyExchangePrivate);
+    final kxPublic = await _storage.read(key: _storageKeyExchangePublic);
+    final signPrivate = await _storage.read(key: _storageSigningPrivate);
+    final signPublic = await _storage.read(key: _storageSigningPublic);
+    if (kxPrivate == null ||
+        kxPublic == null ||
+        signPrivate == null ||
+        signPublic == null) {
       throw StateError('Keys not found in storage');
     }
 
-    _keyExchangeKeyPair = SimpleKeyPairData(
-      hex.decode(kxPrivateHex),
-      publicKey: SimplePublicKey(
-        hex.decode(kxPublicHex),
-        type: KeyPairType.x25519,
-      ),
-      type: KeyPairType.x25519,
+    _identityKeyPair = CryptoUtils.x25519KeyPairFromBytes(
+      CryptoUtils.decodeKey(kxPrivate, 32, 'X25519 private key'),
+      CryptoUtils.decodeKey(kxPublic, 32, 'X25519 public key'),
+    );
+    _signingKeyPair = CryptoUtils.ed25519KeyPairFromBytes(
+      CryptoUtils.decodeKey(signPrivate, 32, 'Ed25519 private key'),
+      CryptoUtils.decodeKey(signPublic, 32, 'Ed25519 public key'),
     );
 
-    _signingKeyPair = SimpleKeyPairData(
-      hex.decode(signPrivateHex),
-      publicKey: SimplePublicKey(
-        hex.decode(signPublicHex),
-        type: KeyPairType.ed25519,
-      ),
-      type: KeyPairType.ed25519,
-    );
-
-    // Load Kyber-768 keys (may not exist on older installs)
-    final kyberPrivateHex = await _storage.read(key: _storageKyberPrivate);
-    final kyberPublicHex = await _storage.read(key: _storageKyberPublic);
-    if (kyberPrivateHex != null && kyberPublicHex != null) {
+    final kyberPrivate = await _storage.read(key: _storageKyberPrivate);
+    final kyberPublic = await _storage.read(key: _storageKyberPublic);
+    if (kyberPrivate != null && kyberPublic != null) {
       _kyberKeyPair = KyberKeyPair(
-        publicKey: Uint8List.fromList(hex.decode(kyberPublicHex)),
-        privateKey: Uint8List.fromList(hex.decode(kyberPrivateHex)),
+        publicKey: CryptoUtils.fromHex(kyberPublic),
+        privateKey: CryptoUtils.fromHex(kyberPrivate),
       );
     } else {
-      // Auto-generate Kyber keys for existing installs that don't have them
-      final kyberPair = await _hybridKex.generateKyberKeyPair();
+      final kyber = await KyberKem.generateKeyPair();
       await _storage.write(
-        key: _storageKyberPrivate,
-        value: hex.encode(kyberPair.privateKey),
-      );
+          key: _storageKyberPrivate,
+          value: CryptoUtils.toHex(kyber.privateKey));
       await _storage.write(
-        key: _storageKyberPublic,
-        value: hex.encode(kyberPair.publicKey),
-      );
-      _kyberKeyPair = kyberPair;
+          key: _storageKyberPublic, value: CryptoUtils.toHex(kyber.publicKey));
+      _kyberKeyPair = kyber;
     }
   }
 
-  /// Get public key hex for key exchange (X25519)
-  Future<String> getPublicKeyHex() async {
-    final stored = await _storage.read(key: _storageKeyExchangePublic);
-    return stored ?? '';
-  }
+  SimpleKeyPairData get identityKeyPair =>
+      _identityKeyPair ?? (throw StateError('identity key not loaded'));
+  SimpleKeyPairData get signingKeyPair =>
+      _signingKeyPair ?? (throw StateError('signing key not loaded'));
+  KyberKeyPair get kyberKeyPair =>
+      _kyberKeyPair ?? (throw StateError('kyber key not loaded'));
 
-  /// Get signing public key hex (Ed25519)
-  Future<String> getSigningPublicKeyHex() async {
-    final stored = await _storage.read(key: _storageSigningPublic);
-    return stored ?? '';
-  }
+  Uint8List get identityPublicKey =>
+      CryptoUtils.publicKeyBytes(identityKeyPair);
+  Uint8List get signingPublicKey => CryptoUtils.publicKeyBytes(signingKeyPair);
+  Uint8List get kyberPublicKey => kyberKeyPair.publicKey;
 
-  /// Get Kyber-768 public key hex (ML-KEM)
-  Future<String> getKyberPublicKeyHex() async {
-    final stored = await _storage.read(key: _storageKyberPublic);
-    return stored ?? '';
-  }
+  String get identityPublicKeyHex => CryptoUtils.toHex(identityPublicKey);
+  String get signingPublicKeyHex => CryptoUtils.toHex(signingPublicKey);
+  String get kyberPublicKeyHex => CryptoUtils.toHex(kyberPublicKey);
 
-  /// Get the X25519 key pair
-  SimpleKeyPair? get keyExchangeKeyPair => _keyExchangeKeyPair;
+  // Compatibility accessors used by older call sites.
+  Future<String> getPublicKeyHex() async =>
+      isLoaded ? identityPublicKeyHex
+               : (await _storage.read(key: _storageKeyExchangePublic) ?? '');
+  Future<String> getSigningPublicKeyHex() async =>
+      isLoaded ? signingPublicKeyHex
+               : (await _storage.read(key: _storageSigningPublic) ?? '');
+  Future<String> getKyberPublicKeyHex() async =>
+      isLoaded ? kyberPublicKeyHex
+               : (await _storage.read(key: _storageKyberPublic) ?? '');
 
-  /// Get the Ed25519 key pair
-  SimpleKeyPair? get signingKeyPair => _signingKeyPair;
+  /// Ed25519 signature with the long-term signing key.
+  Future<Uint8List> sign(List<int> message) =>
+      CryptoUtils.ed25519Sign(signingKeyPair, message);
 
-  /// Get the Kyber-768 key pair (ML-KEM)
-  KyberKeyPair? get kyberKeyPair => _kyberKeyPair;
-
-  /// Clear all keys (danger zone!)
+  /// Remove every key from storage and memory.
   Future<void> clearKeys() async {
-    await _storage.delete(key: _storageKeyExchangePrivate);
-    await _storage.delete(key: _storageKeyExchangePublic);
-    await _storage.delete(key: _storageSigningPrivate);
-    await _storage.delete(key: _storageSigningPublic);
-    await _storage.delete(key: _storageKyberPrivate);
-    await _storage.delete(key: _storageKyberPublic);
-    _keyExchangeKeyPair = null;
+    for (final k in [
+      _storageKeyExchangePrivate,
+      _storageKeyExchangePublic,
+      _storageSigningPrivate,
+      _storageSigningPublic,
+      _storageKyberPrivate,
+      _storageKyberPublic,
+    ]) {
+      await _storage.delete(key: k);
+    }
+    _identityKeyPair = null;
     _signingKeyPair = null;
     _kyberKeyPair = null;
   }

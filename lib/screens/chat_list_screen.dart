@@ -1,95 +1,106 @@
+import 'dart:async';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
-import '../theme/app_theme.dart';
-import '../services/identity_service.dart';
-import '../services/chat_service.dart';
-import '../services/peer_service.dart';
+import 'package:provider/provider.dart';
+
+import '../core/network/connection_manager.dart';
+import '../core/storage/outbox.dart';
+import '../core/storage/trust_store.dart';
 import '../models/chat_room.dart';
+import '../services/chat_service.dart';
+import '../services/identity_service.dart';
+import '../services/peer_service.dart';
+import '../theme/app_theme.dart';
 import 'chat_screen.dart';
-import 'peer_discovery_screen.dart';
+import 'contact_verify_screen.dart';
 import 'create_group_screen.dart';
+import 'peer_discovery_screen.dart';
 import 'settings_screen.dart';
-import 'mesh_map_screen.dart';
 
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
-
   @override
   State<ChatListScreen> createState() => _ChatListScreenState();
 }
 
-class _ChatListScreenState extends State<ChatListScreen>
-    with TickerProviderStateMixin {
-  late AnimationController _fabController;
-  late Animation<double> _fabAnimation;
+class _ChatListScreenState extends State<ChatListScreen> {
+  StreamSubscription<TrustCheck>? _keyChangeSub;
+  bool _started = false;
 
   @override
   void initState() {
     super.initState();
-    _fabController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 600),
-    )..forward();
-
-    _fabAnimation = CurvedAnimation(
-      parent: _fabController,
-      curve: Curves.elasticOut,
-    );
-
-    _initNetwork();
+    unawaited(_start());
   }
 
-  Future<void> _initNetwork() async {
-    final identityService = context.read<IdentityService>();
-    final peerService = context.read<PeerService>();
-    final chatService = context.read<ChatService>();
-
-    // Request permissions needed for networking and BLE discovery
+  Future<void> _start() async {
+    if (_started) return;
+    _started = true;
+    final identity = context.read<IdentityService>();
+    final peers = context.read<PeerService>();
+    final connections = context.read<ConnectionManager>();
     if (Platform.isAndroid || Platform.isIOS) {
       await [
         Permission.locationWhenInUse,
         Permission.bluetoothScan,
         Permission.bluetoothConnect,
         Permission.bluetoothAdvertise,
+        Permission.nearbyWifiDevices,
+        Permission.notification,
       ].request();
     }
+    if (!mounted || !identity.hasIdentity) return;
+    _keyChangeSub = connections.onKeyChange.listen(_onKeyChange);
+    await peers.startNetwork(
+      nyxChatId: identity.nyxChatId,
+      displayName: identity.displayName,
+    );
+    if (await peers.wasDHTActive()) await peers.startDHT();
+  }
 
-    if (identityService.hasIdentity) {
-      final id = identityService.identity!;
-      final pubKey = await identityService.getPublicKeyHex();
-      final signPubKey = await identityService.getSigningPublicKeyHex();
-      final kyberPubKey = await identityService.getKyberPublicKeyHex();
-
-      // Start network
-      await peerService.startNetwork(
-        nyxChatId: id.nyxChatId,
-        displayName: id.displayName,
-        publicKeyHex: pubKey,
-        signingPublicKeyHex: signPubKey,
-        kyberPublicKeyHex: kyberPubKey,
-      );
-
-      // Init chat service
-      await chatService.init(id.nyxChatId);
-      
-      // Auto-start DHT if it was active in the previous session
-      final wasDHTActive = await peerService.wasDHTActive();
-      if (wasDHTActive) {
-        await peerService.startDHT(
-          nyxChatId: id.nyxChatId,
-          publicKeyHex: pubKey,
-          displayName: id.displayName,
-        );
-      }
-    }
+  void _onKeyChange(TrustCheck check) {
+    if (!mounted) return;
+    final connections = context.read<ConnectionManager>();
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: const Text('Safety number changed',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text(
+          '${check.peer.displayName} (${check.peer.nyxChatId}) is presenting '
+          'different identity keys than the ones you have pinned.\n\n'
+          'This happens when they reinstalled the app, or if someone is '
+          'impersonating them. Verify the new safety number in person '
+          'before accepting. The connection stays blocked until you decide.',
+          style: const TextStyle(color: AppTheme.textSecondary, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              connections.rejectKeyChange(check.peer.nyxChatId);
+              Navigator.pop(ctx);
+            },
+            child: const Text('Keep blocking'),
+          ),
+          TextButton(
+            onPressed: () async {
+              await connections.acceptKeyChange(check.peer.nyxChatId);
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+            child: const Text('Accept new keys',
+                style: TextStyle(color: AppTheme.warning)),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   void dispose() {
-    _fabController.dispose();
+    _keyChangeSub?.cancel();
     super.dispose();
   }
 
@@ -97,395 +108,281 @@ class _ChatListScreenState extends State<ChatListScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.background,
-      appBar: _buildAppBar(),
-      body: _buildBody(),
-      floatingActionButton: ScaleTransition(
-        scale: _fabAnimation,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            FloatingActionButton.small(
-              heroTag: 'group',
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const CreateGroupScreen()),
-              ),
-              backgroundColor: AppTheme.surface,
-              foregroundColor: AppTheme.textSecondary,
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
-              ),
-              child: const Icon(Icons.group_add_outlined, size: 20),
-            ),
-            const SizedBox(height: 10),
-            FloatingActionButton(
-              heroTag: 'discover',
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const PeerDiscoveryScreen()),
-              ),
-              backgroundColor: AppTheme.surfaceLight,
-              foregroundColor: AppTheme.textPrimary,
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-                side: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
-              ),
-              child: const Icon(Icons.add_rounded, size: 26),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  PreferredSizeWidget _buildAppBar() {
-    return AppBar(
-      backgroundColor: AppTheme.background,
-      title: const Text(
-        'NyxChat',
-        style: TextStyle(
-          fontSize: 20,
-          fontWeight: FontWeight.w600,
-          color: AppTheme.textPrimary,
-          letterSpacing: -0.3,
-        ),
-      ),
-      actions: [
-        Consumer<PeerService>(
-          builder: (_, peerService, _) {
-            return Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: peerService.isNetworkActive
-                          ? AppTheme.accentGreen
-                          : AppTheme.textMuted,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    peerService.isNetworkActive ? 'Online' : 'Offline',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w400,
-                      color: peerService.isNetworkActive
-                          ? AppTheme.textSecondary
-                          : AppTheme.textMuted,
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
-        IconButton(
-          onPressed: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const MeshMapScreen()),
-          ),
-          icon: const Icon(
-            Icons.hub_outlined,
-            color: AppTheme.textMuted,
-            size: 20,
-          ),
-        ),
-        IconButton(
-          onPressed: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const SettingsScreen()),
-          ),
-          icon: const Icon(
-            Icons.settings_outlined,
-            color: AppTheme.textMuted,
-            size: 20,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildBody() {
-    return Consumer<ChatService>(
-      builder: (context, chatService, _) {
-        final rooms = chatService.chatRooms;
-
-        if (rooms.isEmpty) {
-          return _buildEmptyState();
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.only(top: 8),
-          itemCount: rooms.length,
-          itemBuilder: (context, index) {
-            final room = rooms[index];
-            final messages = chatService.getMessages(room.id);
-            final lastMessage = messages.isNotEmpty ? messages.last : null;
-
-            return _ChatTile(
-              room: room,
-              lastMessageText: lastMessage?.content,
-              lastMessageTime: lastMessage?.timestamp ?? room.createdAt,
-              isOnline: context.read<PeerService>().isPeerConnected(room.peerId),
-              onTap: () => _openChat(room),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+      appBar: _appBar(context),
+      body: _body(),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.chat_bubble_outline_rounded,
-            size: 36,
-            color: AppTheme.textMuted.withValues(alpha: 0.4),
+          FloatingActionButton.small(
+            heroTag: 'group',
+            onPressed: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const CreateGroupScreen())),
+            backgroundColor: AppTheme.surface,
+            foregroundColor: AppTheme.textSecondary,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
+            ),
+            child: const Icon(Icons.group_add_outlined, size: 20),
           ),
-          const SizedBox(height: 16),
-          const Text(
-            'No conversations',
-            style: TextStyle(
-              color: AppTheme.textSecondary,
-              fontSize: 16,
-              fontWeight: FontWeight.w500,
+          const SizedBox(height: 10),
+          FloatingActionButton(
+            heroTag: 'discover',
+            onPressed: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const PeerDiscoveryScreen())),
+            backgroundColor: AppTheme.surfaceLight,
+            foregroundColor: AppTheme.textPrimary,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
             ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Discover peers to start chatting',
-            style: TextStyle(
-              color: AppTheme.textMuted.withValues(alpha: 0.6),
-              fontSize: 13,
-            ),
-          ),
-          const SizedBox(height: 24),
-          ElevatedButton(
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => const PeerDiscoveryScreen(),
-              ),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.surfaceLight,
-              foregroundColor: AppTheme.textPrimary,
-              elevation: 0,
-              padding: const EdgeInsets.symmetric(
-                horizontal: 20,
-                vertical: 12,
-              ),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-                side: BorderSide(
-                  color: Colors.white.withValues(alpha: 0.06),
-                ),
-              ),
-            ),
-            child: const Text(
-              'Discover Peers',
-              style: TextStyle(
-                fontWeight: FontWeight.w500,
-                fontSize: 14,
-              ),
-            ),
+            child: const Icon(Icons.add_rounded, size: 26),
           ),
         ],
       ),
     );
   }
 
-  void _openChat(ChatRoom room) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(room: room),
+  PreferredSizeWidget _appBar(BuildContext context) {
+    return AppBar(
+      backgroundColor: AppTheme.background,
+      elevation: 0,
+      title: const Text('NyxChat',
+          style: TextStyle(
+              color: AppTheme.textPrimary,
+              fontSize: 20,
+              fontWeight: FontWeight.w600,
+              letterSpacing: -0.3)),
+      actions: [
+        Consumer2<PeerService, Outbox>(
+          builder: (_, peers, outbox, _) {
+            final direct = peers.connectedPeers.length;
+            final ble = peers.bleLinkCount;
+            final pending = outbox.length;
+            return Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Row(
+                children: [
+                  if (pending > 0)
+                    _chip(Icons.schedule_rounded, '$pending', AppTheme.warning),
+                  _chip(Icons.wifi_rounded, '$direct',
+                      direct > 0 ? AppTheme.accentGreen : AppTheme.textMuted),
+                  const SizedBox(width: 6),
+                  _chip(Icons.bluetooth_rounded, '$ble',
+                      ble > 0 ? AppTheme.accentBlue : AppTheme.textMuted),
+                ],
+              ),
+            );
+          },
+        ),
+        IconButton(
+          onPressed: () => Navigator.push(
+              context, MaterialPageRoute(builder: (_) => const SettingsScreen())),
+          icon: const Icon(Icons.settings_outlined,
+              color: AppTheme.textSecondary, size: 22),
+        ),
+      ],
+    );
+  }
+
+  Widget _chip(IconData icon, String text, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        margin: const EdgeInsets.only(right: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(children: [
+          Icon(icon, size: 13, color: color),
+          const SizedBox(width: 4),
+          Text(text,
+              style: TextStyle(
+                  color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+        ]),
+      );
+
+  Widget _body() {
+    return Consumer2<ChatService, TrustStore>(
+      builder: (context, chat, trust, _) {
+        final rooms = chat.chatRooms;
+        if (rooms.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.forum_outlined,
+                    size: 52, color: AppTheme.textMuted.withValues(alpha: 0.4)),
+                const SizedBox(height: 14),
+                const Text('No conversations yet',
+                    style: TextStyle(color: AppTheme.textSecondary, fontSize: 15)),
+                const SizedBox(height: 6),
+                const Text('Tap + to find people nearby',
+                    style: TextStyle(color: AppTheme.textMuted, fontSize: 13)),
+              ],
+            ),
+          );
+        }
+        final peers = context.read<PeerService>();
+        return ListView.separated(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
+          itemCount: rooms.length,
+          separatorBuilder: (_, _) => const SizedBox(height: 6),
+          itemBuilder: (_, i) => _RoomTile(
+            room: rooms[i],
+            online: rooms[i].isGroup
+                ? null
+                : peers.isPeerConnected(rooms[i].peerId) ||
+                    peers.isReachableByMesh(rooms[i].peerId),
+            verified: !rooms[i].isGroup && trust.isVerified(rooms[i].peerId),
+            lastMessage: chat.getMessages(rooms[i].id).lastOrNull,
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => ChatScreen(roomId: rooms[i].id))),
+            onLongPress: () => _roomMenu(context, rooms[i]),
+          ),
+        );
+      },
+    );
+  }
+
+  void _roomMenu(BuildContext context, ChatRoom room) {
+    final chat = context.read<ChatService>();
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          if (!room.isGroup)
+            ListTile(
+              leading: const Icon(Icons.verified_user_outlined, color: AppTheme.accentBlue),
+              title: const Text('Verify safety number', style: TextStyle(color: AppTheme.textPrimary)),
+              onTap: () {
+                Navigator.pop(ctx);
+                Navigator.push(context, MaterialPageRoute(
+                    builder: (_) => ContactVerifyScreen(peerId: room.peerId)));
+              },
+            ),
+          ListTile(
+            leading: Icon(room.muted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined,
+                color: AppTheme.textSecondary),
+            title: Text(room.muted ? 'Unmute' : 'Mute', style: const TextStyle(color: AppTheme.textPrimary)),
+            onTap: () { chat.setMuted(room.id, !room.muted); Navigator.pop(ctx); },
+          ),
+          if (room.isGroup && !room.left)
+            ListTile(
+              leading: const Icon(Icons.logout_rounded, color: AppTheme.warning),
+              title: const Text('Leave group', style: TextStyle(color: AppTheme.textPrimary)),
+              onTap: () { chat.leaveGroup(room.id); Navigator.pop(ctx); },
+            ),
+          ListTile(
+            leading: const Icon(Icons.delete_outline_rounded, color: AppTheme.error),
+            title: const Text('Delete conversation', style: TextStyle(color: AppTheme.error)),
+            onTap: () { chat.deleteRoom(room.id); Navigator.pop(ctx); },
+          ),
+        ]),
       ),
     );
   }
 }
 
-class _ChatTile extends StatelessWidget {
+class _RoomTile extends StatelessWidget {
   final ChatRoom room;
-  final String? lastMessageText;
-  final DateTime lastMessageTime;
-  final bool isOnline;
+  final bool? online;
+  final bool verified;
+  final dynamic lastMessage;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
-  const _ChatTile({
+  const _RoomTile({
     required this.room,
-    this.lastMessageText,
-    required this.lastMessageTime,
-    required this.isOnline,
+    required this.online,
+    required this.verified,
+    required this.lastMessage,
     required this.onTap,
+    required this.onLongPress,
   });
 
   @override
   Widget build(BuildContext context) {
+    final preview = lastMessage == null
+        ? (room.isGroup ? '${room.memberCount} members' : 'No messages yet')
+        : (lastMessage.content as String);
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
+      borderRadius: BorderRadius.circular(14),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Row(
-          children: [
-            Stack(
-              children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: room.isGroup
-                        ? AppTheme.surfaceLight
-                        : AppTheme.surface,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.06),
-                    ),
-                  ),
-                  child: Center(
-                    child: room.isGroup
-                        ? Icon(Icons.group_outlined,
-                            color: AppTheme.textMuted, size: 20)
-                        : Text(
-                            room.displayInitials,
-                            style: const TextStyle(
-                              color: AppTheme.textSecondary,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                  ),
-                ),
-                if (isOnline)
-                  Positioned(
-                    right: -1,
-                    bottom: -1,
-                    child: Container(
-                      width: 12,
-                      height: 12,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: AppTheme.accentGreen,
-                        border: Border.all(
-                          color: AppTheme.background,
-                          width: 2,
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-            const SizedBox(width: 12),
-            // Text content
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          room.peerDisplayName,
-                          style: const TextStyle(
-                            color: AppTheme.textPrimary,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      Text(
-                        _formatTime(lastMessageTime),
-                        style: TextStyle(
-                          color: room.unreadCount > 0
-                              ? AppTheme.accentBlue
-                              : AppTheme.textMuted,
-                          fontSize: 12,
-                          fontWeight: room.unreadCount > 0
-                              ? FontWeight.w600
-                              : FontWeight.w400,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.lock_outline_rounded,
-                        size: 12,
-                        color: AppTheme.accentGreen,
-                      ),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          lastMessageText ?? 'No messages yet',
-                          style: TextStyle(
-                            color: lastMessageText != null
-                                ? AppTheme.textSecondary
-                                : AppTheme.textMuted,
-                            fontSize: 13,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      if (room.unreadCount > 0)
-                        Container(
-                          margin: const EdgeInsets.only(left: 8),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: AppTheme.accentBlue.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            '${room.unreadCount}',
-                            style: const TextStyle(
-                              color: AppTheme.accentBlue,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ],
+        padding: const EdgeInsets.all(12),
+        decoration: AppTheme.glassDecoration(opacity: 0.03, borderRadius: 14),
+        child: Row(children: [
+          Stack(children: [
+            Container(
+              width: 44, height: 44,
+              decoration: BoxDecoration(
+                color: AppTheme.surfaceLight,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+              ),
+              child: Center(
+                child: room.isGroup
+                    ? const Icon(Icons.group_outlined, color: AppTheme.textMuted, size: 20)
+                    : Text(room.displayInitials,
+                        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 14, fontWeight: FontWeight.w600)),
               ),
             ),
-          ],
-        ),
+            if (online != null)
+              Positioned(
+                right: 0, bottom: 0,
+                child: Container(
+                  width: 11, height: 11,
+                  decoration: BoxDecoration(
+                    color: online! ? AppTheme.online : AppTheme.offline,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: AppTheme.background, width: 2),
+                  ),
+                ),
+              ),
+          ]),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Flexible(
+                  child: Text(room.peerDisplayName,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15, fontWeight: FontWeight.w500)),
+                ),
+                if (verified) ...[
+                  const SizedBox(width: 6),
+                  const Icon(Icons.verified_rounded, size: 14, color: AppTheme.accentGreen),
+                ],
+                if (room.disappearAfterSeconds > 0) ...[
+                  const SizedBox(width: 6),
+                  const Icon(Icons.timer_outlined, size: 13, color: AppTheme.textMuted),
+                ],
+              ]),
+              const SizedBox(height: 3),
+              Text(preview,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+            ]),
+          ),
+          if (room.unreadCount > 0)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: AppTheme.accentBlue.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text('${room.unreadCount}',
+                  style: const TextStyle(color: AppTheme.accentBlue, fontSize: 12, fontWeight: FontWeight.w700)),
+            ),
+        ]),
       ),
     );
-  }
-
-  String _formatTime(DateTime time) {
-    final now = DateTime.now();
-    final diff = now.difference(time);
-
-    if (diff.inDays == 0) {
-      return DateFormat('HH:mm').format(time);
-    } else if (diff.inDays == 1) {
-      return 'Yesterday';
-    } else if (diff.inDays < 7) {
-      return DateFormat('EEE').format(time);
-    } else {
-      return DateFormat('dd/MM').format(time);
-    }
   }
 }

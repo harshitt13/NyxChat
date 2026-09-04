@@ -1,239 +1,314 @@
 import 'dart:convert';
-import 'dart:math';
+import 'dart:isolate';
 
+import 'package:cryptography/cryptography.dart';
+import 'package:cryptography/dart.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:cryptography/cryptography.dart';
 
+import '../core/crypto/crypto_utils.dart';
 import '../core/storage/local_storage.dart';
 
+/// Database lock.
+///
+/// * No password: the 256-bit master key sits in the platform keystore.
+/// * Password: the master key is wrapped with AES-256-GCM under a key
+///   derived with Argon2id (memory-hard). Older installs that used PBKDF2
+///   are transparently re-wrapped with Argon2id on their next unlock.
+/// * Duress password: opens a separate decoy profile and, if configured,
+///   destroys the real one.
+/// * Wipe after N failed attempts.
 class AppLockService extends ChangeNotifier {
   final LocalStorage _storage;
-  final FlutterSecureStorage _secureStore = const FlutterSecureStorage();
-  
-  static const String _kIsLockedEnabled = 'app_lock_enabled';
+  final FlutterSecureStorage _secure;
+
+  static const String _kLockEnabled = 'app_lock_enabled';
   static const String _kWipeOnFailure = 'wipe_on_failure';
   static const String _kEncryptedMasterKey = 'encrypted_master_key';
-  static const String _kArgonSalt = 'argon_salt';
+  static const String _kSalt = 'argon_salt';
   static const String _kNonce = 'master_key_nonce';
+  static const String _kKdf = 'master_key_kdf'; // 'argon2id' | 'pbkdf2'
+  static const String _kUnwrapped = 'unwrapped_master_key';
+  static const String _kDuressSalt = 'duress_salt';
+  static const String _kDuressHash = 'duress_hash';
+  static const String _kDuressWipes = 'duress_wipes_real';
+  static const String _kDecoyKey = 'decoy_master_key';
+  static const String _kFailed = 'failed_attempts';
+
+  static const int maxFailedAttempts = 5;
+
+  // Argon2id parameters (tuned for pure-Dart on mid-range phones: ~1 s).
+  static const int argonMemoryKiB = 32 * 1024;
+  static const int argonIterations = 2;
+  static const int argonParallelism = 2;
 
   bool _isLocked = true;
   bool _isLockEnabled = false;
   bool _wipeOnFailure = true;
+  bool _hasDuress = false;
+  bool _duressWipesReal = false;
+  bool _isDecoyProfile = false;
   int _failedAttempts = 0;
-  List<int>? _currentMasterKey; // Track active master key for lock toggle
+  List<int>? _masterKey;
 
   bool get isLocked => _isLocked;
   bool get isLockEnabled => _isLockEnabled;
   bool get wipeOnFailure => _wipeOnFailure;
+  bool get hasDuressPassword => _hasDuress;
+  bool get duressWipesReal => _duressWipesReal;
+  bool get isDecoyProfile => _isDecoyProfile;
   int get failedAttempts => _failedAttempts;
+  int get attemptsRemaining => maxFailedAttempts - _failedAttempts;
 
-  AppLockService(this._storage);
+  AppLockService(this._storage, {FlutterSecureStorage? secureStorage})
+      : _secure = secureStorage ?? const FlutterSecureStorage();
 
-  /// Initializes the lock state on app boot
   Future<void> init() async {
-    final enabledMap = await _secureStore.read(key: _kIsLockedEnabled);
-    _isLockEnabled = enabledMap == 'true';
-    
-    final wipeMap = await _secureStore.read(key: _kWipeOnFailure);
-    _wipeOnFailure = wipeMap != 'false'; // Defaults to true
+    _isLockEnabled = await _secure.read(key: _kLockEnabled) == 'true';
+    _wipeOnFailure = await _secure.read(key: _kWipeOnFailure) != 'false';
+    _hasDuress = await _secure.read(key: _kDuressHash) != null;
+    _duressWipesReal = await _secure.read(key: _kDuressWipes) == 'true';
+    _failedAttempts =
+        int.tryParse(await _secure.read(key: _kFailed) ?? '0') ?? 0;
 
-    // If lock is not enabled, we still need a master key to open the DB.
-    // Check the *unwrapped* key (used for no-password users), NOT the
-    // encrypted key (which is only written when a password is configured).
     if (!_isLockEnabled) {
-       _isLocked = false;
-       final hasUnwrappedKey = await _secureStore.read(key: 'unwrapped_master_key') != null;
-       if (!hasUnwrappedKey) {
-           await _setupMasterKeyWithoutPassword();
-       }
-       // Auto unlock with the no-password key
-       await _unlockWithoutPassword();
+      if (await _secure.read(key: _kUnwrapped) == null) {
+        await _secure.write(
+            key: _kUnwrapped,
+            value: base64Encode(CryptoUtils.randomBytes(32)));
+      }
+      await _unlockWithoutPassword();
     } else {
-       // Lock is enabled, wait for user input
-       _isLocked = true;
+      _isLocked = true;
     }
     notifyListeners();
   }
 
-  /// Called when the app goes into the background
+  /// Lock when the app goes to the background.
   Future<void> lockApp() async {
     if (!_isLockEnabled || _isLocked) return;
-    
-    // Wipe key from RAM via LocalStorage
     await _storage.closeAll();
+    if (_masterKey != null) CryptoUtils.wipe(_masterKey!);
+    _masterKey = null;
     _isLocked = true;
     notifyListeners();
   }
 
-  /// Attempts to unlock the app with the given password
+  /// Try the real password first, then the duress password.
   Future<bool> unlock(String password) async {
     try {
-      final encryptedMasterKeyB64 = await _secureStore.read(key: _kEncryptedMasterKey);
-      final saltB64 = await _secureStore.read(key: _kArgonSalt);
-      final nonceB64 = await _secureStore.read(key: _kNonce);
-
-      if (encryptedMasterKeyB64 == null || saltB64 == null || nonceB64 == null) {
-        throw Exception("Lock data corrupted or not set");
-      }
-
-      final encryptedMasterKeyWithMac = base64Decode(encryptedMasterKeyB64);
-      final salt = base64Decode(saltB64);
-      final nonce = base64Decode(nonceB64);
-
-      // Derive wrap key from password
-      final wrapKey = await _deriveKeyArgon2(password, salt);
-
-      // Split the stored blob into ciphertext and MAC (last 16 bytes = GCM tag)
-      if (encryptedMasterKeyWithMac.length < 16) {
-        throw Exception("Lock data corrupted: encrypted key too short");
-      }
-      final cipherText = encryptedMasterKeyWithMac.sublist(0, encryptedMasterKeyWithMac.length - 16);
-      final macBytes = encryptedMasterKeyWithMac.sublist(encryptedMasterKeyWithMac.length - 16);
-
-      // Decrypt master key
-      final cipher = AesGcm.with256bits();
-      final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(macBytes));
-      
-      List<int> masterKey;
-      try {
-        masterKey = await cipher.decrypt(
-          secretBox, 
-          secretKey: SecretKey(wrapKey),
-        );
-      } catch (e) {
-        // Decryption failed (wrong password)
-        _handleFailedAttempt();
-        return false;
-      }
-
-      // Success
-      _currentMasterKey = List<int>.from(masterKey);
-      await _storage.openDatabases(masterKey);
-      _failedAttempts = 0;
-      _isLocked = false;
-      notifyListeners();
-      return true;
-
+      if (await _tryRealPassword(password)) return true;
+      if (_hasDuress && await _tryDuressPassword(password)) return true;
+      await _handleFailedAttempt();
+      return false;
     } catch (e) {
-      debugPrint("Unlock error: $e");
+      debugPrint('[AppLock] unlock error: $e');
       return false;
     }
   }
 
-  /// Sets up a new password, generates a master Hive key, and wraps it.
-  Future<void> setupPassword(String password) async {
-    // Generate salt
-    final rnd = Random.secure();
-    final salt = List<int>.generate(32, (_) => rnd.nextInt(256));
-    
-    // Derive wrap key
-    final wrapKey = await _deriveKeyArgon2(password, salt);
+  Future<bool> _tryRealPassword(String password) async {
+    final encryptedB64 = await _secure.read(key: _kEncryptedMasterKey);
+    final saltB64 = await _secure.read(key: _kSalt);
+    final nonceB64 = await _secure.read(key: _kNonce);
+    if (encryptedB64 == null || saltB64 == null || nonceB64 == null) {
+      throw StateError('lock data missing');
+    }
+    final kdf = await _secure.read(key: _kKdf) ?? 'pbkdf2';
+    final salt = base64Decode(saltB64);
+    final wrapKey = kdf == 'argon2id'
+        ? await deriveArgon2id(password, salt)
+        : await _derivePbkdf2(password, salt);
+    final Uint8List masterKey;
+    try {
+      masterKey = await CryptoUtils.aesGcmDecrypt(
+        key: wrapKey,
+        nonce: base64Decode(nonceB64),
+        ciphertextWithTag: base64Decode(encryptedB64),
+      );
+    } on SecretBoxAuthenticationError {
+      return false;
+    }
+    CryptoUtils.wipe(wrapKey);
 
-    // Generate Hive Master Key
-    final masterKey = List<int>.generate(32, (_) => rnd.nextInt(256));
+    if (kdf != 'argon2id') {
+      debugPrint('[AppLock] migrating wrap KDF to Argon2id');
+      await _wrapAndStore(password, masterKey);
+    }
+    await _openPrimary(masterKey);
+    return true;
+  }
 
-    // Encrypt Master Key
-    final cipher = AesGcm.with256bits();
-    final secretBox = await cipher.encrypt(
-      masterKey,
-      secretKey: SecretKey(wrapKey),
-    );
+  Future<bool> _tryDuressPassword(String password) async {
+    final saltB64 = await _secure.read(key: _kDuressSalt);
+    final hashB64 = await _secure.read(key: _kDuressHash);
+    if (saltB64 == null || hashB64 == null) return false;
+    final derived = await deriveArgon2id(password, base64Decode(saltB64));
+    final ok = CryptoUtils.constantTimeEquals(derived, base64Decode(hashB64));
+    CryptoUtils.wipe(derived);
+    if (!ok) return false;
 
-    // Persist
-    await _secureStore.write(key: _kArgonSalt, value: base64Encode(salt));
-    await _secureStore.write(key: _kNonce, value: base64Encode(secretBox.nonce));
-    await _secureStore.write(key: _kEncryptedMasterKey, value: base64Encode(secretBox.cipherText + secretBox.mac.bytes));
-    
-    // Enable Lock
-    await setLockEnabled(true);
-    
-    // Immediately open
-    _currentMasterKey = List<int>.from(masterKey);
+    debugPrint('[AppLock] duress password accepted');
+    if (_duressWipesReal) {
+      await _storage.panicWipe();
+      for (final k in const [_kEncryptedMasterKey, _kSalt, _kNonce, _kKdf]) {
+        await _secure.delete(key: k);
+      }
+    }
+    var decoyB64 = await _secure.read(key: _kDecoyKey);
+    if (decoyB64 == null) {
+      decoyB64 = base64Encode(CryptoUtils.randomBytes(32));
+      await _secure.write(key: _kDecoyKey, value: decoyB64);
+    }
+    _isDecoyProfile = true;
+    _masterKey = base64Decode(decoyB64);
+    await _storage.openDatabases(_masterKey!, profileSuffix: '_decoy');
+    _failedAttempts = 0;
+    await _secure.write(key: _kFailed, value: '0');
+    _isLocked = false;
+    notifyListeners();
+    return true;
+  }
+
+  Future<void> _openPrimary(List<int> masterKey) async {
+    _isDecoyProfile = false;
+    _masterKey = List<int>.from(masterKey);
     await _storage.openDatabases(masterKey);
+    _failedAttempts = 0;
+    await _secure.write(key: _kFailed, value: '0');
     _isLocked = false;
     notifyListeners();
   }
 
-  /// Sets up a DB key for users who don't want a lock screen
-  Future<void> _setupMasterKeyWithoutPassword() async {
-    final rnd = Random.secure();
-    final masterKey = List<int>.generate(32, (_) => rnd.nextInt(256));
-    // We just store the master key as plain text in the TEE Secure Enclave
-    await _secureStore.write(key: 'unwrapped_master_key', value: base64Encode(masterKey));
+  /// Enable the lock with a password. Wraps the current master key (or a
+  /// fresh one if none exists yet).
+  Future<void> setupPassword(String password) async {
+    final current = _masterKey ??
+        (await _secure.read(key: _kUnwrapped)).let(base64Decode) ??
+        CryptoUtils.randomBytes(32);
+    await _wrapAndStore(password, current);
+    _isLockEnabled = true;
+    await _secure.write(key: _kLockEnabled, value: 'true');
+    await _secure.delete(key: _kUnwrapped);
+    if (!_storage.isDatabasesOpen) await _openPrimary(current);
+    _masterKey = List<int>.from(current);
+    _isLocked = false;
+    notifyListeners();
+  }
+
+  Future<void> _wrapAndStore(String password, List<int> masterKey) async {
+    final salt = CryptoUtils.randomBytes(32);
+    final nonce = CryptoUtils.randomBytes(12);
+    final wrapKey = await deriveArgon2id(password, salt);
+    final sealed = await CryptoUtils.aesGcmEncrypt(
+        key: wrapKey, nonce: nonce, plaintext: masterKey);
+    CryptoUtils.wipe(wrapKey);
+    await _secure.write(key: _kSalt, value: base64Encode(salt));
+    await _secure.write(key: _kNonce, value: base64Encode(nonce));
+    await _secure.write(key: _kEncryptedMasterKey, value: base64Encode(sealed));
+    await _secure.write(key: _kKdf, value: 'argon2id');
+  }
+
+  Future<void> setDuressPassword(String? password, {bool wipesReal = false}) async {
+    if (password == null || password.isEmpty) {
+      await _secure.delete(key: _kDuressSalt);
+      await _secure.delete(key: _kDuressHash);
+      _hasDuress = false;
+    } else {
+      final salt = CryptoUtils.randomBytes(32);
+      final hash = await deriveArgon2id(password, salt);
+      await _secure.write(key: _kDuressSalt, value: base64Encode(salt));
+      await _secure.write(key: _kDuressHash, value: base64Encode(hash));
+      _hasDuress = true;
+    }
+    _duressWipesReal = wipesReal;
+    await _secure.write(key: _kDuressWipes, value: wipesReal ? 'true' : 'false');
+    notifyListeners();
   }
 
   Future<void> _unlockWithoutPassword() async {
-    final b64 = await _secureStore.read(key: 'unwrapped_master_key');
+    final b64 = await _secure.read(key: _kUnwrapped);
     if (b64 == null) {
-      debugPrint('[AppLock] CRITICAL: unwrapped_master_key missing — cannot open DB');
+      debugPrint('[AppLock] CRITICAL: master key missing');
       return;
     }
-    final key = base64Decode(b64);
-    _currentMasterKey = List<int>.from(key);
-    await _storage.openDatabases(key);
+    await _openPrimary(base64Decode(b64));
   }
 
-  Future<void> setLockEnabled(bool isEnabled) async {
-    _isLockEnabled = isEnabled;
-    await _secureStore.write(key: _kIsLockedEnabled, value: isEnabled ? 'true' : 'false');
-    
-    if (!isEnabled && _currentMasterKey != null) {
-      // Store the master key unwrapped so _unlockWithoutPassword() works on next restart
-      await _secureStore.write(
-        key: 'unwrapped_master_key',
-        value: base64Encode(_currentMasterKey!),
-      );
-    } else if (isEnabled) {
-      // Remove the unwrapped key — password is now required
-      await _secureStore.delete(key: 'unwrapped_master_key');
+  Future<void> setLockEnabled(bool enabled) async {
+    if (!enabled) {
+      final key = _masterKey;
+      if (key == null) return;
+      await _secure.write(key: _kUnwrapped, value: base64Encode(key));
+      for (final k in const [_kEncryptedMasterKey, _kSalt, _kNonce, _kKdf]) {
+        await _secure.delete(key: k);
+      }
+      _isLockEnabled = false;
+      await _secure.write(key: _kLockEnabled, value: 'false');
+      notifyListeners();
     }
-    
-    notifyListeners();
+    // Enabling requires setupPassword().
   }
 
   Future<void> setWipeOnFailure(bool wipe) async {
     _wipeOnFailure = wipe;
-    await _secureStore.write(key: _kWipeOnFailure, value: wipe ? 'true' : 'false');
+    await _secure.write(key: _kWipeOnFailure, value: wipe ? 'true' : 'false');
     notifyListeners();
   }
 
   Future<void> _handleFailedAttempt() async {
     _failedAttempts++;
+    await _secure.write(key: _kFailed, value: '$_failedAttempts');
     notifyListeners();
-
-    if (_wipeOnFailure && _failedAttempts >= 5) {
-      debugPrint("PANIC WIPE TRIGGERED: 5 failed attempts");
-      
-      // 1. Wipe all Hive data from disk
-      await _storage.panicWipe();
-      
-      // 2. Wipe all secure storage (master key, salt, nonce, crypto keys, flags)
-      await _secureStore.deleteAll();
-      
-      // 3. Reset in-memory state so UI navigates to fresh onboarding
-      _failedAttempts = 0;
-      _isLockEnabled = false;
-      _isLocked = false;
-      _wipeOnFailure = true;
-      _currentMasterKey = null;
-      
-      notifyListeners();
+    if (_wipeOnFailure && _failedAttempts >= maxFailedAttempts) {
+      debugPrint('[AppLock] PANIC WIPE: too many failed attempts');
+      await panicWipe();
     }
   }
 
-  Future<List<int>> _deriveKeyArgon2(String password, List<int> salt) async {
-    final pbkdf2 = Pbkdf2(
-      macAlgorithm: Hmac.sha256(),
-      iterations: 100000, 
-      bits: 256,
-    );
-    // Note: The cryptography package doesn't have Argon2id natively yet, 
-    // so we use strong PBKDF2 as the KDF fallback since we can't add C FFI plugins easily without testing.
-    final secretKey = await pbkdf2.deriveKey(
-      secretKey: SecretKey(utf8.encode(password)),
-      nonce: salt,
-    );
-    return await secretKey.extractBytes();
+  /// Destroy everything: databases of both profiles and all secure storage.
+  Future<void> panicWipe() async {
+    await _storage.wipeAllProfiles();
+    await _secure.deleteAll();
+    _failedAttempts = 0;
+    _isLockEnabled = false;
+    _isLocked = false;
+    _wipeOnFailure = true;
+    _hasDuress = false;
+    _isDecoyProfile = false;
+    _masterKey = null;
+    notifyListeners();
+  }
+
+  // KDFs
+
+  static Future<Uint8List> deriveArgon2id(String password, List<int> salt) {
+    final pw = utf8.encode(password);
+    final saltCopy = Uint8List.fromList(salt);
+    return Isolate.run(() async {
+      final argon = DartArgon2id(
+        parallelism: argonParallelism,
+        memory: argonMemoryKiB,
+        iterations: argonIterations,
+        hashLength: 32,
+      );
+      final key = await argon.deriveKey(
+          secretKey: SecretKey(pw), nonce: saltCopy);
+      return Uint8List.fromList(await key.extractBytes());
+    });
+  }
+
+  static Future<Uint8List> _derivePbkdf2(String password, List<int> salt) async {
+    final pbkdf2 = Pbkdf2(macAlgorithm: Hmac.sha256(), iterations: 100000, bits: 256);
+    final key = await pbkdf2.deriveKey(
+        secretKey: SecretKey(utf8.encode(password)), nonce: salt);
+    return Uint8List.fromList(await key.extractBytes());
+  }
+}
+
+extension _Let<T> on T? {
+  R? let<R>(R Function(T) f) {
+    final v = this;
+    return v == null ? null : f(v);
   }
 }

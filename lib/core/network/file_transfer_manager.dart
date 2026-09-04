@@ -1,155 +1,250 @@
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 
-/// Represents a piece of a fragmented file transfer.
-class FileChunk {
-  final String fileId;
-  final int chunkIndex;
-  final int totalChunks;
-  final Uint8List data;
+import '../crypto/crypto_utils.dart';
 
-  FileChunk({
+/// Description of an outgoing/incoming file transfer. Sent to the
+/// recipient inside the Double Ratchet; the chunks themselves travel
+/// outside it, each sealed with the per-file key.
+class FileDescriptor {
+  final String fileId;
+  final String fileName;
+  final String mimeType;
+  final int fileSize;
+  final Uint8List key;
+  final Uint8List noncePrefix; // 8 bytes; chunk nonce = prefix || index
+  final int totalChunks;
+  final int chunkSize;
+  final String sha256Hex;
+
+  FileDescriptor({
     required this.fileId,
-    required this.chunkIndex,
+    required this.fileName,
+    required this.mimeType,
+    required this.fileSize,
+    required this.key,
+    required this.noncePrefix,
     required this.totalChunks,
-    required this.data,
+    required this.chunkSize,
+    required this.sha256Hex,
   });
 
-  Map<String, dynamic> toJson() => {
-        'fileId': fileId,
-        'chunkIndex': chunkIndex,
-        'totalChunks': totalChunks,
-        'dataB64': base64Encode(data),
-      };
-
-  factory FileChunk.fromJson(Map<String, dynamic> json) {
-    return FileChunk(
-      fileId: json['fileId'] as String,
-      chunkIndex: json['chunkIndex'] as int,
-      totalChunks: json['totalChunks'] as int,
-      data: base64Decode(json['dataB64'] as String),
+  factory FileDescriptor.fromInnerBody(Map<String, dynamic> b) {
+    final key = base64Decode(b['key'] as String);
+    final nonce = base64Decode(b['nonce'] as String);
+    final chunks = b['chunks'];
+    final size = b['size'];
+    final chunkSize = b['chunkSize'];
+    if (key.length != 32 || nonce.length != 8) {
+      throw const FormatException('bad file key material');
+    }
+    if (chunks is! int || chunks < 0 || chunks > 1 << 20 ||
+        size is! int || size < 0 || size > FileTransferManager.maxFileBytes ||
+        chunkSize is! int || chunkSize <= 0 || chunkSize > FileTransferManager.maxChunkSize) {
+      throw const FormatException('bad file descriptor');
+    }
+    final name = (b['name'] as String).replaceAll(RegExp(r'[\\/:*?"<>|\x00-\x1f]'), '_');
+    return FileDescriptor(
+      fileId: b['fileId'] as String,
+      fileName: name.isEmpty ? 'file' : name,
+      mimeType: b['mime'] as String,
+      fileSize: size,
+      key: key,
+      noncePrefix: nonce,
+      totalChunks: chunks,
+      chunkSize: chunkSize,
+      sha256Hex: b['sha256'] as String,
     );
   }
 }
 
-/// Tracks the assembly state of an incoming chunked file transfer.
-class TransferState {
+class FileChunkFrame {
   final String fileId;
-  final int totalChunks;
-  final Map<int, Uint8List> receivedChunks = {};
-  DateTime lastUpdated = DateTime.now();
+  final int index;
+  final int total;
+  final Uint8List data; // AES-GCM ciphertext || tag
 
-  TransferState(this.fileId, this.totalChunks);
+  FileChunkFrame(this.fileId, this.index, this.total, this.data);
 
-  bool get isComplete => receivedChunks.length == totalChunks;
-  double get progress => totalChunks == 0 ? 0 : receivedChunks.length / totalChunks;
+  Map<String, dynamic> toJson() =>
+      {'fileId': fileId, 'i': index, 'n': total, 'd': base64Encode(data)};
 
-  Uint8List assemble() {
-    if (!isComplete) throw Exception('File not fully received');
-    
-    // Calculate total size
-    int totalSize = 0;
-    for (int i = 0; i < totalChunks; i++) {
-      totalSize += receivedChunks[i]!.length;
+  factory FileChunkFrame.fromJson(Map<String, dynamic> j) {
+    final i = j['i'];
+    final n = j['n'];
+    if (i is! int || n is! int || i < 0 || n <= 0 || i >= n) {
+      throw const FormatException('bad chunk index');
     }
-
-    // Assemble bytes
-    final assembled = Uint8List(totalSize);
-    int offset = 0;
-    for (int i = 0; i < totalChunks; i++) {
-      final chunk = receivedChunks[i]!;
-      assembled.setRange(offset, offset + chunk.length, chunk);
-      offset += chunk.length;
+    final d = base64Decode(j['d'] as String);
+    if (d.length > FileTransferManager.maxChunkSize + 16) {
+      throw const FormatException('chunk too large');
     }
-
-    return assembled;
+    return FileChunkFrame(j['fileId'] as String, i, n, d);
   }
 }
 
-/// Handles slicing large files into resilient chunks for unstable mesh networks.
-/// Allows for partial transfers that can resume when peers reconnect.
+/// State of a file being received.
+class IncomingTransfer {
+  final FileDescriptor descriptor;
+  final String tempPath;
+  final String finalPath;
+  final Set<int> received = {};
+  DateTime lastUpdate = DateTime.now();
+  RandomAccessFile? _raf;
+
+  IncomingTransfer(this.descriptor, this.tempPath, this.finalPath);
+
+  bool get isComplete => received.length == descriptor.totalChunks;
+  double get progress =>
+      descriptor.totalChunks == 0 ? 1 : received.length / descriptor.totalChunks;
+}
+
+/// Chunked, per-chunk authenticated file transfer with resume support.
 class FileTransferManager extends ChangeNotifier {
-  // Config
-  static const int chunkSize = 50 * 1024; // 50KB per chunk for BLE stability
+  static const int chunkSize = 32 * 1024;
+  static const int maxChunkSize = 64 * 1024;
+  static const int maxFileBytes = 256 * 1024 * 1024;
+  static const Duration staleAfter = Duration(hours: 24);
 
-  // Active incoming transfers tracked by File ID
-  final Map<String, TransferState> _incomingTransfers = {};
+  final Map<String, IncomingTransfer> _incoming = {};
 
-  // Active outgoing transfers tracked by File ID
-  final Map<String, List<FileChunk>> _outgoingTransfers = {};
+  Map<String, IncomingTransfer> get incoming => Map.unmodifiable(_incoming);
 
-  /// Convert raw bytes into an outgoing chunk list.
-  List<FileChunk> sliceFile(String fileId, Uint8List rawBytes) {
-    final int totalChunks = (rawBytes.length / chunkSize).ceil();
-    final List<FileChunk> chunks = [];
+  static Uint8List chunkNonce(Uint8List prefix, int index) =>
+      CryptoUtils.concat([prefix, CryptoUtils.int32be(index)]);
 
-    for (int i = 0; i < totalChunks; i++) {
-      final start = i * chunkSize;
-      final end = (start + chunkSize < rawBytes.length) ? start + chunkSize : rawBytes.length;
-      final chunkData = rawBytes.sublist(start, end);
+  static Uint8List chunkAad(String fileId, int index, int total) =>
+      CryptoUtils.lengthPrefixed([
+        'NyxChat-File-v3'.codeUnits,
+        utf8.encode(fileId),
+        CryptoUtils.int32be(index),
+        CryptoUtils.int32be(total),
+      ]);
 
-      chunks.add(FileChunk(
-        fileId: fileId,
-        chunkIndex: i,
-        totalChunks: totalChunks,
-        data: chunkData,
-      ));
-    }
+  // Sender side
 
-    _outgoingTransfers[fileId] = chunks;
-    return chunks;
+  /// Hash the file and produce a descriptor with fresh key material.
+  static Future<FileDescriptor> describe(File file,
+      {required String fileId, required String mimeType}) async {
+    final size = await file.length();
+    if (size > maxFileBytes) throw ArgumentError('file too large');
+    final digest = await _sha256File(file);
+    final total = size == 0 ? 0 : (size / chunkSize).ceil();
+    return FileDescriptor(
+      fileId: fileId,
+      fileName: file.uri.pathSegments.last,
+      mimeType: mimeType,
+      fileSize: size,
+      key: CryptoUtils.randomBytes(32),
+      noncePrefix: CryptoUtils.randomBytes(8),
+      totalChunks: total,
+      chunkSize: chunkSize,
+      sha256Hex: CryptoUtils.toHex(digest),
+    );
   }
 
-  /// Process an incoming chunk. Returns assembled bytes if completed, else null.
-  Uint8List? receiveChunk(FileChunk chunk) {
-    var state = _incomingTransfers[chunk.fileId];
-    if (state == null) {
-      state = TransferState(chunk.fileId, chunk.totalChunks);
-      _incomingTransfers[chunk.fileId] = state;
+  /// Read and encrypt one chunk.
+  static Future<FileChunkFrame> encryptChunk(
+      File file, FileDescriptor d, int index) async {
+    final raf = await file.open();
+    try {
+      await raf.setPosition(index * d.chunkSize);
+      final plain = await raf.read(d.chunkSize);
+      final ct = await CryptoUtils.aesGcmEncrypt(
+        key: d.key,
+        nonce: chunkNonce(d.noncePrefix, index),
+        plaintext: plain,
+        aad: chunkAad(d.fileId, index, d.totalChunks),
+      );
+      return FileChunkFrame(d.fileId, index, d.totalChunks, ct);
+    } finally {
+      await raf.close();
     }
+  }
 
-    state.receivedChunks[chunk.chunkIndex] = chunk.data;
-    state.lastUpdated = DateTime.now();
-    
+  // Receiver side
+
+  Future<void> begin(FileDescriptor d, String finalPath) async {
+    if (_incoming.containsKey(d.fileId)) return;
+    final tempPath = '$finalPath.part';
+    final t = IncomingTransfer(d, tempPath, finalPath);
+    await File(tempPath).parent.create(recursive: true);
+    t._raf = await File(tempPath).open(mode: FileMode.write);
+    await t._raf!.truncate(d.fileSize);
+    _incoming[d.fileId] = t;
     notifyListeners();
+  }
 
-    if (state.isComplete) {
-      final assembled = state.assemble();
-      _incomingTransfers.remove(chunk.fileId); // Cleanup
-      return assembled;
+  bool isExpecting(String fileId) => _incoming.containsKey(fileId);
+
+  /// Decrypt and store one chunk. Returns the transfer when it completes.
+  Future<IncomingTransfer?> accept(FileChunkFrame frame) async {
+    final t = _incoming[frame.fileId];
+    if (t == null) return null;
+    final d = t.descriptor;
+    if (frame.total != d.totalChunks || frame.index >= d.totalChunks) {
+      throw const FormatException('chunk does not match descriptor');
     }
+    if (t.received.contains(frame.index)) return null;
+    final plain = await CryptoUtils.aesGcmDecrypt(
+      key: d.key,
+      nonce: chunkNonce(d.noncePrefix, frame.index),
+      ciphertextWithTag: frame.data,
+      aad: chunkAad(d.fileId, frame.index, d.totalChunks),
+    );
+    final raf = t._raf!;
+    await raf.setPosition(frame.index * d.chunkSize);
+    await raf.writeFrom(plain);
+    t.received.add(frame.index);
+    t.lastUpdate = DateTime.now();
+    notifyListeners();
+    if (!t.isComplete) return null;
 
-    return null;
-  }
-
-  /// Check which chunks are missing to request a resume over the mesh.
-  List<int> getMissingChunkIndices(String fileId) {
-    final state = _incomingTransfers[fileId];
-    if (state == null) return [];
-
-    final missing = <int>[];
-    for (int i = 0; i < state.totalChunks; i++) {
-      if (!state.receivedChunks.containsKey(i)) {
-        missing.add(i);
-      }
+    await raf.flush();
+    await raf.close();
+    t._raf = null;
+    final digest = await _sha256File(File(t.tempPath));
+    if (CryptoUtils.toHex(digest) != d.sha256Hex) {
+      await File(t.tempPath).delete();
+      _incoming.remove(d.fileId);
+      throw const FormatException('file hash mismatch');
     }
-    return missing;
+    await File(t.tempPath).rename(t.finalPath);
+    _incoming.remove(d.fileId);
+    notifyListeners();
+    return t;
   }
 
-  double getProgress(String fileId) {
-    return _incomingTransfers[fileId]?.progress ?? 0.0;
+  List<int> missingChunks(String fileId) {
+    final t = _incoming[fileId];
+    if (t == null) return const [];
+    return [
+      for (var i = 0; i < t.descriptor.totalChunks; i++)
+        if (!t.received.contains(i)) i
+    ];
   }
 
-  void cleanupStaleTransfers() {
+  double progress(String fileId) => _incoming[fileId]?.progress ?? 0;
+
+  Future<void> cleanupStale() async {
     final now = DateTime.now();
-    _incomingTransfers.removeWhere((key, state) {
-      // Drop broken transfers older than 24 hours
-      return now.difference(state.lastUpdated).inHours > 24;
-    });
-    // Also clean up outgoing transfer records
-    _outgoingTransfers.removeWhere((key, _) {
-      // Remove completed outgoing records (they're only used for slicing)
-      return !_incomingTransfers.containsKey(key);
-    });
+    final stale = _incoming.entries
+        .where((e) => now.difference(e.value.lastUpdate) > staleAfter)
+        .toList();
+    for (final e in stale) {
+      try {
+        await e.value._raf?.close();
+        await File(e.value.tempPath).delete();
+      } catch (_) {}
+      _incoming.remove(e.key);
+    }
+    if (stale.isNotEmpty) notifyListeners();
+  }
+
+  static Future<Uint8List> _sha256File(File file) async {
+    final bytes = await file.readAsBytes();
+    return CryptoUtils.sha256(bytes);
   }
 }

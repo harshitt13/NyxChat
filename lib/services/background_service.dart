@@ -91,9 +91,9 @@ void onStart(ServiceInstance service) async {
   Timer.periodic(const Duration(minutes: 1), (timer) async {
     if (service is AndroidServiceInstance) {
       if (await service.isForegroundService()) {
-        service.setForegroundNotificationInfo(
-          title: "NyxChat DHT Active",
-          content: "DHT node running. Maintaining global P2P routing...",
+        await service.setForegroundNotificationInfo(
+          title: 'NyxChat',
+          content: 'Mesh and DHT routing active',
         );
       }
     }

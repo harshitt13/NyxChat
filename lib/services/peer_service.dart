@@ -1,537 +1,435 @@
 import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:convert/convert.dart';
+
 import '../core/constants.dart';
-import '../core/crypto/hybrid_key_exchange.dart';
-import '../core/network/message_protocol.dart';
+import '../core/crypto/key_manager.dart';
+import '../core/mesh/mesh_packet.dart';
+import '../core/mesh/mesh_router.dart';
+import '../core/mesh/mesh_store.dart';
+import '../core/network/ble_manager.dart';
+import '../core/network/connection_manager.dart';
+import '../core/network/dht_node.dart';
 import '../core/network/p2p_client.dart';
 import '../core/network/p2p_server.dart';
 import '../core/network/peer_discovery.dart';
-import '../core/network/dht_node.dart';
-import '../core/network/ble_manager.dart';
-import '../core/mesh/mesh_router.dart';
-import '../core/mesh/mesh_store.dart';
-import '../core/mesh/mesh_packet.dart';
-import '../core/storage/local_storage.dart';
 import '../core/network/wifi_direct_manager.dart';
+import '../core/storage/local_storage.dart';
+import '../core/storage/trust_store.dart';
 import '../models/peer.dart';
 import 'background_service.dart';
 
-/// Manages peer discovery, connections, and network state.
-/// Now includes DHT for global P2P discovery beyond local network.
+/// Discovery and transport orchestration: mDNS on the LAN, BLE mesh
+/// nearby, DHT for wide-area lookups. All direct links go through
+/// [ConnectionManager], which authenticates them.
 class PeerService extends ChangeNotifier {
   final LocalStorage _storage;
   final P2PClient _client;
   final P2PServer _server;
   final BleManager _bleManager;
-  final FlutterSecureStorage _secureStore = const FlutterSecureStorage();
-  static const String _kDHTActive = 'dht_was_active';
-  final MeshStore _meshStore = MeshStore();
-  late final MeshRouter _meshRouter;
-  final WifiDirectManager _wifiDirectManager = WifiDirectManager();
+  final ConnectionManager _connections;
+  final TrustStore _trust;
+  final KeyManager _keys;
+  final MeshStore _meshStore;
+  final MeshRouter _meshRouter;
+  final WifiDirectManager _wifiDirect = WifiDirectManager();
+  final FlutterSecureStorage _secure = const FlutterSecureStorage();
+  static const String _kDhtActive = 'dht_was_active';
 
   PeerDiscovery? _discovery;
   DHTNode? _dhtNode;
   final Map<String, Peer> _peers = {};
-  bool _isNetworkActive = false;
-  bool _isDHTActive = false;
-  bool _isBleActive = false;
+  final Map<String, DateTime> _lastDial = {};
+  final List<StreamSubscription> _subs = [];
+  bool _networkActive = false;
+  bool _dhtActive = false;
+  bool _bleActive = false;
+  bool _stealth = false;
+  String _myId = '';
+  String _myName = '';
 
   PeerService({
     required LocalStorage storage,
     required P2PClient client,
     required P2PServer server,
     required BleManager bleManager,
+    required ConnectionManager connections,
+    required TrustStore trust,
+    required KeyManager keys,
+    required MeshStore meshStore,
+    required MeshRouter meshRouter,
   })  : _storage = storage,
         _client = client,
         _server = server,
-        _bleManager = bleManager {
-    _meshRouter = MeshRouter(store: _meshStore);
-  }
+        _bleManager = bleManager,
+        _connections = connections,
+        _trust = trust,
+        _keys = keys,
+        _meshStore = meshStore,
+        _meshRouter = meshRouter;
 
   Map<String, Peer> get peers => Map.unmodifiable(_peers);
   List<Peer> get peerList => _peers.values.toList();
-  bool get isNetworkActive => _isNetworkActive;
-  bool get isDHTActive => _isDHTActive;
-  bool get isBleActive => _isBleActive;
+  bool get isNetworkActive => _networkActive;
+  bool get isDHTActive => _dhtActive;
+  bool get isBleActive => _bleActive;
   bool get isBleSupported => _bleManager.isSupported;
+  bool get isStealth => _stealth;
   BleManager get bleManager => _bleManager;
   MeshRouter get meshRouter => _meshRouter;
   MeshStore get meshStore => _meshStore;
+  ConnectionManager get connections => _connections;
   P2PClient get client => _client;
-  P2PServer get server => _server;
   DHTNode? get dhtNode => _dhtNode;
-  WifiDirectManager get wifiDirectManager => _wifiDirectManager;
   int get nearbyBleCount => _bleManager.nearbyCount;
-
-  /// Get list of connected peers (for group chat member selection)
+  int get bleLinkCount => _bleManager.linkCount;
   List<Peer> get connectedPeers =>
       _peers.values.where((p) => isPeerConnected(p.nyxChatId)).toList();
+  List<PinnedPeer> get knownContacts => _trust.all;
 
-  // ─── Network Start/Stop ───────────────────────────────────────
+  // Start / stop
 
   Future<void> startNetwork({
     required String nyxChatId,
     required String displayName,
-    required String publicKeyHex,
-    required String signingPublicKeyHex,
-    String kyberPublicKeyHex = '',
   }) async {
-    // Guard: don't start twice
-    if (_isNetworkActive) return;
-    // Load saved peers
-    final savedPeers = await _storage.getPeers();
-    for (final peer in savedPeers) {
-      _peers[peer.nyxChatId] = peer;
+    if (_networkActive) return;
+    _myId = nyxChatId;
+    _myName = displayName;
+    for (final p in await _storage.getPeers()) {
+      _peers[p.nyxChatId] = p;
     }
 
-    // Start P2P server
-    await _server.start();
-
-    _server.onNewConnection.listen((connection) {
-      _handleIncomingConnection(connection, nyxChatId, displayName,
-          publicKeyHex, signingPublicKeyHex, kyberPublicKeyHex);
-    });
-
-    // Start mDNS peer discovery (local)
-    _discovery = PeerDiscovery(
+    _connections.configure(
       nyxChatId: nyxChatId,
       displayName: displayName,
       listeningPort: AppConstants.defaultPort,
     );
+    await _server.start();
+    _connections.start();
 
-    await _discovery!.startBroadcasting();
-    await _discovery!.startDiscovery();
+    _subs.add(_connections.onPeerReady.listen((conn) {
+      final hs = conn.handshake;
+      if (hs == null) return;
+      final existing = _peers[hs.peerId];
+      _peers[hs.peerId] = Peer(
+        nyxChatId: hs.peerId,
+        displayName: hs.peerDisplayName,
+        publicKeyHex: _hex(hs.peerIdentityKey),
+        signingPublicKeyHex: _hex(hs.peerSigningKey),
+        kyberPublicKeyHex: _hex(hs.peerKyberPublicKey),
+        ipAddress: conn.remoteAddress,
+        port: hs.peerListeningPort,
+        status: PeerStatus.connected,
+        lastSeen: DateTime.now(),
+        firstSeen: existing?.firstSeen ?? DateTime.now(),
+        transport: 'wifi',
+      );
+      _storage.savePeer(_peers[hs.peerId]!);
+      notifyListeners();
+    }));
+    _subs.add(_client.onPeerDisconnected.listen((peerId) {
+      final p = _peers[peerId];
+      if (p != null) {
+        _peers[peerId] = p.copyWith(status: PeerStatus.disconnected, lastSeen: DateTime.now());
+      }
+      notifyListeners();
+    }));
 
-    _discovery!.onPeerFound.listen((discovered) {
-      _handlePeerDiscovered(discovered, nyxChatId, displayName,
-          publicKeyHex, signingPublicKeyHex, kyberPublicKeyHex);
-    });
-
-    _discovery!.onPeerLost.listen((peerId) {
-      _handlePeerLost(peerId);
-    });
-
-    _isNetworkActive = true;
+    if (!_stealth) await _startDiscovery();
+    _networkActive = true;
     notifyListeners();
-    debugPrint('[Network] Local network started');
 
-    // Start High-Bandwidth Wi-Fi Direct Fallback
-    await _wifiDirectManager.init(nyxChatId);
-    await _wifiDirectManager.startAdvertising();
-    await _wifiDirectManager.startDiscovery();
-    debugPrint('[Network] Wi-Fi Direct MANET fallback initialized');
-
-    // Start BLE mesh (non-blocking, best-effort)
-    _startBle(nyxChatId);
+    unawaited(_startBle());
+    unawaited(_startWifiDirect());
   }
 
-  // ─── BLE Mesh ────────────────────────────────────────────────
+  Future<void> _startDiscovery() async {
+    _discovery = PeerDiscovery(
+      nyxChatId: _myId,
+      displayName: _myName,
+      listeningPort: AppConstants.defaultPort,
+    );
+    try {
+      await _discovery!.startBroadcasting();
+      await _discovery!.startDiscovery();
+    } catch (e) {
+      debugPrint('[Net] mDNS failed: $e');
+    }
+    _subs.add(_discovery!.onPeerFound.listen(_onDiscovered));
+    _subs.add(_discovery!.onPeerLost.listen((peerId) {
+      final p = _peers[peerId];
+      if (p != null && !isPeerConnected(peerId)) {
+        _peers[peerId] = p.copyWith(status: PeerStatus.disconnected);
+        notifyListeners();
+      }
+    }));
+  }
 
-  Future<void> _startBle(String nyxChatId) async {
+  Future<void> _startWifiDirect() async {
+    try {
+      await _wifiDirect.init(_myId);
+      if (!_stealth) {
+        await _wifiDirect.startAdvertising();
+        await _wifiDirect.startDiscovery();
+      }
+    } catch (e) {
+      debugPrint('[Net] Wi-Fi Direct unavailable: $e');
+    }
+  }
+
+  Future<void> _onDiscovered(DiscoveredPeer d) async {
+    if (d.nyxChatId == _myId) return;
+    _peers.putIfAbsent(d.nyxChatId, () => Peer(
+          nyxChatId: d.nyxChatId,
+          displayName: d.displayName,
+          publicKeyHex: '',
+          ipAddress: d.ipAddress,
+          port: d.port,
+          status: PeerStatus.discovered,
+          lastSeen: DateTime.now(),
+        ));
+    notifyListeners();
+    await _dial(d.nyxChatId, d.ipAddress, d.port);
+  }
+
+  Future<bool> _dial(String peerId, String address, int port) async {
+    if (isPeerConnected(peerId)) return true;
+    if (_connections.pendingKeyChanges.containsKey(peerId)) return false;
+    // Both sides discover each other; only the smaller id dials first to
+    // avoid two simultaneous links. The other side dials after a delay if
+    // still not connected.
+    if (_myId.compareTo(peerId) > 0) {
+      await Future<void>.delayed(const Duration(seconds: 3));
+      if (isPeerConnected(peerId)) return true;
+    }
+    final last = _lastDial[peerId];
+    if (last != null && DateTime.now().difference(last) < const Duration(seconds: 5)) {
+      return false;
+    }
+    _lastDial[peerId] = DateTime.now();
+    final conn = await _connections.connect(address, port);
+    return conn != null;
+  }
+
+  /// Manual connection by address.
+  Future<bool> connectToPeer({required String address, required int port}) async {
+    final conn = await _connections.connect(address, port);
+    return conn != null;
+  }
+
+  Future<bool> connectToKnownPeer(String peerId) async {
+    final p = _peers[peerId];
+    if (p == null || p.ipAddress.isEmpty || p.ipAddress.startsWith('ble://')) return false;
+    return _dial(peerId, p.ipAddress, p.port);
+  }
+
+  bool isPeerConnected(String peerId) => _client.isPeerConnected(peerId);
+  bool isReachableByMesh(String peerId) => _bleManager.linkForNyxId(peerId) != null;
+
+  // BLE mesh
+
+  Future<void> _startBle() async {
     try {
       await _bleManager.init();
-      if (!_bleManager.isSupported) {
-        debugPrint('[BLE] Not supported, skipping');
-        return;
-      }
+      if (!_bleManager.isSupported) return;
+      await _meshRouter.init(_myId);
 
-      // Init mesh router
-      await _meshRouter.init(nyxChatId);
-
-      // Forward mesh packets via BLE broadcast
-      _meshRouter.onForwardPacket = (packet) {
-        _bleManager.broadcast({
-          'type': 'mesh_packet',
-          'packet': packet.toJson(),
-        });
-      };
-
-      // Handle incoming BLE messages for mesh routing
-      _bleManager.onMessageReceived = (blePeer, message) {
-        if (message['type'] == 'mesh_packet' && message['packet'] != null) {
-          final packet = MeshPacket.fromJson(
-              message['packet'] as Map<String, dynamic>);
-          _meshRouter.handlePacket(packet);
+      _meshRouter.onForwardPacket = (packet, nextHopHash) {
+        final frame = {'type': 'mesh', 'packet': packet.toJson()};
+        if (nextHopHash != null) {
+          final link = _linkForHash(nextHopHash);
+          if (link != null) {
+            unawaited(_bleManager.sendJson(link, frame));
+            return;
+          }
         }
+        unawaited(_bleManager.broadcastJson(frame));
       };
 
-      // Register BLE peer events
-      _bleManager.onPeerConnected = (blePeer) {
-        if (blePeer.nyxId != null) {
-          final peer = Peer(
-            nyxChatId: blePeer.nyxId!,
-            displayName: blePeer.deviceName,
-            publicKeyHex: '',
-            ipAddress: 'ble://${blePeer.deviceId}',
-            port: 0,
-            status: PeerStatus.connected,
-            lastSeen: DateTime.now(),
-            transport: 'ble',
-          );
-          _peers[peer.nyxChatId] = peer;
-          _storage.savePeer(peer);
-          notifyListeners();
-
-          // Exchange stored mesh packets with new peer
-          final packets = _meshRouter.getPacketsForNewPeer();
-          for (final packet in packets) {
-            _bleManager.sendMessage(blePeer, {
-              'type': 'mesh_packet',
-              'packet': packet.toJson(),
-            });
+      _bleManager.onMessage = (link, message) {
+        if (message['type'] == 'mesh' && message['packet'] is Map) {
+          try {
+            final packet = MeshPacket.fromJson(
+                (message['packet'] as Map).cast<String, dynamic>());
+            unawaited(_meshRouter.handlePacket(packet));
+          } catch (e) {
+            debugPrint('[Mesh] bad packet from ${link.address}: $e');
           }
         }
       };
 
-      _bleManager.onPeerDisconnected = (blePeer) {
-        if (blePeer.nyxId != null && _peers.containsKey(blePeer.nyxId)) {
-          _peers[blePeer.nyxId!] = _peers[blePeer.nyxId!]!
-              .copyWith(status: PeerStatus.disconnected);
-          notifyListeners();
+      _bleManager.onLinkUp = (link) async {
+        final id = link.nyxId;
+        if (id == null) return;
+        _peers[id] = (_peers[id] ??
+                Peer(nyxChatId: id, displayName: _trust.get(id)?.displayName ?? id,
+                    publicKeyHex: '', ipAddress: 'ble://${link.address}', port: 0,
+                    lastSeen: DateTime.now()))
+            .copyWith(status: PeerStatus.connected, lastSeen: DateTime.now(), transport: 'ble');
+        _hashCache[await MeshRouter.hashId(id)] = id;
+        notifyListeners();
+        for (final packet in _meshRouter.getPacketsForNewPeer()) {
+          await _bleManager.sendJson(link, {'type': 'mesh', 'packet': packet.toJson()});
         }
       };
+      _bleManager.onLinkDown = (link) {
+        final id = link.nyxId;
+        if (id != null && _peers[id]?.transport == 'ble') {
+          _peers[id] = _peers[id]!.copyWith(status: PeerStatus.disconnected);
+        }
+        notifyListeners();
+      };
 
-      await _bleManager.start(nyxChatId);
-      _isBleActive = true;
+      if (!_stealth) {
+        await _bleManager.start(_myId);
+        _bleActive = true;
+      }
       notifyListeners();
-      debugPrint('[BLE] Mesh started');
     } catch (e) {
-      debugPrint('[BLE] Start error: $e');
+      debugPrint('[BLE] start error: $e');
     }
+  }
+
+  final Map<String, String> _hashCache = {};
+
+  BleLink? _linkForHash(String hash) {
+    final id = _hashCache[hash];
+    return id == null ? null : _bleManager.linkForNyxId(id);
   }
 
   Future<void> stopBle() async {
     await _bleManager.stop();
-    _isBleActive = false;
+    _bleActive = false;
     notifyListeners();
   }
 
-  // ─── DHT Global Network ──────────────────────────────────────
-
-  /// Check if DHT was active in the previous session.
-  /// Stored in secure storage (not Hive) so it survives DB resets.
-  Future<bool> wasDHTActive() async {
-    return (await _secureStore.read(key: _kDHTActive)) == 'true';
+  Future<void> startBle() async {
+    if (_bleActive || !_bleManager.isSupported) return;
+    await _bleManager.start(_myId);
+    _bleActive = true;
+    notifyListeners();
   }
 
-  /// Start the DHT node for global P2P discovery
-  Future<void> startDHT({
-    required String nyxChatId,
-    required String publicKeyHex,
-    required String displayName,
-    List<String>? bootstrapNodes,
-  }) async {
-    // Guard: don't start twice
-    if (_isDHTActive) return;
+  /// Stealth: no advertising or scanning of any kind; existing links stay.
+  Future<void> setStealth(bool enabled) async {
+    _stealth = enabled;
+    if (enabled) {
+      await _discovery?.stop();
+      _discovery = null;
+      await stopBle();
+      try {
+        await _wifiDirect.stop();
+      } catch (_) {}
+    } else if (_networkActive) {
+      await _startDiscovery();
+      await startBle();
+      await _startWifiDirect();
+    }
+    notifyListeners();
+  }
 
+  // DHT
+
+  Future<bool> wasDHTActive() async => (await _secure.read(key: _kDhtActive)) == 'true';
+
+  Future<void> startDHT({List<String>? bootstrapNodes}) async {
+    if (_dhtActive) return;
     try {
       _dhtNode = DHTNode(
-        nodeId: nyxChatId,
+        nodeId: _myId,
         port: AppConstants.defaultPort,
-        publicKeyHex: publicKeyHex,
-        displayName: displayName,
+        keys: _keys,
+        displayName: _myName,
         bootstrapNodes: bootstrapNodes,
       );
-
+      _dhtNode!.addListener(_updateDhtPeers);
       await _dhtNode!.start();
-      _isDHTActive = true;
-
-      // Listen for DHT peer updates
-      _dhtNode!.addListener(() {
-        _updateDHTPeers();
-      });
-
-      // Announce ourselves
-      await _dhtNode!.announce();
-      
-      // Persist state in secure storage (survives DB resets)
-      await _secureStore.write(key: _kDHTActive, value: 'true');
-
-      // Start the OS-level foreground service so the DHT stays alive
-      // even when the user swipes the app away
+      _dhtActive = true;
+      await _secure.write(key: _kDhtActive, value: 'true');
       await BackgroundManager.startService();
-
       notifyListeners();
-      debugPrint('[DHT] Global network started (foreground service active)');
     } catch (e) {
-      debugPrint('[DHT] Failed to start: $e');
+      debugPrint('[DHT] start failed: $e');
     }
   }
 
-  /// Stop the DHT node
   Future<void> stopDHT() async {
     await _dhtNode?.stop();
     _dhtNode = null;
-    _isDHTActive = false;
-    await _secureStore.write(key: _kDHTActive, value: 'false');
-
-    // Stop the foreground service since DHT is no longer needed
+    _dhtActive = false;
+    await _secure.write(key: _kDhtActive, value: 'false');
     await BackgroundManager.stopService();
-
     notifyListeners();
   }
 
-  /// Look up a peer globally via DHT
+  void addBootstrapNode(String address) => _dhtNode?.addBootstrapNode(address);
+
   Future<Peer?> lookupGlobalPeer(String targetId) async {
-    if (_dhtNode == null) return null;
-
-    final entry = await _dhtNode!.lookup(targetId);
-    if (entry != null) {
-      final peer = Peer(
-        nyxChatId: entry.nodeId,
-        displayName: entry.displayName,
-        publicKeyHex: entry.publicKeyHex,
-        ipAddress: entry.address,
-        port: entry.port,
-        status: PeerStatus.discovered,
-        lastSeen: entry.lastSeen,
-        firstSeen: entry.lastSeen,
-      );
-      _peers[peer.nyxChatId] = peer;
-      notifyListeners();
-      return peer;
-    }
-    return null;
+    final entry = await _dhtNode?.lookup(targetId);
+    if (entry == null) return null;
+    final peer = Peer(
+      nyxChatId: entry.nodeId,
+      displayName: entry.displayName,
+      publicKeyHex: entry.identityKeyHex,
+      signingPublicKeyHex: entry.signingKeyHex,
+      kyberPublicKeyHex: entry.kyberKeyHex,
+      ipAddress: entry.address,
+      port: entry.port,
+      status: PeerStatus.discovered,
+      lastSeen: entry.lastSeen,
+    );
+    _peers[peer.nyxChatId] = peer;
+    notifyListeners();
+    return peer;
   }
 
-  /// Add a DHT bootstrap node
-  void addBootstrapNode(String address) {
-    _dhtNode?.addBootstrapNode(address);
-  }
-
-  void _updateDHTPeers() {
-    if (_dhtNode == null) return;
-    for (final entry in _dhtNode!.knownPeers) {
-      if (!_peers.containsKey(entry.nodeId)) {
-        _peers[entry.nodeId] = Peer(
-          nyxChatId: entry.nodeId,
-          displayName: entry.displayName,
-          publicKeyHex: entry.publicKeyHex,
-          ipAddress: entry.address,
-          port: entry.port,
-          status: PeerStatus.discovered,
-          lastSeen: entry.lastSeen,
-          firstSeen: entry.lastSeen,
-        );
-      }
+  void _updateDhtPeers() {
+    final node = _dhtNode;
+    if (node == null) return;
+    for (final e in node.knownPeers) {
+      _peers.putIfAbsent(e.nodeId, () => Peer(
+            nyxChatId: e.nodeId,
+            displayName: e.displayName,
+            publicKeyHex: e.identityKeyHex,
+            ipAddress: e.address,
+            port: e.port,
+            status: PeerStatus.discovered,
+            lastSeen: e.lastSeen,
+          ));
     }
     notifyListeners();
   }
 
-  // ─── Connection Handling ──────────────────────────────────────
-
-  void _handleIncomingConnection(
-    PeerConnection connection,
-    String myNyxChatId,
-    String myDisplayName,
-    String myPublicKeyHex,
-    String mySigningPublicKeyHex,
-    String myKyberPublicKeyHex,
-  ) {
-    late StreamSubscription sub;
-    sub = connection.onMessage.listen((msg) async {
-      if (msg.type == ProtocolMessageType.hello) {
-        // Extract peer's Kyber PK from their hello (if PQC-capable)
-        final peerKyberPKHex =
-            msg.payload['kyberPublicKeyHex'] as String?;
-
-        // Responder performs KEM encapsulation against initiator's Kyber PK
-        String? kyberCiphertextHex;
-        if (peerKyberPKHex != null && peerKyberPKHex.isNotEmpty) {
-          try {
-            final hybridKex = HybridKeyExchange();
-            final peerKyberPK =
-                Uint8List.fromList(hex.decode(peerKyberPKHex));
-            final result = await hybridKex.encapsulate(peerKyberPK);
-            kyberCiphertextHex = hex.encode(result.ciphertext);
-            // Store the shared secret on the connection for later use
-            connection.kyberSharedSecretHex =
-                hex.encode(result.sharedSecret);
-          } catch (e) {
-            debugPrint('[PQC] Kyber encapsulation failed: $e');
-          }
-        }
-
-        connection.send(ProtocolMessage.hello(
-          senderId: myNyxChatId,
-          displayName: myDisplayName,
-          publicKeyHex: myPublicKeyHex,
-          signingPublicKeyHex: mySigningPublicKeyHex,
-          listeningPort: AppConstants.defaultPort,
-          kyberPublicKeyHex: myKyberPublicKeyHex,
-          kyberCiphertextHex: kyberCiphertextHex,
-        ));
-
-        _client.registerIncomingConnection(connection);
-
-        final peer = Peer(
-          nyxChatId: msg.senderId,
-          displayName:
-              msg.payload['displayName'] as String? ?? 'Unknown',
-          publicKeyHex:
-              msg.payload['publicKeyHex'] as String? ?? '',
-          kyberPublicKeyHex: peerKyberPKHex ?? '',
-          ipAddress: connection.remoteAddress,
-          port: msg.payload['listeningPort'] as int? ??
-              AppConstants.defaultPort,
-          status: PeerStatus.connected,
-          lastSeen: DateTime.now(),
-          firstSeen: DateTime.now(),
-        );
-
-        _peers[peer.nyxChatId] = peer;
-        _storage.savePeer(peer);
-        notifyListeners();
-
-        sub.cancel();
-      }
-    });
+  Future<void> removePeer(String peerId) async {
+    _peers.remove(peerId);
+    await _storage.deletePeer(peerId);
+    notifyListeners();
   }
-
-  Future<void> _handlePeerDiscovered(
-    DiscoveredPeer discovered,
-    String myNyxChatId,
-    String myDisplayName,
-    String myPublicKeyHex,
-    String mySigningPublicKeyHex,
-    String myKyberPublicKeyHex,
-  ) async {
-    if (_client.isPeerConnected(discovered.nyxChatId)) return;
-
-    try {
-      final hello = ProtocolMessage.hello(
-        senderId: myNyxChatId,
-        displayName: myDisplayName,
-        publicKeyHex: myPublicKeyHex,
-        signingPublicKeyHex: mySigningPublicKeyHex,
-        listeningPort: AppConstants.defaultPort,
-        kyberPublicKeyHex: myKyberPublicKeyHex,
-      );
-
-      final connection = await _client.connectToPeer(
-        address: discovered.ipAddress,
-        port: discovered.port,
-        helloMessage: hello,
-      );
-
-      final peer = Peer(
-        nyxChatId: discovered.nyxChatId,
-        displayName:
-            connection.peerDisplayName ?? discovered.displayName,
-        publicKeyHex: connection.peerPublicKeyHex ?? '',
-        kyberPublicKeyHex: connection.peerKyberPublicKeyHex ?? '',
-        ipAddress: discovered.ipAddress,
-        port: discovered.port,
-        status: PeerStatus.connected,
-        lastSeen: DateTime.now(),
-        firstSeen: DateTime.now(),
-      );
-
-      _peers[peer.nyxChatId] = peer;
-      await _storage.savePeer(peer);
-      notifyListeners();
-    } catch (e) {
-      debugPrint('Failed to connect to discovered peer: $e');
-
-      final peer = Peer(
-        nyxChatId: discovered.nyxChatId,
-        displayName: discovered.displayName,
-        publicKeyHex: '',
-        ipAddress: discovered.ipAddress,
-        port: discovered.port,
-        status: PeerStatus.discovered,
-        lastSeen: DateTime.now(),
-      );
-      _peers[peer.nyxChatId] = peer;
-      notifyListeners();
-    }
-  }
-
-  void _handlePeerLost(String peerId) {
-    final peer = _peers[peerId];
-    if (peer != null) {
-      _peers[peerId] = peer.copyWith(status: PeerStatus.disconnected);
-      notifyListeners();
-    }
-  }
-
-  /// Connect to a specific peer manually
-  Future<bool> connectToPeer({
-    required String address,
-    required int port,
-    required String myNyxChatId,
-    required String myDisplayName,
-    required String myPublicKeyHex,
-    required String mySigningPublicKeyHex,
-    String myKyberPublicKeyHex = '',
-  }) async {
-    try {
-      final hello = ProtocolMessage.hello(
-        senderId: myNyxChatId,
-        displayName: myDisplayName,
-        publicKeyHex: myPublicKeyHex,
-        signingPublicKeyHex: mySigningPublicKeyHex,
-        listeningPort: AppConstants.defaultPort,
-        kyberPublicKeyHex: myKyberPublicKeyHex,
-      );
-
-      await _client.connectToPeer(
-        address: address,
-        port: port,
-        helloMessage: hello,
-      );
-      return true;
-    } catch (e) {
-      debugPrint('Manual connection failed: $e');
-      return false;
-    }
-  }
-
-  /// Connect to a DHT-discovered peer
-  Future<bool> connectToDHTPeer({
-    required String peerId,
-    required String myNyxChatId,
-    required String myDisplayName,
-    required String myPublicKeyHex,
-    required String mySigningPublicKeyHex,
-    String myKyberPublicKeyHex = '',
-  }) async {
-    final peer = _peers[peerId];
-    if (peer == null) return false;
-
-    return connectToPeer(
-      address: peer.ipAddress,
-      port: peer.port,
-      myNyxChatId: myNyxChatId,
-      myDisplayName: myDisplayName,
-      myPublicKeyHex: myPublicKeyHex,
-      mySigningPublicKeyHex: mySigningPublicKeyHex,
-      myKyberPublicKeyHex: myKyberPublicKeyHex,
-    );
-  }
-
-  bool isPeerConnected(String peerId) => _client.isPeerConnected(peerId);
-
-  PeerConnection? getConnection(String peerId) =>
-      _client.getConnection(peerId);
 
   Future<void> stopNetwork() async {
     await _discovery?.stop();
+    _discovery = null;
     await stopDHT();
     await stopBle();
-    await _wifiDirectManager.stop();
+    try {
+      await _wifiDirect.stop();
+    } catch (_) {}
+    await _connections.stop();
     await _client.disconnectAll();
     await _server.stop();
-    _isNetworkActive = false;
-
-    for (final entry in _peers.entries) {
-      _peers[entry.key] =
-          entry.value.copyWith(status: PeerStatus.disconnected);
+    for (final s in _subs) {
+      await s.cancel();
     }
-
+    _subs.clear();
+    _networkActive = false;
+    for (final e in _peers.entries.toList()) {
+      _peers[e.key] = e.value.copyWith(status: PeerStatus.disconnected);
+    }
     notifyListeners();
-    debugPrint('[Network] All networks stopped');
   }
+
+  static String _hex(List<int> b) =>
+      b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
 }
