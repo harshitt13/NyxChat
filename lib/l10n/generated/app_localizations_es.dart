@@ -289,7 +289,7 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get handshakeValue =>
-      'Híbrido X25519 + Kyber-768, firmado con Ed25519';
+      'Híbrido X25519 + ML-KEM-768, firmado con Ed25519';
 
   @override
   String get messagesValue => 'Double Ratchet, AES-256-GCM';
@@ -534,7 +534,7 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get featureE2eSubtitle =>
-      'Double Ratchet con negociación híbrida X25519 + Kyber-768';
+      'Double Ratchet con negociación híbrida X25519 + ML-KEM-768';
 
   @override
   String get featureOfflineTitle => 'Funciona sin internet';
@@ -558,7 +558,7 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get keysGeneratedLocally =>
-      'Genera claves X25519, Ed25519 y Kyber-768 de forma local. No se sube nada.';
+      'Genera claves X25519, Ed25519 y ML-KEM-768 de forma local. No se sube nada.';
 
   @override
   String get passwordRequired => 'La contraseña es obligatoria';
@@ -1116,7 +1116,7 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String protocolValue(String version) {
-    return 'v$version · X25519+Kyber-768 · Double Ratchet · Sender Keys';
+    return 'v$version · X25519+ML-KEM-768 · Double Ratchet · Sender Keys';
   }
 
   @override
@@ -1155,4 +1155,70 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get languageSystemDefault => 'Predeterminado del sistema';
+
+  @override
+  String get wifiAware => 'Wi-Fi Aware';
+
+  @override
+  String get useWifiAware => 'Usar Wi-Fi Aware';
+
+  @override
+  String get useWifiAwareSubtitle =>
+      'Enlaces con vecinos sin punto de acceso (Android 8+). La misma baliza rotativa que Bluetooth.';
+
+  @override
+  String get offlineSessions => 'Sesiones sin conexión';
+
+  @override
+  String pqReady(int count) {
+    return 'Secreto hacia adelante poscuántico listo ($count preclaves de un solo uso)';
+  }
+
+  @override
+  String get pqPending =>
+      'Secreto hacia adelante poscuántico pendiente hasta el próximo encuentro';
+
+  @override
+  String get voiceMessage => 'Mensaje de voz';
+
+  @override
+  String get photo => 'Foto';
+
+  @override
+  String get holdToRecord =>
+      'Mantén pulsado el micrófono para grabar un mensaje de voz';
+
+  @override
+  String get slideToCancel => 'Desliza para cancelar';
+
+  @override
+  String get releaseToCancel => 'Suelta para cancelar';
+
+  @override
+  String get recordingUnavailable =>
+      'La grabación de voz no está disponible en este dispositivo';
+
+  @override
+  String get microphoneDenied =>
+      'Se necesita acceso al micrófono para grabar mensajes de voz';
+
+  @override
+  String get recordingFailed => 'No se pudo iniciar la grabación';
+
+  @override
+  String get playbackUnavailable =>
+      'La reproducción de voz no está disponible en este dispositivo';
+
+  @override
+  String get playbackFailed => 'No se pudo reproducir este mensaje de voz';
+
+  @override
+  String get voiceNeedsCarrier =>
+      'Las notas de voz necesitan una conexión directa o una ruta de malla';
+
+  @override
+  String get imageUnavailable => 'Imagen no disponible';
+
+  @override
+  String get receiving => 'Recibiendo';
 }

@@ -189,10 +189,10 @@ class _VoiceRecordButtonState extends State<VoiceRecordButton> {
     final recording = _recording;
     final enabled = widget.enabled;
     final color = !enabled
-        ? AppTheme.textMuted
+        ? context.nyx.textMuted
         : recording
-            ? AppTheme.error
-            : AppTheme.textSecondary;
+            ? context.nyx.error
+            : context.nyx.textSecondary;
     return Listener(
       behavior: HitTestBehavior.opaque,
       onPointerDown: enabled ? (e) => unawaited(_onDown(e)) : null,
@@ -208,12 +208,12 @@ class _VoiceRecordButtonState extends State<VoiceRecordButton> {
           height: widget.size,
           decoration: BoxDecoration(
             color: recording
-                ? AppTheme.error.withValues(alpha: 0.16)
-                : AppTheme.surface,
+                ? context.nyx.error.withValues(alpha: 0.16)
+                : context.nyx.surface,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: recording
-                  ? AppTheme.error.withValues(alpha: 0.5)
+                  ? context.nyx.error.withValues(alpha: 0.5)
                   : Colors.white.withValues(alpha: 0.06),
             ),
           ),
@@ -245,11 +245,11 @@ class _RecordingStrip extends StatelessWidget {
       child: ValueListenableBuilder<bool>(
         valueListenable: cancelArmed,
         builder: (context, armed, _) {
-          final accent = armed ? AppTheme.error : AppTheme.accentBlue;
+          final accent = armed ? context.nyx.error : context.nyx.accentBlue;
           return Container(
             padding: const EdgeInsets.only(left: 12, right: 2),
             decoration: BoxDecoration(
-              color: AppTheme.surface,
+              color: context.nyx.surface,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: accent.withValues(alpha: 0.35)),
             ),
@@ -264,7 +264,7 @@ class _RecordingStrip extends StatelessWidget {
                   Text(
                     formatClock(recorder.elapsed),
                     style: TextStyle(
-                      color: nearLimit ? AppTheme.warning : AppTheme.textPrimary,
+                      color: nearLimit ? context.nyx.warning : context.nyx.textPrimary,
                       fontSize: 13,
                       fontFeatures: const [FontFeature.tabularFigures()],
                     ),
@@ -288,14 +288,14 @@ class _RecordingStrip extends StatelessWidget {
                         ? MediaStrings.releaseToCancel
                         : '‹ ${MediaStrings.slideToCancel}',
                     style: TextStyle(
-                        color: armed ? AppTheme.error : AppTheme.textMuted,
+                        color: armed ? context.nyx.error : context.nyx.textMuted,
                         fontSize: 12),
                   ),
                   IconButton(
                     onPressed: onCancel,
                     visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.close_rounded,
-                        size: 18, color: AppTheme.textSecondary),
+                    icon: Icon(Icons.close_rounded,
+                        size: 18, color: context.nyx.textSecondary),
                   ),
                 ]);
               },
@@ -333,7 +333,7 @@ class _BlinkingDotState extends State<_BlinkingDot>
           width: 8,
           height: 8,
           decoration:
-              const BoxDecoration(color: AppTheme.error, shape: BoxShape.circle),
+              BoxDecoration(color: context.nyx.error, shape: BoxShape.circle),
         ),
       );
 }

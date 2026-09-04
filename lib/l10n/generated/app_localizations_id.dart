@@ -285,7 +285,7 @@ class AppLocalizationsId extends AppLocalizations {
 
   @override
   String get handshakeValue =>
-      'Hibrida X25519 + Kyber-768, ditandatangani Ed25519';
+      'Hibrida X25519 + ML-KEM-768, ditandatangani Ed25519';
 
   @override
   String get messagesValue => 'Double Ratchet, AES-256-GCM';
@@ -525,7 +525,7 @@ class AppLocalizationsId extends AppLocalizations {
 
   @override
   String get featureE2eSubtitle =>
-      'Double Ratchet dengan jabat tangan hibrida X25519 + Kyber-768';
+      'Double Ratchet dengan jabat tangan hibrida X25519 + ML-KEM-768';
 
   @override
   String get featureOfflineTitle => 'Bekerja tanpa internet';
@@ -549,7 +549,7 @@ class AppLocalizationsId extends AppLocalizations {
 
   @override
   String get keysGeneratedLocally =>
-      'Membuat kunci X25519, Ed25519, dan Kyber-768 secara lokal. Tidak ada yang diunggah.';
+      'Membuat kunci X25519, Ed25519, dan ML-KEM-768 secara lokal. Tidak ada yang diunggah.';
 
   @override
   String get passwordRequired => 'Sandi wajib diisi';
@@ -1097,7 +1097,7 @@ class AppLocalizationsId extends AppLocalizations {
 
   @override
   String protocolValue(String version) {
-    return 'v$version · X25519+Kyber-768 · Double Ratchet · Sender Keys';
+    return 'v$version · X25519+ML-KEM-768 · Double Ratchet · Sender Keys';
   }
 
   @override
@@ -1136,4 +1136,69 @@ class AppLocalizationsId extends AppLocalizations {
 
   @override
   String get languageSystemDefault => 'Default sistem';
+
+  @override
+  String get wifiAware => 'Wi-Fi Aware';
+
+  @override
+  String get useWifiAware => 'Gunakan Wi-Fi Aware';
+
+  @override
+  String get useWifiAwareSubtitle =>
+      'Tautan tetangga tanpa titik akses (Android 8+). Beacon berputar yang sama seperti Bluetooth.';
+
+  @override
+  String get offlineSessions => 'Sesi luring';
+
+  @override
+  String pqReady(int count) {
+    return 'Kerahasiaan maju pascakuantum siap ($count prakunci sekali pakai)';
+  }
+
+  @override
+  String get pqPending =>
+      'Kerahasiaan maju pascakuantum menunggu pertemuan berikutnya';
+
+  @override
+  String get voiceMessage => 'Pesan suara';
+
+  @override
+  String get photo => 'Foto';
+
+  @override
+  String get holdToRecord => 'Tahan mikrofon untuk merekam pesan suara';
+
+  @override
+  String get slideToCancel => 'Geser untuk membatalkan';
+
+  @override
+  String get releaseToCancel => 'Lepaskan untuk membatalkan';
+
+  @override
+  String get recordingUnavailable =>
+      'Perekaman suara tidak tersedia di perangkat ini';
+
+  @override
+  String get microphoneDenied =>
+      'Akses mikrofon diperlukan untuk merekam pesan suara';
+
+  @override
+  String get recordingFailed => 'Tidak dapat memulai perekaman';
+
+  @override
+  String get playbackUnavailable =>
+      'Pemutaran suara tidak tersedia di perangkat ini';
+
+  @override
+  String get playbackFailed => 'Tidak dapat memutar pesan suara ini';
+
+  @override
+  String get voiceNeedsCarrier =>
+      'Catatan suara memerlukan koneksi langsung atau jalur mesh';
+
+  @override
+  String get imageUnavailable => 'Gambar tidak tersedia';
+
+  @override
+  String get receiving => 'Menerima';
 }

@@ -286,7 +286,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get handshake => 'Handshake';
 
   @override
-  String get handshakeValue => 'X25519 + Kyber-768 hybrid, Ed25519 signed';
+  String get handshakeValue => 'X25519 + ML-KEM-768 hybrid, Ed25519 signed';
 
   @override
   String get messagesValue => 'Double Ratchet, AES-256-GCM';
@@ -530,7 +530,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get featureE2eSubtitle =>
-      'Double Ratchet with a hybrid X25519 + Kyber-768 handshake';
+      'Double Ratchet with a hybrid X25519 + ML-KEM-768 handshake';
 
   @override
   String get featureOfflineTitle => 'Works without internet';
@@ -554,7 +554,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get keysGeneratedLocally =>
-      'Generates X25519, Ed25519 and Kyber-768 keys locally. Nothing is uploaded.';
+      'Generates X25519, Ed25519 and ML-KEM-768 keys locally. Nothing is uploaded.';
 
   @override
   String get passwordRequired => 'Password is required';
@@ -1106,7 +1106,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String protocolValue(String version) {
-    return 'v$version · X25519+Kyber-768 · Double Ratchet · Sender Keys';
+    return 'v$version · X25519+ML-KEM-768 · Double Ratchet · Sender Keys';
   }
 
   @override
@@ -1145,4 +1145,68 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get languageSystemDefault => 'System default';
+
+  @override
+  String get wifiAware => 'Wi-Fi Aware';
+
+  @override
+  String get useWifiAware => 'Use Wi-Fi Aware';
+
+  @override
+  String get useWifiAwareSubtitle =>
+      'Neighbour links without an access point (Android 8+). Same rotating beacon as Bluetooth.';
+
+  @override
+  String get offlineSessions => 'Offline sessions';
+
+  @override
+  String pqReady(int count) {
+    return 'Post-quantum forward secrecy ready ($count one-time prekeys)';
+  }
+
+  @override
+  String get pqPending => 'Post-quantum forward secrecy pending next meeting';
+
+  @override
+  String get voiceMessage => 'Voice message';
+
+  @override
+  String get photo => 'Photo';
+
+  @override
+  String get holdToRecord => 'Hold the microphone to record a voice message';
+
+  @override
+  String get slideToCancel => 'Slide to cancel';
+
+  @override
+  String get releaseToCancel => 'Release to cancel';
+
+  @override
+  String get recordingUnavailable =>
+      'Voice recording is not available on this device';
+
+  @override
+  String get microphoneDenied =>
+      'Microphone access is needed to record voice messages';
+
+  @override
+  String get recordingFailed => 'Could not start recording';
+
+  @override
+  String get playbackUnavailable =>
+      'Voice playback is not available on this device';
+
+  @override
+  String get playbackFailed => 'Could not play this voice message';
+
+  @override
+  String get voiceNeedsCarrier =>
+      'Voice notes need a direct connection or a mesh path';
+
+  @override
+  String get imageUnavailable => 'Image not available';
+
+  @override
+  String get receiving => 'Receiving';
 }

@@ -288,7 +288,7 @@ class AppLocalizationsDe extends AppLocalizations {
   String get handshake => 'Handshake';
 
   @override
-  String get handshakeValue => 'X25519 + Kyber-768 hybrid, Ed25519-signiert';
+  String get handshakeValue => 'X25519 + ML-KEM-768 hybrid, Ed25519-signiert';
 
   @override
   String get messagesValue => 'Double Ratchet, AES-256-GCM';
@@ -532,7 +532,7 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get featureE2eSubtitle =>
-      'Double Ratchet mit hybridem X25519 + Kyber-768-Handshake';
+      'Double Ratchet mit hybridem X25519 + ML-KEM-768-Handshake';
 
   @override
   String get featureOfflineTitle => 'Funktioniert ohne Internet';
@@ -556,7 +556,7 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get keysGeneratedLocally =>
-      'Erzeugt X25519-, Ed25519- und Kyber-768-Schlüssel lokal. Nichts wird hochgeladen.';
+      'Erzeugt X25519-, Ed25519- und ML-KEM-768-Schlüssel lokal. Nichts wird hochgeladen.';
 
   @override
   String get passwordRequired => 'Passwort ist erforderlich';
@@ -1112,7 +1112,7 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String protocolValue(String version) {
-    return 'v$version · X25519+Kyber-768 · Double Ratchet · Sender Keys';
+    return 'v$version · X25519+ML-KEM-768 · Double Ratchet · Sender Keys';
   }
 
   @override
@@ -1151,4 +1151,71 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get languageSystemDefault => 'Systemstandard';
+
+  @override
+  String get wifiAware => 'Wi-Fi Aware';
+
+  @override
+  String get useWifiAware => 'Wi-Fi Aware verwenden';
+
+  @override
+  String get useWifiAwareSubtitle =>
+      'Nachbarschaftsverbindungen ohne Zugangspunkt (Android 8+). Dieselbe rotierende Bake wie bei Bluetooth.';
+
+  @override
+  String get offlineSessions => 'Offline-Sitzungen';
+
+  @override
+  String pqReady(int count) {
+    return 'Post-Quanten-Forward-Secrecy bereit ($count Einmal-Vorschlüssel)';
+  }
+
+  @override
+  String get pqPending =>
+      'Post-Quanten-Forward-Secrecy bis zum nächsten Treffen ausstehend';
+
+  @override
+  String get voiceMessage => 'Sprachnachricht';
+
+  @override
+  String get photo => 'Foto';
+
+  @override
+  String get holdToRecord =>
+      'Mikrofon gedrückt halten, um eine Sprachnachricht aufzunehmen';
+
+  @override
+  String get slideToCancel => 'Zum Abbrechen wischen';
+
+  @override
+  String get releaseToCancel => 'Loslassen zum Abbrechen';
+
+  @override
+  String get recordingUnavailable =>
+      'Sprachaufnahme ist auf diesem Gerät nicht verfügbar';
+
+  @override
+  String get microphoneDenied =>
+      'Für Sprachnachrichten wird Zugriff auf das Mikrofon benötigt';
+
+  @override
+  String get recordingFailed => 'Aufnahme konnte nicht gestartet werden';
+
+  @override
+  String get playbackUnavailable =>
+      'Sprachwiedergabe ist auf diesem Gerät nicht verfügbar';
+
+  @override
+  String get playbackFailed =>
+      'Diese Sprachnachricht konnte nicht abgespielt werden';
+
+  @override
+  String get voiceNeedsCarrier =>
+      'Sprachnotizen brauchen eine Direktverbindung oder einen Mesh-Pfad';
+
+  @override
+  String get imageUnavailable => 'Bild nicht verfügbar';
+
+  @override
+  String get receiving => 'Empfang läuft';
 }

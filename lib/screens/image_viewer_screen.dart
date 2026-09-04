@@ -55,12 +55,12 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
     final image = Image.file(
       File(widget.path),
       fit: BoxFit.contain,
-      errorBuilder: (_, _, _) => const Center(
+      errorBuilder: (ctx, _, _) => Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.broken_image_outlined, size: 40, color: AppTheme.textMuted),
-          SizedBox(height: 8),
+          Icon(Icons.broken_image_outlined, size: 40, color: ctx.nyx.textMuted),
+          const SizedBox(height: 8),
           Text(MediaStrings.imageUnavailable,
-              style: TextStyle(color: AppTheme.textSecondary)),
+              style: TextStyle(color: ctx.nyx.textSecondary)),
         ]),
       ),
     );

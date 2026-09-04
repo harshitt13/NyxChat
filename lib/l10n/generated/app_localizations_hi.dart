@@ -287,7 +287,7 @@ class AppLocalizationsHi extends AppLocalizations {
 
   @override
   String get handshakeValue =>
-      'X25519 + Kyber-768 हाइब्रिड, Ed25519 हस्ताक्षरित';
+      'X25519 + ML-KEM-768 हाइब्रिड, Ed25519 हस्ताक्षरित';
 
   @override
   String get messagesValue => 'Double Ratchet, AES-256-GCM';
@@ -531,7 +531,7 @@ class AppLocalizationsHi extends AppLocalizations {
 
   @override
   String get featureE2eSubtitle =>
-      'हाइब्रिड X25519 + Kyber-768 हैंडशेक के साथ Double Ratchet';
+      'हाइब्रिड X25519 + ML-KEM-768 हैंडशेक के साथ Double Ratchet';
 
   @override
   String get featureOfflineTitle => 'इंटरनेट के बिना काम करता है';
@@ -555,7 +555,7 @@ class AppLocalizationsHi extends AppLocalizations {
 
   @override
   String get keysGeneratedLocally =>
-      'X25519, Ed25519 और Kyber-768 कुंजियाँ स्थानीय रूप से बनाई जाती हैं। कुछ भी अपलोड नहीं होता।';
+      'X25519, Ed25519 और ML-KEM-768 कुंजियाँ स्थानीय रूप से बनाई जाती हैं। कुछ भी अपलोड नहीं होता।';
 
   @override
   String get passwordRequired => 'पासवर्ड ज़रूरी है';
@@ -1109,7 +1109,7 @@ class AppLocalizationsHi extends AppLocalizations {
 
   @override
   String protocolValue(String version) {
-    return 'v$version · X25519+Kyber-768 · Double Ratchet · Sender Keys';
+    return 'v$version · X25519+ML-KEM-768 · Double Ratchet · Sender Keys';
   }
 
   @override
@@ -1148,4 +1148,69 @@ class AppLocalizationsHi extends AppLocalizations {
 
   @override
   String get languageSystemDefault => 'सिस्टम डिफ़ॉल्ट';
+
+  @override
+  String get wifiAware => 'Wi-Fi Aware';
+
+  @override
+  String get useWifiAware => 'Wi-Fi Aware का उपयोग करें';
+
+  @override
+  String get useWifiAwareSubtitle =>
+      'एक्सेस पॉइंट के बिना पड़ोसी लिंक (Android 8+)। Bluetooth जैसा ही घूमता हुआ बीकन।';
+
+  @override
+  String get offlineSessions => 'ऑफ़लाइन सत्र';
+
+  @override
+  String pqReady(int count) {
+    return 'पोस्ट-क्वांटम फ़ॉरवर्ड सीक्रेसी तैयार ($count एक-बार के प्रीकी)';
+  }
+
+  @override
+  String get pqPending =>
+      'पोस्ट-क्वांटम फ़ॉरवर्ड सीक्रेसी अगली मुलाक़ात तक लंबित';
+
+  @override
+  String get voiceMessage => 'वॉइस संदेश';
+
+  @override
+  String get photo => 'फ़ोटो';
+
+  @override
+  String get holdToRecord =>
+      'वॉइस संदेश रिकॉर्ड करने के लिए माइक्रोफ़ोन दबाए रखें';
+
+  @override
+  String get slideToCancel => 'रद्द करने के लिए स्लाइड करें';
+
+  @override
+  String get releaseToCancel => 'रद्द करने के लिए छोड़ें';
+
+  @override
+  String get recordingUnavailable =>
+      'इस डिवाइस पर वॉइस रिकॉर्डिंग उपलब्ध नहीं है';
+
+  @override
+  String get microphoneDenied =>
+      'वॉइस संदेश रिकॉर्ड करने के लिए माइक्रोफ़ोन की अनुमति ज़रूरी है';
+
+  @override
+  String get recordingFailed => 'रिकॉर्डिंग शुरू नहीं हो सकी';
+
+  @override
+  String get playbackUnavailable => 'इस डिवाइस पर वॉइस प्लेबैक उपलब्ध नहीं है';
+
+  @override
+  String get playbackFailed => 'यह वॉइस संदेश चलाया नहीं जा सका';
+
+  @override
+  String get voiceNeedsCarrier =>
+      'वॉइस नोट के लिए सीधा कनेक्शन या मेश पथ चाहिए';
+
+  @override
+  String get imageUnavailable => 'छवि उपलब्ध नहीं है';
+
+  @override
+  String get receiving => 'प्राप्त हो रहा है';
 }

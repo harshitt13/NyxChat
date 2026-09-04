@@ -145,7 +145,7 @@ class _ContactVerifyScreenState extends State<ContactVerifyScreen> {
                     _detail(context.l10n.nyxChatId, peer.nyxChatId),
                     _detail(context.l10n.handshake, context.l10n.handshakeValue),
                     _detail(context.l10n.messages, context.l10n.messagesValue),
-                    _detail('Offline sessions', _asyncSessionLine(context, peer.nyxChatId)),
+                    _detail(context.l10n.offlineSessions, _asyncSessionLine(context, peer.nyxChatId)),
                     _detail(context.l10n.firstSeen, _when(peer.firstSeen)),
                     if (peer.keyChangedAt != null)
                       _detail(context.l10n.keysChanged, _when(peer.keyChangedAt!)),
@@ -178,8 +178,8 @@ class _ContactVerifyScreenState extends State<ContactVerifyScreen> {
   String _asyncSessionLine(BuildContext context, String peerId) {
     final held = context.watch<PrekeyStore?>()?.peerPrekeyCount(peerId) ?? 0;
     return held > 0
-        ? 'Post-quantum forward secrecy ready ($held one-time prekeys)'
-        : 'Post-quantum forward secrecy pending next meeting';
+        ? context.l10n.pqReady(held)
+        : context.l10n.pqPending;
   }
 
   Widget _header(PinnedPeer peer) => Column(children: [

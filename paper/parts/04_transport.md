@@ -8,19 +8,23 @@ Every device announces itself over multicast DNS (service `_nyxchat._tcp`, rando
 
 Standard Flutter libraries provide only the central role, which is why two instances of the previous version could never find each other. NyxChat ships a native Android GATT server that advertises the service UUID with the beacon in the scan response and exposes a write characteristic for inbound chunks and a notify characteristic for outbound ones; the beacon is rotated every slot. Links form in either role, exchange the handle and a per-launch random relay id, negotiate an MTU up to 512 bytes and carry binary frames chunked with a two-byte header, reassembled under a 64 KiB cap.
 
-### 5.3 Sealed-sender store-and-forward
+### 5.3 Wi-Fi Aware
+
+Android's Wi-Fi Aware (Neighbour Awareness Networking) lets two phones discover each other and open a link without an access point, at Wi-Fi rather than BLE data rates. NyxChat publishes the `nyxchat` Aware service with the same rotating beacon as its BLE scan response as service-specific information, subscribes for it, and only requests a data path to a peer whose beacon resolves to a pinned contact or a public handle, so a passive observer learns exactly what BLE already reveals. The data path is a WPA2-protected IPv6 link-local network on which the publisher opens an ephemeral TCP port; the subscriber then runs the ordinary authenticated handshake of Section 4.3 over it, so Aware adds reach and bandwidth but no new trust assumptions. It needs Android 8 and the `wifi.aware` hardware feature, which most phones sold since 2019 have; the implementation is exercised by unit tests against a fake platform channel and compiled for Android, but, like the BLE stack, it has not yet been measured on hardware in this work.
+
+### 5.4 Sealed-sender store-and-forward
 
 A mesh packet (binary, 61-byte header) carries a random id, a recipient token, a reply token, a TTL of seven hops, a timestamp with 24-hour expiry, the relay ids traversed and a payload sealed under the pair's wrapping key. A node deduplicates by id, learns a route to the reply token through the neighbour that delivered the packet, forwards to the learned next hop when known and otherwise sprays up to three copies among current neighbours after a random delay, and offers stored packets to every new neighbour (Spray-and-Wait [8]). Whether a packet is "for me" is decided by the application, which maintains the tokens it currently listens on for every pinned contact and for the joined emergency channel. The destination answers with an ack addressed to the reply token; every relay that sees the ack purges the packet, so the store is bounded by outstanding traffic rather than by the expiry alone. A relay therefore observes, per epoch, that token X talks to token Y, and nothing else: no identities, no ratchet headers, no message sizes finer than the padding bucket. Wi-Fi Direct endpoints and direct TCP links forward the same packets, so a LAN bridges Bluetooth neighbourhoods.
 
-### 5.4 Internet relays
+### 5.5 Internet relays
 
 When the user enables it, an envelope that cannot go directly or over the mesh is sealed for the pair and published to public Nostr relays [25] as a kind-1059 event [26] tagged with the recipient's daily token and signed with a throwaway key; the recipient subscribes to its tokens for the current and previous day. Relays keep such events for days, so this provides worldwide store-and-forward with no infrastructure operated by the project; the connection can be routed through Tor via Orbot. Relays learn tokens, sizes and timing, never identities or content.
 
-### 5.5 Emergency channel
+### 5.6 Emergency channel
 
 A location-scoped broadcast lets people who share no contacts communicate in a crisis. The device computes its geohash cell (about 5 km at five characters) locally, derives a channel key from the cell name, and listens on a rotating channel token. Messages are AES-256-GCM sealed under the channel key and relayed by every node with TTL 10; channel packets are delivered to every member and still forwarded. The sender is anonymous unless it chooses to include a name or position.
 
-### 5.6 Delivery state machine
+### 5.7 Delivery state machine
 
 Sending a message tries, in order: the authenticated TCP link, the mesh (if at least one neighbour is present and the contact's keys are pinned), the internet relay (if enabled and connected), and otherwise the persistent outbox, which stores inner messages in plaintext inside the encrypted database and re-encrypts on every attempt with exponential backoff. Receivers acknowledge text and files end to end inside the ratchet; mesh acks additionally drive the delivered state for messages that travelled through relays.
 

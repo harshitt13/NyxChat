@@ -289,7 +289,7 @@ class AppLocalizationsPt extends AppLocalizations {
 
   @override
   String get handshakeValue =>
-      'Híbrido X25519 + Kyber-768, assinado com Ed25519';
+      'Híbrido X25519 + ML-KEM-768, assinado com Ed25519';
 
   @override
   String get messagesValue => 'Double Ratchet, AES-256-GCM';
@@ -534,7 +534,7 @@ class AppLocalizationsPt extends AppLocalizations {
 
   @override
   String get featureE2eSubtitle =>
-      'Double Ratchet com negociação híbrida X25519 + Kyber-768';
+      'Double Ratchet com negociação híbrida X25519 + ML-KEM-768';
 
   @override
   String get featureOfflineTitle => 'Funciona sem internet';
@@ -558,7 +558,7 @@ class AppLocalizationsPt extends AppLocalizations {
 
   @override
   String get keysGeneratedLocally =>
-      'Gera chaves X25519, Ed25519 e Kyber-768 localmente. Nada é enviado.';
+      'Gera chaves X25519, Ed25519 e ML-KEM-768 localmente. Nada é enviado.';
 
   @override
   String get passwordRequired => 'A senha é obrigatória';
@@ -1113,7 +1113,7 @@ class AppLocalizationsPt extends AppLocalizations {
 
   @override
   String protocolValue(String version) {
-    return 'v$version · X25519+Kyber-768 · Double Ratchet · Sender Keys';
+    return 'v$version · X25519+ML-KEM-768 · Double Ratchet · Sender Keys';
   }
 
   @override
@@ -1152,4 +1152,71 @@ class AppLocalizationsPt extends AppLocalizations {
 
   @override
   String get languageSystemDefault => 'Padrão do sistema';
+
+  @override
+  String get wifiAware => 'Wi-Fi Aware';
+
+  @override
+  String get useWifiAware => 'Usar Wi-Fi Aware';
+
+  @override
+  String get useWifiAwareSubtitle =>
+      'Ligações com vizinhos sem ponto de acesso (Android 8+). O mesmo beacon rotativo do Bluetooth.';
+
+  @override
+  String get offlineSessions => 'Sessões offline';
+
+  @override
+  String pqReady(int count) {
+    return 'Sigilo futuro pós-quântico pronto ($count pré-chaves de uso único)';
+  }
+
+  @override
+  String get pqPending =>
+      'Sigilo futuro pós-quântico pendente até ao próximo encontro';
+
+  @override
+  String get voiceMessage => 'Mensagem de voz';
+
+  @override
+  String get photo => 'Foto';
+
+  @override
+  String get holdToRecord =>
+      'Mantenha o microfone premido para gravar uma mensagem de voz';
+
+  @override
+  String get slideToCancel => 'Deslize para cancelar';
+
+  @override
+  String get releaseToCancel => 'Solte para cancelar';
+
+  @override
+  String get recordingUnavailable =>
+      'A gravação de voz não está disponível neste dispositivo';
+
+  @override
+  String get microphoneDenied =>
+      'É necessário acesso ao microfone para gravar mensagens de voz';
+
+  @override
+  String get recordingFailed => 'Não foi possível iniciar a gravação';
+
+  @override
+  String get playbackUnavailable =>
+      'A reprodução de voz não está disponível neste dispositivo';
+
+  @override
+  String get playbackFailed =>
+      'Não foi possível reproduzir esta mensagem de voz';
+
+  @override
+  String get voiceNeedsCarrier =>
+      'As notas de voz precisam de uma ligação direta ou de um caminho na malha';
+
+  @override
+  String get imageUnavailable => 'Imagem indisponível';
+
+  @override
+  String get receiving => 'A receber';
 }

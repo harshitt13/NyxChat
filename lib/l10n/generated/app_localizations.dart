@@ -585,7 +585,7 @@ abstract class AppLocalizations {
   /// No description provided for @handshakeValue.
   ///
   /// In en, this message translates to:
-  /// **'X25519 + Kyber-768 hybrid, Ed25519 signed'**
+  /// **'X25519 + ML-KEM-768 hybrid, Ed25519 signed'**
   String get handshakeValue;
 
   /// No description provided for @messagesValue.
@@ -956,7 +956,7 @@ abstract class AppLocalizations {
   /// No description provided for @featureE2eSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Double Ratchet with a hybrid X25519 + Kyber-768 handshake'**
+  /// **'Double Ratchet with a hybrid X25519 + ML-KEM-768 handshake'**
   String get featureE2eSubtitle;
 
   /// No description provided for @featureOfflineTitle.
@@ -998,7 +998,7 @@ abstract class AppLocalizations {
   /// No description provided for @keysGeneratedLocally.
   ///
   /// In en, this message translates to:
-  /// **'Generates X25519, Ed25519 and Kyber-768 keys locally. Nothing is uploaded.'**
+  /// **'Generates X25519, Ed25519 and ML-KEM-768 keys locally. Nothing is uploaded.'**
   String get keysGeneratedLocally;
 
   /// No description provided for @passwordRequired.
@@ -1904,7 +1904,7 @@ abstract class AppLocalizations {
   /// No description provided for @protocolValue.
   ///
   /// In en, this message translates to:
-  /// **'v{version} · X25519+Kyber-768 · Double Ratchet · Sender Keys'**
+  /// **'v{version} · X25519+ML-KEM-768 · Double Ratchet · Sender Keys'**
   String protocolValue(String version);
 
   /// No description provided for @license.
@@ -1978,6 +1978,120 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'System default'**
   String get languageSystemDefault;
+
+  /// No description provided for @wifiAware.
+  ///
+  /// In en, this message translates to:
+  /// **'Wi-Fi Aware'**
+  String get wifiAware;
+
+  /// No description provided for @useWifiAware.
+  ///
+  /// In en, this message translates to:
+  /// **'Use Wi-Fi Aware'**
+  String get useWifiAware;
+
+  /// No description provided for @useWifiAwareSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Neighbour links without an access point (Android 8+). Same rotating beacon as Bluetooth.'**
+  String get useWifiAwareSubtitle;
+
+  /// No description provided for @offlineSessions.
+  ///
+  /// In en, this message translates to:
+  /// **'Offline sessions'**
+  String get offlineSessions;
+
+  /// No description provided for @pqReady.
+  ///
+  /// In en, this message translates to:
+  /// **'Post-quantum forward secrecy ready ({count} one-time prekeys)'**
+  String pqReady(int count);
+
+  /// No description provided for @pqPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Post-quantum forward secrecy pending next meeting'**
+  String get pqPending;
+
+  /// No description provided for @voiceMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice message'**
+  String get voiceMessage;
+
+  /// No description provided for @photo.
+  ///
+  /// In en, this message translates to:
+  /// **'Photo'**
+  String get photo;
+
+  /// No description provided for @holdToRecord.
+  ///
+  /// In en, this message translates to:
+  /// **'Hold the microphone to record a voice message'**
+  String get holdToRecord;
+
+  /// No description provided for @slideToCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Slide to cancel'**
+  String get slideToCancel;
+
+  /// No description provided for @releaseToCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Release to cancel'**
+  String get releaseToCancel;
+
+  /// No description provided for @recordingUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice recording is not available on this device'**
+  String get recordingUnavailable;
+
+  /// No description provided for @microphoneDenied.
+  ///
+  /// In en, this message translates to:
+  /// **'Microphone access is needed to record voice messages'**
+  String get microphoneDenied;
+
+  /// No description provided for @recordingFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not start recording'**
+  String get recordingFailed;
+
+  /// No description provided for @playbackUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice playback is not available on this device'**
+  String get playbackUnavailable;
+
+  /// No description provided for @playbackFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not play this voice message'**
+  String get playbackFailed;
+
+  /// No description provided for @voiceNeedsCarrier.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice notes need a direct connection or a mesh path'**
+  String get voiceNeedsCarrier;
+
+  /// No description provided for @imageUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Image not available'**
+  String get imageUnavailable;
+
+  /// No description provided for @receiving.
+  ///
+  /// In en, this message translates to:
+  /// **'Receiving'**
+  String get receiving;
 }
 
 class _AppLocalizationsDelegate

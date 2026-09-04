@@ -68,12 +68,12 @@ class SettingsScreen extends StatelessWidget {
                   await settings.setLongRangeBle(v);
                   ble.setLongRange(v);
                 }, subtitle: context.l10n.bleLongRangeSubtitle),
-                _row(context, Icons.wifi_tethering_rounded, 'Wi-Fi Aware', peers.awareManager.statusText,
+                _row(context, Icons.wifi_tethering_rounded, context.l10n.wifiAware, peers.awareManager.statusText,
                     color: peers.isAwareActive ? context.nyx.accentGreen : context.nyx.textMuted),
-                _toggle(context, Icons.podcasts_rounded, 'Use Wi-Fi Aware', settings.wifiAware, (v) async {
+                _toggle(context, Icons.podcasts_rounded, context.l10n.useWifiAware, settings.wifiAware, (v) async {
                   await settings.setWifiAware(v);
                   await peers.applyAwareSetting();
-                }, subtitle: 'Neighbour links without an access point (Android 8+). Same rotating beacon as Bluetooth.'),
+                }, subtitle: context.l10n.useWifiAwareSubtitle),
                 _row(context, Icons.router_rounded, context.l10n.listeningPort, '${AppConstants.defaultPort}'),
                 _row(context, Icons.language_rounded, context.l10n.globalDht, peers.isDHTActive ? context.l10n.active : context.l10n.inactive,
                     color: peers.isDHTActive ? context.nyx.accentGreen : context.nyx.textMuted),

@@ -79,14 +79,14 @@ class VoiceNoteBubble extends StatelessWidget {
                             const RoundSliderThumbShape(enabledThumbRadius: 5),
                         overlayShape:
                             const RoundSliderOverlayShape(overlayRadius: 10),
-                        activeTrackColor: AppTheme.accentBlue,
+                        activeTrackColor: context.nyx.accentBlue,
                         inactiveTrackColor: Colors.white.withValues(alpha: 0.12),
                         disabledActiveTrackColor:
                             Colors.white.withValues(alpha: 0.12),
                         disabledInactiveTrackColor:
                             Colors.white.withValues(alpha: 0.08),
-                        thumbColor: AppTheme.accentBlue,
-                        disabledThumbColor: AppTheme.textMuted,
+                        thumbColor: context.nyx.accentBlue,
+                        disabledThumbColor: context.nyx.textMuted,
                       ),
                       child: Slider(
                         value: progress,
@@ -99,18 +99,18 @@ class VoiceNoteBubble extends StatelessWidget {
                   Padding(
                     padding: const EdgeInsets.only(left: 6),
                     child: Row(children: [
-                      const Icon(Icons.mic_rounded,
-                          size: 11, color: AppTheme.textMuted),
+                      Icon(Icons.mic_rounded,
+                          size: 11, color: context.nyx.textMuted),
                       const SizedBox(width: 3),
                       Text(label,
-                          style: const TextStyle(
-                              color: AppTheme.textMuted, fontSize: 11)),
+                          style: TextStyle(
+                              color: context.nyx.textMuted, fontSize: 11)),
                       if (!ready && att != null && !att.isComplete) ...[
                         const SizedBox(width: 6),
                         Text(
                           '${MediaStrings.receiving} ${(att.progress * 100).toStringAsFixed(0)}%',
-                          style: const TextStyle(
-                              color: AppTheme.textMuted, fontSize: 11),
+                          style: TextStyle(
+                              color: context.nyx.textMuted, fontSize: 11),
                         ),
                       ],
                       if (errorText != null) ...[
@@ -119,8 +119,8 @@ class VoiceNoteBubble extends StatelessWidget {
                           child: Text(errorText,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  color: AppTheme.error, fontSize: 11)),
+                              style: TextStyle(
+                                  color: context.nyx.error, fontSize: 11)),
                         ),
                       ],
                     ]),
@@ -161,10 +161,10 @@ class _PlayButton extends StatelessWidget {
           CircularProgressIndicator(
             value: progress <= 0 ? null : progress,
             strokeWidth: 2.5,
-            color: AppTheme.accentBlue,
+            color: context.nyx.accentBlue,
             backgroundColor: Colors.white.withValues(alpha: 0.08),
           ),
-          const Icon(Icons.mic_rounded, size: 16, color: AppTheme.textMuted),
+          Icon(Icons.mic_rounded, size: 16, color: context.nyx.textMuted),
         ]),
       );
     }
@@ -175,18 +175,18 @@ class _PlayButton extends StatelessWidget {
         width: size,
         height: size,
         decoration: BoxDecoration(
-          color: AppTheme.accentBlue.withValues(alpha: 0.18),
+          color: context.nyx.accentBlue.withValues(alpha: 0.18),
           shape: BoxShape.circle,
-          border: Border.all(color: AppTheme.accentBlue.withValues(alpha: 0.4)),
+          border: Border.all(color: context.nyx.accentBlue.withValues(alpha: 0.4)),
         ),
         child: loading
-            ? const Padding(
-                padding: EdgeInsets.all(10),
+            ? Padding(
+                padding: const EdgeInsets.all(10),
                 child: CircularProgressIndicator(
-                    strokeWidth: 2, color: AppTheme.accentBlue),
+                    strokeWidth: 2, color: context.nyx.accentBlue),
               )
             : Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                color: AppTheme.accentBlue, size: 22),
+                color: context.nyx.accentBlue, size: 22),
       ),
     );
   }

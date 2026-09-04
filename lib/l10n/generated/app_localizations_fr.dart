@@ -289,7 +289,7 @@ class AppLocalizationsFr extends AppLocalizations {
   String get handshake => 'Négociation';
 
   @override
-  String get handshakeValue => 'Hybride X25519 + Kyber-768, signé Ed25519';
+  String get handshakeValue => 'Hybride X25519 + ML-KEM-768, signé Ed25519';
 
   @override
   String get messagesValue => 'Double Ratchet, AES-256-GCM';
@@ -534,7 +534,7 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String get featureE2eSubtitle =>
-      'Double Ratchet avec négociation hybride X25519 + Kyber-768';
+      'Double Ratchet avec négociation hybride X25519 + ML-KEM-768';
 
   @override
   String get featureOfflineTitle => 'Fonctionne sans Internet';
@@ -558,7 +558,7 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String get keysGeneratedLocally =>
-      'Génère les clés X25519, Ed25519 et Kyber-768 localement. Rien n\'est envoyé.';
+      'Génère les clés X25519, Ed25519 et ML-KEM-768 localement. Rien n\'est envoyé.';
 
   @override
   String get passwordRequired => 'Le mot de passe est requis';
@@ -1114,7 +1114,7 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String protocolValue(String version) {
-    return 'v$version · X25519+Kyber-768 · Double Ratchet · Sender Keys';
+    return 'v$version · X25519+ML-KEM-768 · Double Ratchet · Sender Keys';
   }
 
   @override
@@ -1153,4 +1153,70 @@ class AppLocalizationsFr extends AppLocalizations {
 
   @override
   String get languageSystemDefault => 'Langue du système';
+
+  @override
+  String get wifiAware => 'Wi-Fi Aware';
+
+  @override
+  String get useWifiAware => 'Utiliser Wi-Fi Aware';
+
+  @override
+  String get useWifiAwareSubtitle =>
+      'Liaisons de voisinage sans point d\'accès (Android 8+). Même balise tournante que le Bluetooth.';
+
+  @override
+  String get offlineSessions => 'Sessions hors ligne';
+
+  @override
+  String pqReady(int count) {
+    return 'Confidentialité persistante post-quantique prête ($count préclés à usage unique)';
+  }
+
+  @override
+  String get pqPending =>
+      'Confidentialité persistante post-quantique en attente de la prochaine rencontre';
+
+  @override
+  String get voiceMessage => 'Message vocal';
+
+  @override
+  String get photo => 'Photo';
+
+  @override
+  String get holdToRecord =>
+      'Maintenez le micro pour enregistrer un message vocal';
+
+  @override
+  String get slideToCancel => 'Glissez pour annuler';
+
+  @override
+  String get releaseToCancel => 'Relâchez pour annuler';
+
+  @override
+  String get recordingUnavailable =>
+      'L\'enregistrement vocal n\'est pas disponible sur cet appareil';
+
+  @override
+  String get microphoneDenied =>
+      'L\'accès au micro est nécessaire pour enregistrer des messages vocaux';
+
+  @override
+  String get recordingFailed => 'Impossible de démarrer l\'enregistrement';
+
+  @override
+  String get playbackUnavailable =>
+      'La lecture vocale n\'est pas disponible sur cet appareil';
+
+  @override
+  String get playbackFailed => 'Impossible de lire ce message vocal';
+
+  @override
+  String get voiceNeedsCarrier =>
+      'Les notes vocales nécessitent une connexion directe ou un chemin maillé';
+
+  @override
+  String get imageUnavailable => 'Image indisponible';
+
+  @override
+  String get receiving => 'Réception';
 }

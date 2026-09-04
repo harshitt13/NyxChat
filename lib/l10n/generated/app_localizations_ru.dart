@@ -291,7 +291,7 @@ class AppLocalizationsRu extends AppLocalizations {
   String get handshake => 'Рукопожатие';
 
   @override
-  String get handshakeValue => 'Гибрид X25519 + Kyber-768, подпись Ed25519';
+  String get handshakeValue => 'Гибрид X25519 + ML-KEM-768, подпись Ed25519';
 
   @override
   String get messagesValue => 'Double Ratchet, AES-256-GCM';
@@ -544,7 +544,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get featureE2eSubtitle =>
-      'Double Ratchet с гибридным рукопожатием X25519 + Kyber-768';
+      'Double Ratchet с гибридным рукопожатием X25519 + ML-KEM-768';
 
   @override
   String get featureOfflineTitle => 'Работает без интернета';
@@ -568,7 +568,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get keysGeneratedLocally =>
-      'Ключи X25519, Ed25519 и Kyber-768 генерируются локально. Ничего никуда не отправляется.';
+      'Ключи X25519, Ed25519 и ML-KEM-768 генерируются локально. Ничего никуда не отправляется.';
 
   @override
   String get passwordRequired => 'Требуется пароль';
@@ -1138,7 +1138,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String protocolValue(String version) {
-    return 'v$version · X25519+Kyber-768 · Double Ratchet · Sender Keys';
+    return 'v$version · X25519+ML-KEM-768 · Double Ratchet · Sender Keys';
   }
 
   @override
@@ -1177,4 +1177,71 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get languageSystemDefault => 'Как в системе';
+
+  @override
+  String get wifiAware => 'Wi-Fi Aware';
+
+  @override
+  String get useWifiAware => 'Использовать Wi-Fi Aware';
+
+  @override
+  String get useWifiAwareSubtitle =>
+      'Связь с соседями без точки доступа (Android 8+). Тот же ротируемый маячок, что и у Bluetooth.';
+
+  @override
+  String get offlineSessions => 'Офлайн-сессии';
+
+  @override
+  String pqReady(int count) {
+    return 'Постквантовая прямая секретность готова ($count одноразовых предключей)';
+  }
+
+  @override
+  String get pqPending =>
+      'Постквантовая прямая секретность появится после следующей встречи';
+
+  @override
+  String get voiceMessage => 'Голосовое сообщение';
+
+  @override
+  String get photo => 'Фото';
+
+  @override
+  String get holdToRecord =>
+      'Удерживайте микрофон, чтобы записать голосовое сообщение';
+
+  @override
+  String get slideToCancel => 'Проведите, чтобы отменить';
+
+  @override
+  String get releaseToCancel => 'Отпустите, чтобы отменить';
+
+  @override
+  String get recordingUnavailable =>
+      'Запись голоса недоступна на этом устройстве';
+
+  @override
+  String get microphoneDenied =>
+      'Для записи голосовых сообщений нужен доступ к микрофону';
+
+  @override
+  String get recordingFailed => 'Не удалось начать запись';
+
+  @override
+  String get playbackUnavailable =>
+      'Воспроизведение голоса недоступно на этом устройстве';
+
+  @override
+  String get playbackFailed =>
+      'Не удалось воспроизвести это голосовое сообщение';
+
+  @override
+  String get voiceNeedsCarrier =>
+      'Для голосовых заметок нужно прямое соединение или путь через mesh-сеть';
+
+  @override
+  String get imageUnavailable => 'Изображение недоступно';
+
+  @override
+  String get receiving => 'Получение';
 }

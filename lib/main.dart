@@ -34,6 +34,7 @@ import 'services/identity_service.dart';
 import 'services/peer_service.dart';
 import 'services/settings_service.dart';
 import 'theme/app_theme.dart';
+import 'widgets/media_strings.dart';
 import 'widgets/message_preview.dart';
 
 /// Composition root. Long-lived objects are created once; the pieces that
@@ -251,6 +252,7 @@ Locale uiLocale() {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   services = AppServices();
+  MediaStrings.localeProvider = uiLocale;
   await services.settings.loadAppearance();
   BackgroundManager.languageTag = uiLocale().toLanguageTag();
   await BackgroundManager.initialize(l10n: lookupAppLocalizations(uiLocale()));

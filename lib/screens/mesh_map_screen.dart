@@ -56,7 +56,7 @@ class MeshMapScreen extends StatelessWidget {
                       context.l10n.linkSubtitle(l.isCentralRole ? context.l10n.weDialled : context.l10n.theyDialled, l.mtu, l.address),
                       context.nyx.accentBlue,
                     )),
-                _tile(context, Icons.wifi_tethering_rounded, 'Wi-Fi Aware', peers.awareManager.statusText,
+                _tile(context, Icons.wifi_tethering_rounded, context.l10n.wifiAware, peers.awareManager.statusText,
                     peers.isAwareActive ? context.nyx.accentGreen : context.nyx.textMuted),
                 const SizedBox(height: 20),
                 _title(context, context.l10n.routingTableHeader),

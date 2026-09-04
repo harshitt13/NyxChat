@@ -292,7 +292,7 @@ class AppLocalizationsAr extends AppLocalizations {
   String get handshake => 'المصافحة';
 
   @override
-  String get handshakeValue => 'هجين X25519 + Kyber-768، موقّع بـ Ed25519';
+  String get handshakeValue => 'هجين X25519 + ML-KEM-768، موقّع بـ Ed25519';
 
   @override
   String get messagesValue => 'Double Ratchet، AES-256-GCM';
@@ -552,7 +552,7 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get featureE2eSubtitle =>
-      'Double Ratchet مع مصافحة هجينة X25519 + Kyber-768';
+      'Double Ratchet مع مصافحة هجينة X25519 + ML-KEM-768';
 
   @override
   String get featureOfflineTitle => 'يعمل بدون إنترنت';
@@ -576,7 +576,7 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get keysGeneratedLocally =>
-      'يولّد مفاتيح X25519 وEd25519 وKyber-768 محليًا. لا يتم رفع أي شيء.';
+      'يولّد مفاتيح X25519 وEd25519 وML-KEM-768 محليًا. لا يتم رفع أي شيء.';
 
   @override
   String get passwordRequired => 'كلمة المرور مطلوبة';
@@ -1152,7 +1152,7 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String protocolValue(String version) {
-    return 'v$version · X25519+Kyber-768 · Double Ratchet · Sender Keys';
+    return 'v$version · X25519+ML-KEM-768 · Double Ratchet · Sender Keys';
   }
 
   @override
@@ -1191,4 +1191,66 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get languageSystemDefault => 'الإعداد الافتراضي للنظام';
+
+  @override
+  String get wifiAware => 'Wi-Fi Aware';
+
+  @override
+  String get useWifiAware => 'استخدام Wi-Fi Aware';
+
+  @override
+  String get useWifiAwareSubtitle =>
+      'روابط مع الأجهزة المجاورة دون نقطة وصول (Android 8+). نفس المنارة الدوّارة المستخدمة في البلوتوث.';
+
+  @override
+  String get offlineSessions => 'الجلسات دون اتصال';
+
+  @override
+  String pqReady(int count) {
+    return 'السرية الأمامية ما بعد الكم جاهزة ($count مفاتيح مسبقة لمرة واحدة)';
+  }
+
+  @override
+  String get pqPending => 'السرية الأمامية ما بعد الكم بانتظار اللقاء التالي';
+
+  @override
+  String get voiceMessage => 'رسالة صوتية';
+
+  @override
+  String get photo => 'صورة';
+
+  @override
+  String get holdToRecord => 'اضغط مطولًا على الميكروفون لتسجيل رسالة صوتية';
+
+  @override
+  String get slideToCancel => 'اسحب للإلغاء';
+
+  @override
+  String get releaseToCancel => 'اترك للإلغاء';
+
+  @override
+  String get recordingUnavailable => 'تسجيل الصوت غير متاح على هذا الجهاز';
+
+  @override
+  String get microphoneDenied =>
+      'يلزم الوصول إلى الميكروفون لتسجيل الرسائل الصوتية';
+
+  @override
+  String get recordingFailed => 'تعذر بدء التسجيل';
+
+  @override
+  String get playbackUnavailable => 'تشغيل الصوت غير متاح على هذا الجهاز';
+
+  @override
+  String get playbackFailed => 'تعذر تشغيل هذه الرسالة الصوتية';
+
+  @override
+  String get voiceNeedsCarrier =>
+      'تحتاج الملاحظات الصوتية إلى اتصال مباشر أو مسار عبر الشبكة المتداخلة';
+
+  @override
+  String get imageUnavailable => 'الصورة غير متاحة';
+
+  @override
+  String get receiving => 'جارٍ الاستلام';
 }

@@ -279,7 +279,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get handshake => '握手';
 
   @override
-  String get handshakeValue => 'X25519 + Kyber-768 混合，Ed25519 签名';
+  String get handshakeValue => 'X25519 + ML-KEM-768 混合，Ed25519 签名';
 
   @override
   String get messagesValue => 'Double Ratchet，AES-256-GCM';
@@ -513,7 +513,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get tagline => '点对点 · 加密 · 可离线使用';
 
   @override
-  String get featureE2eSubtitle => 'Double Ratchet，配合 X25519 + Kyber-768 混合握手';
+  String get featureE2eSubtitle => 'Double Ratchet，配合 X25519 + ML-KEM-768 混合握手';
 
   @override
   String get featureOfflineTitle => '无需互联网也能使用';
@@ -535,7 +535,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get keysGeneratedLocally =>
-      '在本地生成 X25519、Ed25519 和 Kyber-768 密钥。不会上传任何内容。';
+      '在本地生成 X25519、Ed25519 和 ML-KEM-768 密钥。不会上传任何内容。';
 
   @override
   String get passwordRequired => '必须输入密码';
@@ -1060,7 +1060,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String protocolValue(String version) {
-    return 'v$version · X25519+Kyber-768 · Double Ratchet · Sender Keys';
+    return 'v$version · X25519+ML-KEM-768 · Double Ratchet · Sender Keys';
   }
 
   @override
@@ -1098,4 +1098,63 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get languageSystemDefault => '系统默认';
+
+  @override
+  String get wifiAware => 'Wi-Fi Aware';
+
+  @override
+  String get useWifiAware => '使用 Wi-Fi Aware';
+
+  @override
+  String get useWifiAwareSubtitle => '无需接入点的邻近链路（Android 8+）。与蓝牙相同的轮换信标。';
+
+  @override
+  String get offlineSessions => '离线会话';
+
+  @override
+  String pqReady(int count) {
+    return '后量子前向保密已就绪（$count 个一次性预共享密钥）';
+  }
+
+  @override
+  String get pqPending => '后量子前向保密待下次见面后启用';
+
+  @override
+  String get voiceMessage => '语音消息';
+
+  @override
+  String get photo => '照片';
+
+  @override
+  String get holdToRecord => '按住麦克风录制语音消息';
+
+  @override
+  String get slideToCancel => '滑动以取消';
+
+  @override
+  String get releaseToCancel => '松开以取消';
+
+  @override
+  String get recordingUnavailable => '此设备不支持语音录制';
+
+  @override
+  String get microphoneDenied => '录制语音消息需要麦克风权限';
+
+  @override
+  String get recordingFailed => '无法开始录制';
+
+  @override
+  String get playbackUnavailable => '此设备不支持语音播放';
+
+  @override
+  String get playbackFailed => '无法播放此语音消息';
+
+  @override
+  String get voiceNeedsCarrier => '语音留言需要直接连接或网状路径';
+
+  @override
+  String get imageUnavailable => '图片不可用';
+
+  @override
+  String get receiving => '接收中';
 }

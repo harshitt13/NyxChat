@@ -54,10 +54,10 @@ class ImageAttachmentView extends StatelessWidget {
           gaplessPlayback: true,
           filterQuality: FilterQuality.low,
           errorBuilder: (_, _, _) =>
-              const ColoredBox(color: AppTheme.surfaceLight),
+              ColoredBox(color: context.nyx.surfaceLight),
         )
       else
-        const ColoredBox(color: AppTheme.surfaceLight),
+        ColoredBox(color: context.nyx.surfaceLight),
       if (complete)
         Image.file(
           File(path),
