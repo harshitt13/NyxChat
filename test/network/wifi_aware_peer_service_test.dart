@@ -9,7 +9,6 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nyxchat/core/constants.dart';
 import 'package:nyxchat/core/crypto/crypto_utils.dart';
 import 'package:nyxchat/core/crypto/key_manager.dart';
 import 'package:nyxchat/core/crypto/nyx_id.dart';
@@ -115,7 +114,7 @@ void main() {
     );
 
     tmp = Directory.systemTemp.createTempSync('nyx_aware');
-    services = AppServices();
+    services = AppServices(port: 0);
     await services.storage.init(directory: tmp.path);
     await services.appLock.init();
     await services.identity.init();
@@ -144,7 +143,7 @@ void main() {
     await peers.startNetwork(nyxChatId: services.identity.nyxChatId, displayName: services.identity.displayName);
     await waitFor(() => peers.isAwareActive, 'Aware to start');
     final start = calls.singleWhere((c) => c.method == 'start');
-    expect(start.arguments['port'], AppConstants.defaultPort);
+    expect(start.arguments['port'], services.server.boundPort);
     final beacon = DiscoveryBeacon.decodeBle(start.arguments['beacon'] as List<int>);
     expect(beacon, isNotNull);
     expect(beacon!.isPublic, isTrue, reason: 'visible to everyone is the default');

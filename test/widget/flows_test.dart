@@ -47,7 +47,7 @@ void main() {
       });
     }
     tmp = Directory.systemTemp.createTempSync('nyx_flows');
-    services = AppServices();
+    services = AppServices(port: 0); // free port: other suites bind too
     await services.storage.init(directory: tmp.path);
     await services.appLock.init();
     await services.identity.init();
@@ -123,7 +123,7 @@ void main() {
       bool stored() => services.chat
           .getMessages(directRoomId)
           .any((m) => m.content == 'hello flows');
-      for (var i = 0; i < 200 && !stored(); i++) {
+      for (var i = 0; i < 400 && !stored(); i++) {
         await Future<void>.delayed(const Duration(milliseconds: 25));
         await tester.pump();
       }

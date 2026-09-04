@@ -130,8 +130,8 @@ class PeerService extends ChangeNotifier {
       _peers[p.nyxChatId] = p;
     }
 
-    _connections.configure(nyxChatId: nyxChatId, displayName: displayName, listeningPort: AppConstants.defaultPort);
     await _server.start();
+    _connections.configure(nyxChatId: nyxChatId, displayName: displayName, listeningPort: _server.boundPort);
     _connections.start();
 
     _subs.add(_connections.onPeerReady.listen((conn) {
@@ -207,7 +207,7 @@ class PeerService extends ChangeNotifier {
   Future<void> _startDiscovery() async {
     _discovery = PeerDiscovery(
       nyxChatId: _myId,
-      listeningPort: AppConstants.defaultPort,
+      listeningPort: _server.boundPort,
       beaconProvider: _beacon,
       displayNameProvider: () => _myName,
       resolvePrivate: (bloom, slot) => _matcher!.match(bloom, slot),
@@ -379,7 +379,7 @@ class PeerService extends ChangeNotifier {
     if (_awareActive || !_networkActive || _stealth || !_aware.isSupported || !isAwareEnabled()) return;
     final b = await _beacon(bits: DiscoveryBeacon.bleBloomBits);
     if (!_bleActive) _bleBeaconSlot = b.slot;
-    _awareActive = await _aware.start(_myId, beacon: b.encodeBle(), listeningPort: AppConstants.defaultPort);
+    _awareActive = await _aware.start(_myId, beacon: b.encodeBle(), listeningPort: _server.boundPort);
     notifyListeners();
   }
 

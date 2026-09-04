@@ -46,3 +46,5 @@ app.*.map.json
 # Generated SDK and analysis files
 flutter_sdk/
 analyze_output.txt
+# agent worktrees
+.claude/worktrees/

@@ -37,7 +37,11 @@ import 'theme/app_theme.dart';
 class AppServices extends ChangeNotifier {
   final LocalStorage storage = LocalStorage();
   final P2PClient client = P2PClient();
-  final P2PServer server = P2PServer(port: AppConstants.defaultPort);
+  final P2PServer server;
+
+  /// [port] 0 lets the OS pick a free port (tests run several stacks at once).
+  AppServices({int port = AppConstants.defaultPort})
+      : server = P2PServer(port: port);
   final BleManager ble = BleManager();
   final MeshStore meshStore = MeshStore();
   late final MeshRouter meshRouter = MeshRouter(store: meshStore);

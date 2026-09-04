@@ -60,7 +60,7 @@ void main() {
       });
     }
     tmp = Directory.systemTemp.createTempSync('nyx_smoke');
-    services = AppServices();
+    services = AppServices(port: 0); // free port: other suites bind too
     await services.storage.init(directory: tmp.path);
     await services.appLock.init();
     await services.identity.init();
