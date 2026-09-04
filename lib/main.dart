@@ -316,20 +316,27 @@ class _NyxChatAppState extends State<NyxChatApp> with WidgetsBindingObserver {
           } else if (!app.ready) {
             home = const _BootScreen();
           } else {
-            home = MultiProvider(
-              providers: [
-                ChangeNotifierProvider.value(value: app.chat),
-                ChangeNotifierProvider.value(value: app.peers),
-                ChangeNotifierProvider.value(value: app.connections),
-              ],
-              child: const ChatListScreen(),
-            );
+            home = const ChatListScreen();
           }
-          return MaterialApp(
+          final materialApp = MaterialApp(
             title: 'NyxChat',
             debugShowCheckedModeBanner: false,
             theme: AppTheme.darkTheme,
             home: home,
+          );
+          if (!app.ready) return materialApp;
+          // The chat, peer and connection services must sit ABOVE the
+          // MaterialApp: routes pushed on its Navigator get the Navigator's
+          // context, so providers wrapped around `home` alone are invisible
+          // to every screen except the home screen (blank screens in release
+          // builds, ProviderNotFoundException in debug).
+          return MultiProvider(
+            providers: [
+              ChangeNotifierProvider.value(value: app.chat),
+              ChangeNotifierProvider.value(value: app.peers),
+              ChangeNotifierProvider.value(value: app.connections),
+            ],
+            child: materialApp,
           );
         },
       ),
