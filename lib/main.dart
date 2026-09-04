@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import 'core/constants.dart';
 import 'core/crypto/pair_keys.dart';
+import 'core/crypto/prekey_store.dart';
 import 'core/crypto/session_manager.dart';
 import 'core/mesh/mesh_router.dart';
 import 'core/mesh/mesh_store.dart';
@@ -13,6 +14,7 @@ import 'core/network/ble_manager.dart';
 import 'core/network/connection_manager.dart';
 import 'core/network/p2p_client.dart';
 import 'core/network/p2p_server.dart';
+import 'core/network/prekey_exchange.dart';
 import 'core/privacy/privacy_manager.dart';
 import 'core/relay/nostr_relay_adapter.dart';
 import 'core/relay/nostr_transport.dart';
@@ -50,6 +52,8 @@ class AppServices extends ChangeNotifier {
   late final BackupService backup = BackupService(storage, identity.keyManager);
 
   SessionManager? _sessions;
+  PrekeyStore? _prekeys;
+  PrekeyExchange? _prekeyExchange;
   PairKeyCache? _pairKeys;
   ConnectionManager? _connections;
   ChatService? _chat;
@@ -59,6 +63,7 @@ class AppServices extends ChangeNotifier {
   bool _bringingUp = false;
 
   SessionManager get sessions => _sessions!;
+  PrekeyStore? get prekeys => _prekeys;
   PairKeyCache get pairKeys => _pairKeys!;
   ConnectionManager get connections => _connections!;
   ChatService get chat => _chat!;
@@ -77,10 +82,13 @@ class AppServices extends ChangeNotifier {
       await trust.load();
       await settings.load();
       await settings.applyWindowSecurity();
+      _prekeys ??= PrekeyStore(storage.prekeyStore);
+      await _prekeys!.load();
       _sessions ??= SessionManager(
         keys: identity.keyManager,
         store: storage.sessionStore,
         myId: id,
+        prekeys: _prekeys,
       );
       await _sessions!.load();
       _pairKeys ??= PairKeyCache(identity.keyManager, trust);
@@ -91,6 +99,13 @@ class AppServices extends ChangeNotifier {
         trust: trust,
         sessions: _sessions!,
       );
+      _prekeyExchange ??= PrekeyExchange(
+        keys: identity.keyManager,
+        client: client,
+        connections: _connections!,
+        trust: trust,
+        prekeys: _prekeys!,
+      )..start(myId: id);
       _chat ??= ChatService(
         storage: storage,
         client: client,
@@ -194,6 +209,7 @@ class AppServices extends ChangeNotifier {
     _nostr = null;
     await _chat?.clearAll();
     await _sessions?.clearAll();
+    await _prekeys?.clearAll();
     meshRouter.clearAll();
     await appLock.panicWipe();
     await identity.destroy();
@@ -201,6 +217,9 @@ class AppServices extends ChangeNotifier {
     _peers = null;
     _connections = null;
     _sessions = null;
+    _prekeyExchange?.dispose();
+    _prekeyExchange = null;
+    _prekeys = null;
     _pairKeys?.clear();
     _pairKeys = null;
     notifyListeners();
@@ -335,6 +354,8 @@ class _NyxChatAppState extends State<NyxChatApp> with WidgetsBindingObserver {
               ChangeNotifierProvider.value(value: app.chat),
               ChangeNotifierProvider.value(value: app.peers),
               ChangeNotifierProvider.value(value: app.connections),
+              if (app.prekeys != null)
+                ChangeNotifierProvider.value(value: app.prekeys!),
             ],
             child: materialApp,
           );

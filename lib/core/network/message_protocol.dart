@@ -21,6 +21,9 @@ enum ProtocolMessageType {
   dhtAnnounce,
   dhtLookup,
   dhtResponse,
+
+  /// Signed bundle of one-time ML-KEM prekeys, sent after the handshake.
+  prekeys,
   unknown,
 }
 
@@ -64,6 +67,10 @@ class ProtocolMessage {
 
   factory ProtocolMessage.meshPacket(MeshPacket packet) => ProtocolMessage(
       type: ProtocolMessageType.meshPacket, payload: packet.toJson());
+
+  /// A PrekeyBundle (lib/core/crypto/prekey_bundle.dart) for the link peer.
+  factory ProtocolMessage.prekeys(Map<String, dynamic> bundleJson) =>
+      ProtocolMessage(type: ProtocolMessageType.prekeys, payload: bundleJson);
 
   // DHT frames carry their own sender id and signature because DHT
   // connections are short-lived and not handshaked.

@@ -6,8 +6,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nyxchat/core/crypto/crypto_utils.dart';
 import 'package:nyxchat/core/crypto/double_ratchet.dart';
 import 'package:nyxchat/core/crypto/handshake.dart';
+import 'package:nyxchat/core/crypto/hybrid_key_exchange.dart';
 import 'package:nyxchat/core/crypto/key_manager.dart';
 import 'package:nyxchat/core/crypto/nyx_id.dart';
+import 'package:nyxchat/core/crypto/prekey_bundle.dart';
+import 'package:nyxchat/core/crypto/prekey_store.dart';
 import 'package:nyxchat/core/crypto/sender_keys.dart';
 import 'package:nyxchat/core/network/dht_node.dart';
 import 'package:nyxchat/core/network/file_transfer_manager.dart';
@@ -39,6 +42,10 @@ const List<String> _caseNames = [
   'Envelope.fromJson (ratchet)',
   'Envelope.fromJson (sender key)',
   'SessionInitBlock.fromJson',
+  'SessionInitBlock.fromJson (prekey)',
+  'Envelope.fromJson (control)',
+  'PrekeyBundle.fromJson',
+  'PrekeyUnknownNotice.fromJson',
   'InnerMessage.fromJson (text)',
   'InnerMessage.fromJson (file)',
   'ProtocolMessage.fromJson (envelope)',
@@ -155,6 +162,49 @@ Future<void> _buildCases() async {
   });
   _cases['SessionInitBlock.fromJson'] = _Case(initBlock.toJson(), (m) {
     SessionInitBlock.fromJson(m);
+  });
+
+  // One-time prekeys: an init block naming a prekey (`pk`), the signed
+  // bundle that distributes prekeys over a link, and the signed
+  // unknown-prekey notice inside a control envelope.
+  final opk = await KyberKem.generateKeyPair();
+  final opkId = await PrekeyStore.idFor(opk.publicKey);
+  final pkInit = await Handshake.asyncInitiate(
+      keys: alice,
+      peerIdentityKey: bob.identityPublicKey,
+      peerKyberPublicKey: bob.kyberPublicKey,
+      prekeyId: opkId,
+      prekeyPublicKey: opk.publicKey);
+  final pkInitBlock = SessionInitBlock(
+      ephemeralKey: pkInit.ephemeralPublicKey,
+      kyberCiphertext: pkInit.kyberCiphertext,
+      prekeyId: pkInit.prekeyId);
+  _cases['SessionInitBlock.fromJson (prekey)'] =
+      _Case(pkInitBlock.toJson(), (m) {
+    SessionInitBlock.fromJson(m);
+  });
+  final bundle = await PrekeyBundle.create(
+      keys: bob,
+      from: bobId,
+      to: aliceId,
+      prekeys: [
+        PublicPrekey(id: CryptoUtils.toHex(opkId), publicKey: opk.publicKey)
+      ]);
+  _cases['PrekeyBundle.fromJson'] = _Case(bundle.toJson(), (m) {
+    PrekeyBundle.fromJson(m);
+  });
+  final notice = await PrekeyUnknownNotice.create(
+      keys: bob,
+      from: bobId,
+      to: aliceId,
+      ephemeralHex: pkInitBlock.ephemeralHex,
+      prekeyId: CryptoUtils.toHex(opkId));
+  _cases['PrekeyUnknownNotice.fromJson'] = _Case(notice.toJson(), (m) {
+    PrekeyUnknownNotice.fromJson(m);
+  });
+  _cases['Envelope.fromJson (control)'] =
+      _Case(notice.toEnvelope().toJson(), (m) {
+    PrekeyUnknownNotice.fromEnvelope(Envelope.fromJson(m));
   });
   _cases['RatchetHeader.fromJson'] = _Case(m0.header.toJson(), (m) {
     RatchetHeader.fromJson(m);

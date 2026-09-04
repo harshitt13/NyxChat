@@ -13,12 +13,14 @@ import 'key_value_store.dart';
 ///
 /// Boxes: messages, chat_rooms, peers, user, trust (pinned keys),
 /// sessions (ratchet state), groupkeys (sender keys), outbox (pending
-/// deliveries). All boxes are opened with the same master key.
+/// deliveries), prekeys (one-time ML-KEM prekeys, ours and our contacts').
+/// All boxes are opened with the same master key.
 class LocalStorage {
   static const String trustBox = 'trust';
   static const String sessionsBox = 'sessions';
   static const String groupKeysBox = 'groupkeys';
   static const String outboxBox = 'outbox';
+  static const String prekeysBox = 'prekeys';
 
   static const List<String> _allBoxes = [
     AppConstants.messagesBox,
@@ -29,6 +31,7 @@ class LocalStorage {
     sessionsBox,
     groupKeysBox,
     outboxBox,
+    prekeysBox,
   ];
 
   final Map<String, Box<String>> _boxes = {};
@@ -54,6 +57,8 @@ class LocalStorage {
       HiveKeyValueStore(() => _boxes[groupKeysBox]!);
   KeyValueStore get outboxStore =>
       HiveKeyValueStore(() => _boxes[outboxBox]!);
+  KeyValueStore get prekeyStore =>
+      HiveKeyValueStore(() => _boxes[prekeysBox]!);
 
   /// Initialise Hive. [directory] overrides the platform documents
   /// directory (used by tests and tools that run outside Flutter).

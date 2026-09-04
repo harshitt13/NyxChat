@@ -10,6 +10,7 @@ import '../storage/trust_store.dart';
 import 'double_ratchet.dart';
 import 'handshake.dart';
 import 'key_manager.dart';
+import 'prekey_store.dart';
 
 class NoSessionException implements Exception {
   final String peerId;
@@ -37,6 +38,19 @@ class SessionCollisionException implements Exception {
   String toString() => 'SessionCollisionException: ignored init from $peerId';
 }
 
+/// Raised when an asynchronous init names a one-time prekey we no longer
+/// hold (already used, expired, or wiped). The message cannot be read; the
+/// caller tells the initiator, which restarts with the long-term KEM key.
+class UnknownPrekeyException implements Exception {
+  final String peerId;
+  final String prekeyId;
+  final String ephemeralHex;
+  UnknownPrekeyException(this.peerId, this.prekeyId, this.ephemeralHex);
+  @override
+  String toString() =>
+      'UnknownPrekeyException: $peerId named prekey $prekeyId, not held';
+}
+
 /// A persisted pairwise session.
 class SessionRecord {
   DoubleRatchetSession ratchet;
@@ -61,12 +75,20 @@ class SessionRecord {
 
   /// 'handshake' or 'async'.
   String origin;
+
+  /// One-time prekey this session consumed: the peer's, if we initiated
+  /// asynchronously; ours, if we responded. Null for direct-link sessions
+  /// and for asynchronous sessions that fell back to the long-term KEM key
+  /// (see [isAsyncFallback]). Diagnostic only; if an initiation loses a
+  /// collision the prekey it consumed is simply gone, on both sides.
+  String? prekeyId;
   DateTime createdAt;
   DateTime updatedAt;
 
   SessionRecord({
     required this.ratchet,
     required this.origin,
+    this.prekeyId,
     this.pendingInit,
     this.acceptedInitEph,
     List<String>? ignoredInitEphs,
@@ -83,6 +105,7 @@ class SessionRecord {
         if (acceptedInitEph != null) 'acceptedInitEph': acceptedInitEph,
         if (ignoredInitEphs.isNotEmpty) 'ignoredInit': ignoredInitEphs,
         if (abandonedInitEph != null) 'abandonedInit': abandonedInitEph,
+        if (prekeyId != null) 'prekey': prekeyId,
         'origin': origin,
         'created': createdAt.toIso8601String(),
         'updated': updatedAt.toIso8601String(),
@@ -98,10 +121,16 @@ class SessionRecord {
         acceptedInitEph: j['acceptedInitEph'] as String?,
         ignoredInitEphs: (j['ignoredInit'] as List<dynamic>?)?.cast<String>().toList(),
         abandonedInitEph: j['abandonedInit'] as String?,
+        prekeyId: j['prekey'] as String?,
         origin: j['origin'] as String? ?? 'handshake',
         createdAt: DateTime.parse(j['created'] as String),
         updatedAt: DateTime.parse(j['updated'] as String),
       );
+
+  /// True for an asynchronous session established with the peer's
+  /// long-term KEM key because no one-time prekey was available: its root
+  /// gains post-quantum forward secrecy only at the peer's first reply.
+  bool get isAsyncFallback => origin == 'async' && prekeyId == null;
 }
 
 /// Owns every pairwise Double Ratchet session, decides how sessions are
@@ -111,9 +140,18 @@ class SessionManager {
   final KeyManager keys;
   final KeyValueStore store;
   final String myId;
+
+  /// One-time prekey pools; null means asynchronous sessions always use
+  /// the long-term KEM key (tests, tools).
+  final PrekeyStore? prekeys;
   final Map<String, SessionRecord> _sessions = {};
 
-  SessionManager({required this.keys, required this.store, required this.myId});
+  SessionManager({
+    required this.keys,
+    required this.store,
+    required this.myId,
+    this.prekeys,
+  });
 
   Future<void> load() async {
     _sessions.clear();
@@ -164,10 +202,16 @@ class SessionManager {
     var rec = _sessions[peerId];
     if (rec == null) {
       if (pinned == null) throw NoSessionException(peerId);
+      // Prefer a one-time prekey the peer issued to us (post-quantum
+      // forward secrecy from the first message). The long-term KEM key is
+      // the last resort and leaves the record flagged (isAsyncFallback).
+      final otp = await prekeys?.takePeerPrekey(peerId);
       final init = await Handshake.asyncInitiate(
         keys: keys,
         peerIdentityKey: pinned.identityKey,
         peerKyberPublicKey: pinned.kyberPublicKey,
+        prekeyId: otp?.idBytes,
+        prekeyPublicKey: otp?.publicKey,
       );
       final ratchet = await DoubleRatchetSession.initAlice(
         sharedSecret: init.ratchetRoot,
@@ -176,9 +220,11 @@ class SessionManager {
       rec = SessionRecord(
         ratchet: ratchet,
         origin: 'async',
+        prekeyId: otp?.id,
         pendingInit: SessionInitBlock(
           ephemeralKey: init.ephemeralPublicKey,
           kyberCiphertext: init.kyberCiphertext,
+          prekeyId: init.prekeyId,
         ),
       );
       _sessions[peerId] = rec;
@@ -248,24 +294,42 @@ class SessionManager {
       throw SessionCollisionException(peerId);
     }
 
+    // An init that names one of our one-time prekeys needs its private
+    // half; a missing id (used, expired, wiped) is reported so the
+    // initiator can restart with the long-term key. We never guess.
+    OwnPrekey? own;
+    final prekeyId = init.prekeyIdHex;
+    if (prekeyId != null) {
+      own = prekeys?.findOwn(peerId, prekeyId);
+      if (own == null) {
+        throw UnknownPrekeyException(peerId, prekeyId, init.ephemeralHex);
+      }
+    }
+
     // Build a responder session from the init block and verify it by
-    // decrypting; only then does it replace whatever we had.
+    // decrypting; only then does it replace whatever we had, and only then
+    // is the consumed prekey's private half deleted. Repeats of the same
+    // init are served by acceptedInitEph above and never need it again.
     final root = await Handshake.asyncRespond(
       keys: keys,
       peerIdentityKey: pinned.identityKey,
       peerEphemeralKey: init.ephemeralKey,
       kyberCiphertext: init.kyberCiphertext,
+      prekeyId: init.prekeyId,
+      prekeyPrivateKey: own?.privateKey,
     );
     final ratchet = await DoubleRatchetSession.initBob(
       sharedSecret: root,
       bobRatchetKeyPair: keys.identityKeyPair,
     );
     final plain = await ratchet.decrypt(ratchetMsg, associatedData: ad);
+    if (own != null) await prekeys!.deleteOwn(peerId, own.id);
     await _save(
       peerId,
       SessionRecord(
         ratchet: ratchet,
         origin: 'async',
+        prekeyId: own?.id,
         acceptedInitEph: init.ephemeralHex,
         // If we were mid-initiation ourselves we lost the collision: tell
         // the peer which ephemeral to blacklist. Keep what we already ignore.

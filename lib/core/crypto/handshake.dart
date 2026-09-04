@@ -259,10 +259,15 @@ class AsyncSessionInit {
   final Uint8List ephemeralPublicKey;
   final Uint8List kyberCiphertext;
   final Uint8List ratchetRoot;
+
+  /// Id of the peer's one-time prekey the KEM ciphertext was encapsulated
+  /// to; null when the long-term KEM key was used (last resort).
+  final Uint8List? prekeyId;
   AsyncSessionInit({
     required this.ephemeralPublicKey,
     required this.kyberCiphertext,
     required this.ratchetRoot,
+    this.prekeyId,
   });
 }
 
@@ -291,6 +296,7 @@ class Handshake {
   static const String _masterInfo = 'NyxChat-Handshake-v3';
   static const String _ratchetInfo = 'NyxChat-Ratchet-Root-v3';
   static const String _asyncInfo = 'NyxChat-Async-Session-v3';
+  static const String _asyncPrekeyInfo = 'NyxChat-Async-Prekey-Session-v4';
 
   static Future<InitiatorState> createInitiatorHello({
     required KeyManager keys,
@@ -425,11 +431,22 @@ class Handshake {
   }
 
   // Asynchronous (store-and-forward) session establishment. Used when a
-  // message must be sent through the mesh to a peer we are not directly
-  // connected to but whose identity keys we have pinned.
+  // message must be sent through the mesh or a relay to a peer we are not
+  // directly connected to but whose identity keys we have pinned.
   //
-  //   dh1 = X25519(IK_A, IK_B), dh2 = X25519(EK_A, IK_B), kem = Kyber(KPK_B)
-  //   root = HKDF(ikm = 0xFF*32 || dh1 || dh2 || kem, info = async)
+  //   dh1 = X25519(IK_A, IK_B), dh2 = X25519(EK_A, IK_B)
+  //   kem = ML-KEM(OPK_B)  when we hold an unused one-time prekey of B:
+  //         root = HKDF(salt = opk id, ikm = 0xFF*32 || dh1 || dh2 || kem,
+  //                     info = "NyxChat-Async-Prekey-Session-v4")
+  //   kem = ML-KEM(KPK_B)  otherwise (last resort):
+  //         root = HKDF(salt = 0*32,   ikm = same, info = "NyxChat-Async-Session-v3")
+  //
+  // The two labels differ, so a prekey-based init can never be confused
+  // with a long-term one. B deletes the prekey's private half once the
+  // first message under it has decrypted, which gives the root forward
+  // secrecy against a later compromise of B's device or long-term KEM key
+  // (post-quantum forward secrecy from the first message); with the
+  // long-term key that protection only starts at B's first reply.
   //
   // Bob uses his identity X25519 key pair as the initial ratchet key pair;
   // the Double Ratchet replaces it after his first reply.
@@ -438,17 +455,26 @@ class Handshake {
     required KeyManager keys,
     required Uint8List peerIdentityKey,
     required Uint8List peerKyberPublicKey,
+    Uint8List? prekeyId,
+    Uint8List? prekeyPublicKey,
   }) async {
+    if ((prekeyId == null) != (prekeyPublicKey == null)) {
+      throw ArgumentError('prekeyId and prekeyPublicKey go together');
+    }
     final ephemeral = await CryptoUtils.newX25519KeyPair();
     final dh1 = await CryptoUtils.x25519(keys.identityKeyPair, peerIdentityKey);
     final dh2 = await CryptoUtils.x25519(ephemeral, peerIdentityKey);
-    final kem = await KyberKem.encapsulate(peerKyberPublicKey);
-    final root = await _asyncRoot(dh1, dh2, kem.sharedSecret);
-    CryptoUtils.wipe(kem.sharedSecret);
+    final kem = await KyberKem.encapsulate(prekeyPublicKey ?? peerKyberPublicKey);
+    final root = await asyncRoot(
+        dh1: dh1, dh2: dh2, kem: kem.sharedSecret, prekeyId: prekeyId);
+    for (final b in [dh1, dh2, kem.sharedSecret]) {
+      CryptoUtils.wipe(b);
+    }
     return AsyncSessionInit(
       ephemeralPublicKey: CryptoUtils.publicKeyBytes(ephemeral),
       kyberCiphertext: kem.ciphertext,
       ratchetRoot: root,
+      prekeyId: prekeyId,
     );
   }
 
@@ -457,25 +483,46 @@ class Handshake {
     required Uint8List peerIdentityKey,
     required Uint8List peerEphemeralKey,
     required Uint8List kyberCiphertext,
+    Uint8List? prekeyId,
+    Uint8List? prekeyPrivateKey,
   }) async {
+    if ((prekeyId == null) != (prekeyPrivateKey == null)) {
+      throw ArgumentError('prekeyId and prekeyPrivateKey go together');
+    }
     final dh1 = await CryptoUtils.x25519(keys.identityKeyPair, peerIdentityKey);
     final dh2 = await CryptoUtils.x25519(keys.identityKeyPair, peerEphemeralKey);
     final kem = await KyberKem.decapsulate(
-        kyberCiphertext, keys.kyberKeyPair.privateKey);
-    final root = await _asyncRoot(dh1, dh2, kem);
-    CryptoUtils.wipe(kem);
+        kyberCiphertext, prekeyPrivateKey ?? keys.kyberKeyPair.privateKey);
+    final root = await asyncRoot(dh1: dh1, dh2: dh2, kem: kem, prekeyId: prekeyId);
+    for (final b in [dh1, dh2, kem]) {
+      CryptoUtils.wipe(b);
+    }
     return root;
   }
 
-  static Future<Uint8List> _asyncRoot(
-      Uint8List dh1, Uint8List dh2, Uint8List kem) {
+  /// KDF step of the asynchronous agreement, public so tests can check the
+  /// domain separation. A [prekeyId] selects the one-time-prekey label and
+  /// binds the id as HKDF salt; null selects the long-term-key label.
+  static Future<Uint8List> asyncRoot({
+    required Uint8List dh1,
+    required Uint8List dh2,
+    required Uint8List kem,
+    Uint8List? prekeyId,
+  }) async {
+    if (prekeyId != null && prekeyId.length != 8) {
+      throw ArgumentError('prekey id must be 8 bytes');
+    }
     final ikm = CryptoUtils.concat([
       Uint8List.fromList(List.filled(32, 0xFF)),
       dh1,
       dh2,
       kem,
     ]);
-    return CryptoUtils.hkdf(ikm: ikm, salt: Uint8List(32), info: _asyncInfo);
+    final root = prekeyId == null
+        ? await CryptoUtils.hkdf(ikm: ikm, salt: Uint8List(32), info: _asyncInfo)
+        : await CryptoUtils.hkdf(ikm: ikm, salt: prekeyId, info: _asyncPrekeyInfo);
+    CryptoUtils.wipe(ikm);
+    return root;
   }
 
   // Internals
