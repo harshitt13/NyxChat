@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.2.0 (unreleased)
+
+### Transports
+- Wi-Fi Aware (NAN) on Android 8+: the same rotating discovery beacon as
+  over BLE is published as the `nyxchat` Aware service and subscribed for;
+  a data path is built only to beacons that match a contact (or a public
+  handle), and the regular authenticated TCP handshake then runs over the
+  link-local IPv6 link. Settings switch "Use Wi-Fi Aware" (on where
+  supported), off in stealth mode; state shown in Settings and in mesh
+  diagnostics. The TCP server now listens dual-stack so link-local IPv6
+  peers can connect.
+
 ## 3.1.0 (2026-09) - protocol v4
 
 Not compatible with 3.0.x peers (mesh packet format, beacon format and

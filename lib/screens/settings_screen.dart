@@ -58,6 +58,12 @@ class SettingsScreen extends StatelessWidget {
                   await settings.setLongRangeBle(v);
                   ble.setLongRange(v);
                 }, subtitle: 'Bluetooth 5 S=8 coding; lower throughput, longer reach'),
+                _row(Icons.wifi_tethering_rounded, 'Wi-Fi Aware', peers.awareManager.statusText,
+                    color: peers.isAwareActive ? AppTheme.accentGreen : AppTheme.textMuted),
+                _toggle(Icons.podcasts_rounded, 'Use Wi-Fi Aware', settings.wifiAware, (v) async {
+                  await settings.setWifiAware(v);
+                  await peers.applyAwareSetting();
+                }, subtitle: 'Neighbour links without an access point (Android 8+). Same rotating beacon as Bluetooth.'),
                 _row(Icons.router_rounded, 'Listening port', '${AppConstants.defaultPort}'),
                 _row(Icons.language_rounded, 'Global DHT', peers.isDHTActive ? 'Active' : 'Inactive',
                     color: peers.isDHTActive ? AppTheme.accentGreen : AppTheme.textMuted),

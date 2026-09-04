@@ -114,6 +114,7 @@ class AppServices extends ChangeNotifier {
         pairKeys: _pairKeys!,
       );
       _peers!.isDiscoverableToEveryone = () => settings.discoverableToEveryone;
+      _peers!.isAwareEnabled = () => settings.wifiAware;
       _chat!.meshLinkCountProvider = () => _peers!.meshNeighbourCount;
       _chat!.sendReadReceipts = settings.readReceipts;
       await _chat!.init(myId: id, displayName: identity.displayName);

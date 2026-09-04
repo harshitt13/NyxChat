@@ -48,7 +48,7 @@ This README describes what the code does. The security properties and their limi
 | Messaging | Text, files and images, replies, reactions, delivery and read receipts, disappearing messages per conversation, mute, search |
 | Groups | Sender-key encrypted groups, add/remove members, leave, rename; keys rotate when membership changes |
 | Contacts | Trust-on-first-use key pinning, key-change alerts, 60-digit safety numbers, QR contact cards (display and camera scan), signed identity rotation |
-| Offline | BLE mesh with store-and-forward, acknowledgements, files over the mesh with chunk re-requests, persistent outbox with backoff, Wi-Fi Direct forwarding |
+| Offline | BLE mesh with store-and-forward, acknowledgements, files over the mesh with chunk re-requests, persistent outbox with backoff, Wi-Fi Direct forwarding, Wi-Fi Aware neighbour links (Android 8+) |
 | Internet | Optional delivery through public Nostr relays under rotating tokens, optionally via Tor (Orbot). No servers of ours. |
 | Emergency | One-tap anonymous broadcast to everyone within the same geohash cell (about 5 km), with optional name and position |
 | Privacy | Private discovery beacons, sealed-sender mesh addressing, link encryption hiding all metadata, length padding, stealth mode, cover traffic, screenshot blocking |
@@ -111,6 +111,10 @@ Every device announces itself over mDNS (`_nyxchat._tcp`, random service name pe
 
 A native Android GATT server (`BlePeripheral.kt`) advertises and serves; flutter_blue_plus scans and connects. Links form in either role, exchange the handle and a per-launch random relay id, negotiate an MTU up to 512 bytes and carry binary mesh packets chunked with a two-byte header (64 KiB reassembly cap). Optional Coded PHY (long range).
 
+### Wi-Fi Aware
+
+On Android 8+ phones with the `android.hardware.wifi.aware` feature (most recent Pixel and Samsung models), `WifiAwareChannel.kt` publishes the Aware service `nyxchat` whose service-specific info is the *same rotating beacon as the BLE scan response* (the handle in public mode, the 128-bit Bloom filter of contact tokens in private mode) and subscribes for it. Range is that of Wi-Fi, tens of metres indoors, with no access point involved. A beacon heard over Aware is resolved exactly as over BLE, and only a match (a contact in private mode, anyone in public mode) leads to a data path: the subscriber sends a short NAN message carrying a random per-link passphrase, its TCP port and its own beacon; the publisher applies the same check, and only then do both sides request the Aware network under that passphrase. The peer's link-local IPv6 address and port come from `WifiAwareNetworkInfo` (API 29+) or from an in-band message (API 26-28), and the Dart side dials the ordinary authenticated handshake at `fe80::...%<interface>`; the smaller handle dials, as on every transport. What a stranger sees is the beacon and nothing else: requests from beacons that do not match are refused before any link exists. The NAN link itself is encrypted by the Wi-Fi stack under the exchanged passphrase, which crosses the air in the clear, so treat it as defence in depth; confidentiality and authentication come from the NyxChat handshake and link encryption that run on top. The "Use Wi-Fi Aware" switch in Settings (on where supported) and stealth mode turn it off; the TCP server listens dual-stack so link-local IPv6 peers can connect.
+
 ### Store-and-forward
 
 Mesh packets (binary, protocol v4) carry a random id, a rotating recipient token, a reply token, a TTL of seven hops, a timestamp with 24-hour expiry, the relay ids traversed and a payload sealed for the pair. Nodes deduplicate by id, learn a route to the reply token through the neighbour that delivered the packet, forward to the learned next hop when known and otherwise spray up to three copies (Spray-and-Wait), and offer stored packets to every new neighbour. The destination answers with an ack addressed to the reply token; every relay that sees the ack purges the packet. Emergency-channel packets are delivered to every member of the cell and still relayed. Messages to contacts with no path wait in the persistent outbox with exponential backoff. `benchmark/mesh_sim_test.dart` drives the real router through a random-waypoint mobility model.
@@ -133,7 +137,7 @@ Google Nearby Connections endpoints forward mesh packets (high-bandwidth neighbo
 | `Envelope` | end-to-end unit | `{v:3, from, to, k: dr\|sk, h:{dh,pn,n}, [i:{eph,kct}], [ab], [it, s], c}` |
 | `InnerMessage` | padded plaintext inside an envelope | `{t: text\|file\|reaction\|receipt\|skdist\|group\|open\|chunkreq, id, ts, b}` |
 | Mesh packet v2 | BLE, Wi-Fi Direct, mesh-over-TCP | binary: version, type, ttl, maxTtl, ts(8), id(16), to(16), replyTo(16), n, relayIds(n×8), sealed payload |
-| Discovery beacon | BLE scan response / mDNS TXT | `[4, mode, ...]`: public = handle; private = slot byte + Bloom filter |
+| Discovery beacon | BLE scan response / mDNS TXT / Wi-Fi Aware service info | `[4, mode, ...]`: public = handle; private = slot byte + Bloom filter |
 | Nostr event | public relays | kind 1059, `["p", token]`, content = base64(sealed envelope), throwaway key |
 | File chunk | sealed frame or mesh chunk packet | `{fileId, i, n, d: base64(ciphertext‖tag)}` |
 
@@ -150,8 +154,8 @@ lib/
     protocol/    envelope, inner_message, padding, parse
     network/     message_protocol, p2p_server, p2p_client, connection_manager,
                  discovery_beacon, peer_discovery (mDNS), ble_manager, ble_peripheral,
-                 ble_protocol, file_transfer_manager, wifi_direct_manager, dht_node,
-                 location_channel, tor_manager
+                 ble_protocol, file_transfer_manager, wifi_direct_manager, wifi_aware_manager,
+                 dht_node, location_channel, tor_manager
     mesh/        mesh_packet (binary v2), mesh_router, mesh_store, geohash_channel
     relay/       nostr_transport, nostr_relay_adapter, relay_transport, relay_client
     storage/     local_storage (Hive), key_value_store, trust_store, outbox
@@ -196,7 +200,7 @@ flutter test benchmark/mesh_sim_test.dart --dart-define=SIM_SEEDS=5 --dart-defin
 
 ## Status and roadmap
 
-Protocol v4 is a clean break from 3.0 (mesh packet and beacon formats, KEM). The cryptographic core, session logic, parsers and the end-to-end stack are covered by automated tests, and the handshake is modelled in Tamarin, but the Bluetooth and Wi-Fi Direct paths have not yet been measured on a fleet of physical devices; treat them as beta and report what you see. iOS is not supported (no CoreBluetooth peripheral yet).
+Protocol v4 is a clean break from 3.0 (mesh packet and beacon formats, KEM). The cryptographic core, session logic, parsers and the end-to-end stack are covered by automated tests, and the handshake is modelled in Tamarin, but the Bluetooth, Wi-Fi Direct and Wi-Fi Aware paths have not yet been measured on a fleet of physical devices; treat them as beta and report what you see. iOS is not supported (no CoreBluetooth peripheral yet).
 
 Planned: field measurements on real phones, header encryption for the ratchet, voice notes, a light theme, localisation, an indexed message store for very long histories, and an external audit.
 
