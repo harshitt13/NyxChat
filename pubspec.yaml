@@ -54,6 +54,9 @@ dependencies:
   # Native ML-KEM (FIPS 203) binding and Nostr relay signing
   ffi: ^2.2.0
   bip340: ^0.3.1
+  image: ^4.9.2
+  record: ^6.2.1
+  just_audio: ^0.10.6
 
 dev_dependencies:
   flutter_test:

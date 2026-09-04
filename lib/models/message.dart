@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 enum MessageStatus { sending, sent, delivered, read, failed }
-enum MessageType { text, image, file, reaction, system }
+enum MessageType { text, image, file, reaction, system, voice }
 
 class MessageReaction {
   final String userId;
@@ -60,14 +60,15 @@ class FileAttachment {
   bool get isComplete => totalChunks == 0 || receivedChunks >= totalChunks;
   double get progress => totalChunks == 0 ? 1.0 : receivedChunks / totalChunks;
 
-  FileAttachment copyWith({String? filePath, int? receivedChunks}) =>
+  FileAttachment copyWith(
+          {String? filePath, int? receivedChunks, String? thumbnailB64}) =>
       FileAttachment(
         fileName: fileName,
         mimeType: mimeType,
         fileSize: fileSize,
         filePath: filePath ?? this.filePath,
         fileDataB64: fileDataB64,
-        thumbnailB64: thumbnailB64,
+        thumbnailB64: thumbnailB64 ?? this.thumbnailB64,
         fileId: fileId,
         fileKeyB64: fileKeyB64,
         fileNonceB64: fileNonceB64,
@@ -78,6 +79,8 @@ class FileAttachment {
 
   bool get isImage =>
       mimeType.startsWith('image/');
+
+  bool get isAudio => mimeType.startsWith('audio/');
 
   String get fileSizeFormatted {
     if (fileSize < 1024) return '$fileSize B';
@@ -130,6 +133,10 @@ class ChatMessage {
   final DateTime? expiresAt;      // Disappearing messages
   final List<String> deliveredTo; // Group delivery receipts
   final List<String> readBy;      // Group read receipts
+  /// Type-specific extras: `durationMs` and `voice` for voice notes,
+  /// `w`/`h` (preview pixel size) for images. Small and JSON-safe; the
+  /// image preview itself lives on [attachment].
+  final Map<String, dynamic> metadata;
 
   ChatMessage({
     required this.id,
@@ -146,7 +153,16 @@ class ChatMessage {
     this.expiresAt,
     this.deliveredTo = const [],
     this.readBy = const [],
+    this.metadata = const {},
   });
+
+  bool get isVoice => messageType == MessageType.voice;
+
+  /// Length of a voice note as announced by the sender.
+  Duration? get voiceDuration {
+    final ms = metadata['durationMs'];
+    return ms is int && ms >= 0 ? Duration(milliseconds: ms) : null;
+  }
 
   bool get isExpired => expiresAt != null && DateTime.now().isAfter(expiresAt!);
 
@@ -165,6 +181,7 @@ class ChatMessage {
     DateTime? expiresAt,
     List<String>? deliveredTo,
     List<String>? readBy,
+    Map<String, dynamic>? metadata,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -181,6 +198,7 @@ class ChatMessage {
       expiresAt: expiresAt ?? this.expiresAt,
       deliveredTo: deliveredTo ?? this.deliveredTo,
       readBy: readBy ?? this.readBy,
+      metadata: metadata ?? this.metadata,
     );
   }
 
@@ -224,6 +242,7 @@ class ChatMessage {
     'expiresAt': expiresAt?.toIso8601String(),
     'deliveredTo': deliveredTo,
     'readBy': readBy,
+    if (metadata.isNotEmpty) 'metadata': metadata,
   };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -253,6 +272,9 @@ class ChatMessage {
         : DateTime.parse(json['expiresAt'] as String),
     deliveredTo: (json['deliveredTo'] as List<dynamic>?)?.cast<String>() ?? const [],
     readBy: (json['readBy'] as List<dynamic>?)?.cast<String>() ?? const [],
+    metadata: json['metadata'] is Map
+        ? Map<String, dynamic>.from(json['metadata'] as Map)
+        : const {},
   );
 
   String encode() => jsonEncode(toJson());

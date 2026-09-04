@@ -46,6 +46,8 @@ This README describes what the code does. The security properties and their limi
 | Area | Feature |
 |---|---|
 | Messaging | Text, files and images, replies, reactions, delivery and read receipts, disappearing messages per conversation, mute, search |
+| Voice notes | Hold the microphone to record (release to send, slide to cancel) with elapsed time and level meter; mono AAC-LC 16 kHz / 32 kbps `.m4a`, up to 5 minutes; inline player with seek and remaining time, one note at a time, keeps playing while you scroll; delivered like any file over direct links, mesh and relays |
+| Image previews | Photos carry a 256 px JPEG thumbnail (under 10 KiB, EXIF orientation applied, all other EXIF stripped) inside the encrypted file descriptor, so the recipient sees the picture with a progress overlay before the chunks finish; received images are thumbnailed locally for fast scroll-back; tap for a full-screen viewer with pinch zoom |
 | Groups | Sender-key encrypted groups, add/remove members, leave, rename; keys rotate when membership changes |
 | Contacts | Trust-on-first-use key pinning, key-change alerts, 60-digit safety numbers, QR contact cards (display and camera scan), signed identity rotation |
 | Offline | BLE mesh with store-and-forward, acknowledgements, files over the mesh with chunk re-requests, persistent outbox with backoff, Wi-Fi Direct forwarding |
@@ -198,7 +200,7 @@ flutter test benchmark/mesh_sim_test.dart --dart-define=SIM_SEEDS=5 --dart-defin
 
 Protocol v4 is a clean break from 3.0 (mesh packet and beacon formats, KEM). The cryptographic core, session logic, parsers and the end-to-end stack are covered by automated tests, and the handshake is modelled in Tamarin, but the Bluetooth and Wi-Fi Direct paths have not yet been measured on a fleet of physical devices; treat them as beta and report what you see. iOS is not supported (no CoreBluetooth peripheral yet).
 
-Planned: field measurements on real phones, header encryption for the ratchet, voice notes, a light theme, localisation, an indexed message store for very long histories, and an external audit.
+Planned: field measurements on real phones, header encryption for the ratchet, a light theme, localisation, an indexed message store for very long histories, and an external audit.
 
 ## License
 

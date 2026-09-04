@@ -30,6 +30,7 @@ import 'services/identity_service.dart';
 import 'services/peer_service.dart';
 import 'services/settings_service.dart';
 import 'theme/app_theme.dart';
+import 'widgets/message_preview.dart';
 
 /// Composition root. Long-lived objects are created once; the pieces that
 /// need the unlocked database and a loaded identity (trust store, ratchet
@@ -258,7 +259,7 @@ class _NyxChatAppState extends State<NyxChatApp> with WidgetsBindingObserver {
       if (room?.muted == true) return;
       final title = room?.peerDisplayName ?? 'NyxChat';
       final body =
-          services.settings.notificationPreview ? msg.content : 'New message';
+          services.settings.notificationPreview ? notificationBody(msg) : 'New message';
       _notifications.show(
         msg.id.hashCode & 0x7fffffff,
         title,

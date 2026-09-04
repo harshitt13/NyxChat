@@ -52,6 +52,7 @@ class MeshRouter extends ChangeNotifier {
 
   /// Hand a packet to the transports. [nextHopRelayId] is null for spray.
   void Function(MeshPacket packet, Uint8List? nextHopRelayId)? onForwardPacket;
+  bool _disposed = false;
 
   int _totalReceived = 0;
   int _totalForwarded = 0;
@@ -128,6 +129,7 @@ class MeshRouter extends ChangeNotifier {
   }
 
   Future<void> handlePacket(MeshPacket packet) async {
+    if (_disposed) return; // late delivery from a link or a forward timer
     _totalReceived++;
     if (_store.hasSeen(packet.id)) {
       _totalDuplicates++;
@@ -182,6 +184,7 @@ class MeshRouter extends ChangeNotifier {
   void _forward(MeshPacket packet, {bool immediate = false}) {
     final delay = immediate ? Duration.zero : Duration(milliseconds: 200 + _random.nextInt(1800));
     Timer(delay, () {
+      if (_disposed) return;
       final forwarded = packet.forward(_relayId);
       _totalForwarded++;
       final route = _routes[packet.toHex];
@@ -213,6 +216,7 @@ class MeshRouter extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _refreshTimer?.cancel();
     super.dispose();
   }

@@ -12,6 +12,8 @@ import '../core/crypto/key_transition.dart';
 import '../core/crypto/pair_keys.dart';
 import '../core/crypto/sender_keys.dart';
 import '../core/crypto/session_manager.dart';
+import '../core/media/media_metadata.dart';
+import '../core/media/thumbnailer.dart';
 import '../core/mesh/geohash_channel.dart';
 import '../core/mesh/mesh_packet.dart';
 import '../core/mesh/mesh_router.dart';
@@ -23,6 +25,7 @@ import '../core/network/p2p_server.dart';
 import '../core/protocol/envelope.dart';
 import '../core/protocol/inner_message.dart';
 import '../core/protocol/padding.dart';
+import '../core/protocol/parse.dart' show optionalMap;
 import '../core/relay/relay_transport.dart';
 import '../core/storage/local_storage.dart';
 import '../core/storage/outbox.dart';
@@ -38,6 +41,11 @@ class _OutgoingFile {
   final File file;
   final FileDescriptor descriptor;
   _OutgoingFile(this.file, this.descriptor);
+}
+
+class _EarlyChunks {
+  final DateTime since = DateTime.now();
+  final List<Map<String, dynamic>> frames = [];
 }
 
 /// Messaging engine (protocol v4).
@@ -99,6 +107,15 @@ class ChatService extends ChangeNotifier {
   final LinkedHashMap<String, String> _packetToMessage = LinkedHashMap();
   final Map<String, _OutgoingFile> _outgoingFiles = {};
   final Map<String, int> _chunkRequestsSent = {};
+
+  /// Chunks that arrived before their descriptor. They race it on every
+  /// carrier (the descriptor needs a ratchet step and storage round trips,
+  /// a chunk only a table lookup) and inbound handlers run concurrently.
+  /// Bounded per file and in total; replayed by _onFile, dropped otherwise.
+  final Map<String, _EarlyChunks> _earlyChunks = {};
+  static const int _maxEarlyFiles = 6;
+  static const int _maxEarlyChunksPerFile = 32;
+  static const Duration _earlyChunkTtl = Duration(minutes: 2);
   final List<StreamSubscription> _subs = [];
   Timer? _expiryTimer;
   Timer? _outboxTimer;
@@ -507,7 +524,8 @@ class ChatService extends ChangeNotifier {
     if (sendReadReceipts) {
       final unread = (_messages[roomId] ?? [])
           .where((m) => m.senderId != _myId && m.status != MessageStatus.read &&
-              (m.messageType == MessageType.text || m.messageType == MessageType.file || m.messageType == MessageType.image))
+              (m.messageType == MessageType.text || m.messageType == MessageType.file ||
+               m.messageType == MessageType.image || m.messageType == MessageType.voice))
           .toList();
       final bySender = <String, List<String>>{};
       for (final m in unread) {
@@ -937,10 +955,60 @@ class ChatService extends ChangeNotifier {
   bool canSendFileTo(String peerId, int size) =>
       _client.isPeerConnected(peerId) || (_meshAvailable && _trust.get(peerId) != null && size <= maxMeshFileBytes);
 
-  Future<ChatMessage?> sendFile({required String roomId, required String filePath}) async {
+  /// Sends a file. Images get an inline preview in the descriptor unless
+  /// [inlinePreview] is false (the recipient then builds one locally once
+  /// the file is complete).
+  Future<ChatMessage?> sendFile({required String roomId, required String filePath, bool inlinePreview = true}) async {
+    final mime = _mimeFor(filePath);
+    final isImage = mime.startsWith('image/');
+    MediaMetadata? meta;
+    if (isImage && inlinePreview) {
+      // Inline preview so the recipient sees the picture before the chunks
+      // finish (a 4 MiB photo is well over a hundred mesh chunks).
+      final t = await Thumbnailer.fromFile(filePath);
+      if (t != null) meta = MediaMetadata(thumbnail: t.jpeg, width: t.width, height: t.height);
+    }
+    return _sendMedia(
+      roomId: roomId, file: File(filePath), mime: mime,
+      type: isImage ? MessageType.image : MessageType.file, meta: meta,
+    );
+  }
+
+  /// Sends a recorded voice note (AAC-LC in .m4a) as a file transfer with
+  /// the duration in its metadata. The recording is moved from the temp
+  /// directory into the app's files directory first so it survives cache
+  /// cleanup and can serve chunk re-requests later.
+  Future<ChatMessage?> sendVoiceNote({
+    required String roomId,
+    required String filePath,
+    required Duration duration,
+  }) async {
+    var file = File(filePath);
+    if (!await file.exists()) return null;
+    final ms = duration.inMilliseconds.clamp(0, MediaMetadata.maxDurationMs);
+    try {
+      final dir = await _filesDir();
+      final dest = File('$dir/nyxchat_files/voice_${DateTime.now().millisecondsSinceEpoch}.m4a');
+      await dest.parent.create(recursive: true);
+      file = await _moveFile(file, dest);
+    } catch (e) {
+      debugPrint('[Chat] could not move voice note, sending in place: $e');
+    }
+    return _sendMedia(
+      roomId: roomId, file: file, mime: 'audio/mp4', type: MessageType.voice,
+      meta: MediaMetadata(voice: true, durationMs: ms),
+    );
+  }
+
+  Future<ChatMessage?> _sendMedia({
+    required String roomId,
+    required File file,
+    required String mime,
+    required MessageType type,
+    MediaMetadata? meta,
+  }) async {
     final room = _rooms[roomId];
     if (room == null) return null;
-    final file = File(filePath);
     if (!await file.exists()) return null;
     final size = await file.length();
     final targets = room.isGroup
@@ -952,15 +1020,17 @@ class ChatService extends ChangeNotifier {
       return null;
     }
     final fileId = _uuid.v4();
-    final mime = _mimeFor(file.path);
     final d = await FileTransferManager.describe(file, fileId: fileId, mimeType: mime);
     _outgoingFiles[fileId] = _OutgoingFile(file, d);
+    final wireMeta = meta == null || meta.isEmpty ? null : meta.toWire();
     final msg = ChatMessage(
       id: fileId, senderId: _myId, receiverId: room.isGroup ? room.id : room.peerId, content: d.fileName,
       timestamp: DateTime.now(), status: MessageStatus.sending, roomId: roomId,
-      messageType: mime.startsWith('image/') ? MessageType.image : MessageType.file,
+      messageType: type,
+      metadata: meta?.toMessageMetadata() ?? const {},
       attachment: FileAttachment(
-        fileName: d.fileName, mimeType: mime, fileSize: d.fileSize, filePath: filePath, fileId: fileId,
+        fileName: d.fileName, mimeType: mime, fileSize: d.fileSize, filePath: file.path, fileId: fileId,
+        thumbnailB64: meta?.thumbnailB64,
         fileKeyB64: base64Encode(d.key), fileNonceB64: base64Encode(d.noncePrefix), sha256Hex: d.sha256Hex,
         totalChunks: d.totalChunks, receivedChunks: d.totalChunks,
       ),
@@ -969,7 +1039,7 @@ class ChatService extends ChangeNotifier {
     final inner = InnerMessage.file(
       id: fileId, fileId: fileId, fileName: d.fileName, mimeType: mime, fileSize: d.fileSize,
       fileKey: d.key, fileNonce: d.noncePrefix, totalChunks: d.totalChunks, chunkSize: d.chunkSize,
-      sha256Hex: d.sha256Hex, groupId: room.isGroup ? room.id : null,
+      sha256Hex: d.sha256Hex, groupId: room.isGroup ? room.id : null, meta: wireMeta,
     );
     var sentAny = false;
     for (final peerId in reachable) {
@@ -980,6 +1050,34 @@ class ChatService extends ChangeNotifier {
     }
     await _updateMessage(roomId, fileId, (m) => m.copyWith(status: sentAny ? MessageStatus.sent : MessageStatus.failed));
     return _find(roomId, fileId);
+  }
+
+  Future<String> _filesDir() async => filesDirectoryProvider != null
+      ? await filesDirectoryProvider!()
+      : (await getApplicationDocumentsDirectory()).path;
+
+  static Future<File> _moveFile(File from, File to) async {
+    try {
+      return await from.rename(to.path);
+    } on FileSystemException {
+      final copied = await from.copy(to.path);
+      await from.delete();
+      return copied;
+    }
+  }
+
+  /// Received images without an inline preview (older senders) get one
+  /// generated locally once the file is complete, so the bubble and
+  /// scroll-back never have to decode the full picture.
+  Future<void> _cacheThumbnail(String roomId, String messageId, String path) async {
+    final att = _find(roomId, messageId)?.attachment;
+    if (att == null || !att.isImage || att.thumbnailB64 != null) return;
+    final t = await Thumbnailer.fromFile(path);
+    if (t == null) return;
+    await _updateMessage(roomId, messageId, (m) => m.copyWith(
+          attachment: m.attachment?.copyWith(thumbnailB64: t.base64),
+          metadata: {...m.metadata, 'w': t.width, 'h': t.height},
+        ));
   }
 
   Future<bool> _sendChunk(String peerId, FileChunkFrame frame) async {
@@ -1000,6 +1098,9 @@ class ChatService extends ChangeNotifier {
   }
 
   Future<void> _streamChunks(File file, FileDescriptor d, String peerId) async {
+    // Give the descriptor a head start; the receiver buffers early chunks,
+    // but only so many.
+    await Future<void>.delayed(const Duration(milliseconds: 250));
     for (var i = 0; i < d.totalChunks; i++) {
       final frame = await FileTransferManager.encryptChunk(file, d, i);
       if (!await _sendChunk(peerId, frame)) return; // receiver will request the rest
@@ -1010,7 +1111,10 @@ class ChatService extends ChangeNotifier {
   Future<void> _handleChunk(Map<String, dynamic> json, String fromPeer) async {
     try {
       final frame = FileChunkFrame.fromJson(json);
-      if (!files.isExpecting(frame.fileId)) return;
+      if (!files.isExpecting(frame.fileId)) {
+        _stashEarlyChunk(frame.fileId, json);
+        return;
+      }
       final done = await files.accept(frame);
       final roomId = _roomIdOfMessage(frame.fileId);
       if (roomId == null) return;
@@ -1022,10 +1126,24 @@ class ChatService extends ChangeNotifier {
       if (done != null) {
         _chunkRequestsSent.remove(frame.fileId);
         await _deliver(fromPeer, InnerMessage.receipt(id: _uuid.v4(), messageIds: [frame.fileId], kind: 'delivered'), queueOnFailure: false);
+        unawaited(_cacheThumbnail(roomId, frame.fileId, done.finalPath));
       }
     } catch (e) {
       debugPrint('[Chat] chunk error: $e');
     }
+  }
+
+  void _stashEarlyChunk(String fileId, Map<String, dynamic> json) {
+    if (_roomIdOfMessage(fileId) != null) return; // known file, not expected: done or failed
+    final now = DateTime.now();
+    _earlyChunks.removeWhere((_, e) => now.difference(e.since) > _earlyChunkTtl);
+    final entry = _earlyChunks.putIfAbsent(fileId, () {
+      while (_earlyChunks.length >= _maxEarlyFiles) {
+        _earlyChunks.remove(_earlyChunks.keys.first);
+      }
+      return _EarlyChunks();
+    });
+    if (entry.frames.length < _maxEarlyChunksPerFile) entry.frames.add(json);
   }
 
   /// Receiver side: ask the sender for chunks that never arrived.
@@ -1212,17 +1330,33 @@ class ChatService extends ChangeNotifier {
     if (room == null) return;
     final d = FileDescriptor.fromInnerBody(m.body);
     if (await _storage.getMessage(d.fileId) != null) return;
-    final dir = filesDirectoryProvider != null ? await filesDirectoryProvider!() : (await getApplicationDocumentsDirectory()).path;
+    MediaMetadata? meta;
+    try {
+      meta = MediaMetadata.fromWire(optionalMap(m.body, 'meta', context: 'file descriptor'));
+    } on FormatException catch (e) {
+      debugPrint('[Chat] ignoring media hints from $from: $e');
+    }
+    final dir = await _filesDir();
     final savePath = '$dir/nyxchat_files/${d.fileId}_${d.fileName}';
     await files.begin(d, savePath);
+    final isImage = d.mimeType.startsWith('image/');
+    final isVoice = meta?.voice == true && d.mimeType.startsWith('audio/');
     final msg = ChatMessage(
       id: d.fileId, senderId: from, receiverId: gid ?? _myId, content: d.fileName, timestamp: m.timestamp.toLocal(),
       status: MessageStatus.sent, roomId: room.id,
-      messageType: d.mimeType.startsWith('image/') ? MessageType.image : MessageType.file,
+      messageType: isVoice ? MessageType.voice : isImage ? MessageType.image : MessageType.file,
+      metadata: meta?.toMessageMetadata() ?? const {},
       attachment: FileAttachment(fileName: d.fileName, mimeType: d.mimeType, fileSize: d.fileSize, filePath: savePath,
+          thumbnailB64: isImage ? meta?.thumbnailB64 : null,
           fileId: d.fileId, sha256Hex: d.sha256Hex, totalChunks: d.totalChunks, receivedChunks: 0),
     );
     await _addMessage(room.id, msg, incoming: true);
+    final early = _earlyChunks.remove(d.fileId);
+    if (early != null) {
+      for (final json in early.frames) {
+        await _handleChunk(json, from);
+      }
+    }
   }
 
   Future<void> _onReaction(String from, InnerMessage m) async {
@@ -1461,6 +1595,7 @@ class ChatService extends ChangeNotifier {
     _recentInnerIds.clear();
     _packetToMessage.clear();
     _outgoingFiles.clear();
+    _earlyChunks.clear();
     _meshTokenOwner.clear();
     _relayTokenOwner.clear();
     await _outbox.clear();
