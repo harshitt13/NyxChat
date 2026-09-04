@@ -250,6 +250,31 @@ void main() {
       );
     });
 
+    test('response must carry the initiator hello hash and a fresh KEM key is used', () async {
+      final (aliceKeys, aliceId) = await _identity();
+      final (bobKeys, bobId) = await _identity();
+      final s1 = await Handshake.createInitiatorHello(
+          keys: aliceKeys, nyxChatId: aliceId, displayName: 'A', listeningPort: 1);
+      final s2 = await Handshake.createInitiatorHello(
+          keys: aliceKeys, nyxChatId: aliceId, displayName: 'A', listeningPort: 1);
+      expect(s1.hello.ephemeralKemKey, isNot(equals(s2.hello.ephemeralKemKey)));
+      expect(s1.hello.ephemeralKemKey, isNot(equals(aliceKeys.kyberPublicKey)));
+      final (resp, _) = await Handshake.respond(keys: bobKeys, nyxChatId: bobId,
+          displayName: 'B', listeningPort: 1, initiatorHello: s1.hello);
+      expect(resp.initiatorHelloHash, isNotNull);
+      final stripped = resp.toJson()..remove('ih');
+      await expectLater(
+        Handshake.completeInitiator(keys: aliceKeys, state: s1, response: HelloMessage.fromJson(stripped)),
+        throwsA(isA<HandshakeException>()),
+      );
+      final noKem = s2.hello.toJson()..remove('ekpk');
+      await expectLater(
+        Handshake.respond(keys: bobKeys, nyxChatId: bobId, displayName: 'B',
+            listeningPort: 1, initiatorHello: HelloMessage.fromJson(noKem)),
+        throwsA(isA<HandshakeException>()),
+      );
+    });
+
     test('async session init agrees on ratchet root', () async {
       final (aliceKeys, _) = await _identity();
       final (bobKeys, _) = await _identity();

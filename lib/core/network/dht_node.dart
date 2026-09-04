@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
 import '../crypto/crypto_utils.dart';
 import '../crypto/key_manager.dart';
 import '../crypto/nyx_id.dart';
+import '../protocol/parse.dart';
 import 'message_protocol.dart';
 
 /// Peer record learned through the DHT.
@@ -47,19 +48,30 @@ class DHTEntry {
         'lastSeen': lastSeen.toIso8601String(),
       };
 
-  factory DHTEntry.fromJson(Map<String, dynamic> j) => DHTEntry(
-        nodeId: j['nodeId'] as String,
-        address: j['address'] as String,
-        port: j['port'] as int,
-        dhtPort: j['dhtPort'] as int? ?? (j['port'] as int) + 1,
-        identityKeyHex: j['ik'] as String? ?? j['publicKeyHex'] as String? ?? '',
-        signingKeyHex: j['sk'] as String? ?? '',
-        kyberKeyHex: j['kpk'] as String? ?? '',
-        displayName: j['displayName'] as String? ?? '',
-        lastSeen: j['lastSeen'] != null
-            ? DateTime.parse(j['lastSeen'] as String)
-            : DateTime.now(),
-      );
+  factory DHTEntry.fromJson(Map<String, dynamic> j) => parseOr(() {
+        const ctx = 'dht entry';
+        final port = requireInt(j, 'port', min: 1, max: 65535, context: ctx);
+        return DHTEntry(
+          nodeId: requireString(j, 'nodeId',
+              minLength: 1, maxLength: 64, context: ctx),
+          address: requireString(j, 'address',
+              minLength: 1, maxLength: 256, context: ctx),
+          port: port,
+          dhtPort: optionalInt(j, 'dhtPort', min: 1, max: 65535, context: ctx) ??
+              port + 1,
+          identityKeyHex: optionalString(j, 'ik', maxLength: 64, context: ctx) ??
+              optionalString(j, 'publicKeyHex', maxLength: 64, context: ctx) ??
+              '',
+          signingKeyHex: optionalString(j, 'sk', maxLength: 64, context: ctx) ?? '',
+          kyberKeyHex: optionalString(j, 'kpk',
+                  maxLength: CryptoUtils.kyber768PublicKeyLength * 2,
+                  context: ctx) ??
+              '',
+          displayName:
+              optionalString(j, 'displayName', maxLength: 64, context: ctx) ?? '',
+          lastSeen: optionalDateTime(j, 'lastSeen', context: ctx) ?? DateTime.now(),
+        );
+      }, context: 'dht entry');
 }
 
 /// Simplified Kademlia-style directory for finding peers outside the local
@@ -252,51 +264,72 @@ class DHTNode extends ChangeNotifier {
     }
   }
 
-  /// Validate an announcement: key lengths, id binding, freshness and
-  /// signature. Returns the entry or null.
+  /// Validate an announcement: field types, key lengths, id binding,
+  /// freshness and signature. Returns the entry, or null for anything
+  /// malformed or unverifiable (never throws on hostile input).
   static Future<DHTEntry?> validateAnnounce(
       Map<String, dynamic> p, String address) async {
-    final id = p['senderId'];
-    final port = p['port'];
-    final iat = p['iat'];
-    final name = p['displayName'];
-    if (id is! String || !NyxId.isValidFormat(id)) return null;
-    if (port is! int || port < 1 || port > 65535) return null;
-    if (iat is! int) return null;
-    if (name is! String || name.length > 64) return null;
+    const ctx = 'dht announce';
+    final ({
+      String id,
+      String name,
+      int port,
+      int iat,
+      Uint8List ik,
+      Uint8List sk,
+      Uint8List kpk,
+      Uint8List sig
+    }) a;
+    try {
+      a = parseOr(() {
+        final id = requireString(p, 'senderId', maxLength: 64, context: ctx);
+        if (!NyxId.isValidFormat(id)) {
+          throw const FormatException('dht announce: bad sender id');
+        }
+        return (
+          id: id,
+          name: requireString(p, 'displayName', maxLength: 64, context: ctx),
+          port: requireInt(p, 'port', min: 1, max: 65535, context: ctx),
+          iat: requireInt(p, 'iat', min: 0, context: ctx),
+          ik: requireHex(p, 'ik', length: 32, context: ctx),
+          sk: requireHex(p, 'sk', length: 32, context: ctx),
+          kpk: requireHex(p, 'kpk',
+              length: CryptoUtils.kyber768PublicKeyLength, context: ctx),
+          sig: requireHex(p, 'sig', length: 64, context: ctx),
+        );
+      }, context: ctx);
+    } on FormatException {
+      return null;
+    }
     final now = DateTime.now().toUtc().millisecondsSinceEpoch;
-    if ((now - iat).abs() > announceFreshness.inMilliseconds) return null;
-    final ik = CryptoUtils.decodeKey(p['ik'] as String, 32, 'ik');
-    final sk = CryptoUtils.decodeKey(p['sk'] as String, 32, 'sk');
-    final kpk = CryptoUtils.decodeKey(
-        p['kpk'] as String, CryptoUtils.kyber768PublicKeyLength, 'kpk');
-    final sig = CryptoUtils.decodeKey(p['sig'] as String, 64, 'sig');
-    if (!await NyxId.verify(id: id, signingPublicKey: sk, identityPublicKey: ik)) {
+    if ((now - a.iat).abs() > announceFreshness.inMilliseconds) return null;
+    if (!await NyxId.verify(
+        id: a.id, signingPublicKey: a.sk, identityPublicKey: a.ik)) {
       return null;
     }
     final ok = await CryptoUtils.ed25519Verify(
-      publicKey: sk,
+      publicKey: a.sk,
       message: _announceTranscript(
-        nodeId: id,
-        identityKey: ik,
-        signingKey: sk,
-        kyberKey: kpk,
-        displayName: name,
-        port: port,
-        iat: iat,
+        nodeId: a.id,
+        identityKey: a.ik,
+        signingKey: a.sk,
+        kyberKey: a.kpk,
+        displayName: a.name,
+        port: a.port,
+        iat: a.iat,
       ),
-      signature: sig,
+      signature: a.sig,
     );
     if (!ok) return null;
     return DHTEntry(
-      nodeId: id,
+      nodeId: a.id,
       address: address,
-      port: port,
-      dhtPort: port + 1,
-      identityKeyHex: CryptoUtils.toHex(ik),
-      signingKeyHex: CryptoUtils.toHex(sk),
-      kyberKeyHex: CryptoUtils.toHex(kpk),
-      displayName: name,
+      port: a.port,
+      dhtPort: a.port + 1,
+      identityKeyHex: CryptoUtils.toHex(a.ik),
+      signingKeyHex: CryptoUtils.toHex(a.sk),
+      kyberKeyHex: CryptoUtils.toHex(a.kpk),
+      displayName: a.name,
       lastSeen: DateTime.now(),
     );
   }

@@ -16,6 +16,7 @@ import '../theme/app_theme.dart';
 import 'chat_screen.dart';
 import 'contact_verify_screen.dart';
 import 'create_group_screen.dart';
+import 'emergency_screen.dart';
 import 'peer_discovery_screen.dart';
 import 'settings_screen.dart';
 
@@ -28,6 +29,8 @@ class ChatListScreen extends StatefulWidget {
 class _ChatListScreenState extends State<ChatListScreen> {
   StreamSubscription<TrustCheck>? _keyChangeSub;
   bool _started = false;
+  final TextEditingController _search = TextEditingController();
+  String _query = '';
 
   @override
   void initState() {
@@ -101,8 +104,41 @@ class _ChatListScreenState extends State<ChatListScreen> {
   @override
   void dispose() {
     _keyChangeSub?.cancel();
+    _search.dispose();
     super.dispose();
   }
+
+  Widget _searchBar() => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+        child: Container(
+          decoration: BoxDecoration(
+            color: AppTheme.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: TextField(
+            controller: _search,
+            onChanged: (v) => setState(() => _query = v.trim().toLowerCase()),
+            style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14),
+            decoration: InputDecoration(
+              hintText: 'Search conversations and messages',
+              hintStyle: const TextStyle(color: AppTheme.textMuted, fontSize: 13),
+              border: InputBorder.none,
+              icon: const Icon(Icons.search_rounded, color: AppTheme.textMuted, size: 20),
+              suffixIcon: _query.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 18, color: AppTheme.textMuted),
+                      onPressed: () {
+                        _search.clear();
+                        setState(() => _query = '');
+                      },
+                    ),
+            ),
+          ),
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -178,6 +214,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
           },
         ),
         IconButton(
+          tooltip: 'Emergency broadcast',
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EmergencyScreen())),
+          icon: const Icon(Icons.campaign_outlined, color: AppTheme.error, size: 22),
+        ),
+        IconButton(
           onPressed: () => Navigator.push(
               context, MaterialPageRoute(builder: (_) => const SettingsScreen())),
           icon: const Icon(Icons.settings_outlined,
@@ -206,8 +247,14 @@ class _ChatListScreenState extends State<ChatListScreen> {
   Widget _body() {
     return Consumer2<ChatService, TrustStore>(
       builder: (context, chat, trust, _) {
-        final rooms = chat.chatRooms;
-        if (rooms.isEmpty) {
+        final all = chat.chatRooms;
+        final rooms = _query.isEmpty
+            ? all
+            : all.where((r) {
+                if (r.peerDisplayName.toLowerCase().contains(_query)) return true;
+                return chat.getMessages(r.id).any((m) => m.content.toLowerCase().contains(_query));
+              }).toList();
+        if (all.isEmpty) {
           return Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -225,7 +272,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
           );
         }
         final peers = context.read<PeerService>();
-        return ListView.separated(
+        return Column(children: [
+          _searchBar(),
+          if (rooms.isEmpty)
+            const Expanded(child: Center(child: Text('No matches', style: TextStyle(color: AppTheme.textMuted))))
+          else
+          Expanded(child: ListView.separated(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
           itemCount: rooms.length,
           separatorBuilder: (_, _) => const SizedBox(height: 6),
@@ -241,7 +293,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 MaterialPageRoute(builder: (_) => ChatScreen(roomId: rooms[i].id))),
             onLongPress: () => _roomMenu(context, rooms[i]),
           ),
-        );
+        )),
+        ]);
       },
     );
   }

@@ -8,8 +8,12 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/crypto/double_ratchet.dart';
+import '../core/crypto/key_transition.dart';
+import '../core/crypto/pair_keys.dart';
 import '../core/crypto/sender_keys.dart';
 import '../core/crypto/session_manager.dart';
+import '../core/mesh/geohash_channel.dart';
+import '../core/mesh/mesh_packet.dart';
 import '../core/mesh/mesh_router.dart';
 import '../core/network/connection_manager.dart';
 import '../core/network/file_transfer_manager.dart';
@@ -18,26 +22,41 @@ import '../core/network/p2p_client.dart';
 import '../core/network/p2p_server.dart';
 import '../core/protocol/envelope.dart';
 import '../core/protocol/inner_message.dart';
+import '../core/protocol/padding.dart';
+import '../core/relay/relay_transport.dart';
 import '../core/storage/local_storage.dart';
 import '../core/storage/outbox.dart';
 import '../core/storage/trust_store.dart';
 import '../models/chat_room.dart';
 import '../models/message.dart';
+import 'identity_service.dart';
 
 /// How a message left the device.
-enum DeliveryPath { direct, mesh, queued, failed }
+enum DeliveryPath { direct, mesh, relay, queued, failed }
 
-/// Messaging engine.
+class _OutgoingFile {
+  final File file;
+  final FileDescriptor descriptor;
+  _OutgoingFile(this.file, this.descriptor);
+}
+
+/// Messaging engine (protocol v4).
 ///
-/// Every payload becomes an [InnerMessage], is sealed into an [Envelope]
-/// (pairwise Double Ratchet for direct messages and group control traffic,
-/// Sender Keys for group content) and is handed to whichever transport is
-/// available: authenticated TCP link, BLE mesh, or the persistent outbox.
-/// Inbound traffic from any transport flows through the same path.
+/// Every payload becomes a padded [InnerMessage], is sealed into an
+/// [Envelope] (pairwise Double Ratchet, or Sender Keys for groups) and is
+/// handed to the first available carrier: an authenticated TCP link, the
+/// mesh (sealed for the pair under rotating tokens), an internet relay
+/// (same sealing), or the persistent outbox. Inbound traffic from every
+/// carrier flows through the same path.
 class ChatService extends ChangeNotifier {
   static const String _skStateKey = 'senderkeys';
   static const String _skDistPrefix = 'dist:';
+  static const String typeChunkRequest = 'chunkreq';
+  static const String typeKeyTransition = 'keytrans';
+  static const String _kPendingTransition = 'pendingTransition';
+  static const String _kTransitionRecipients = 'transitionRecipients';
   static const int _maxRecentIds = 4000;
+  static const int maxMeshFileBytes = 4 * 1024 * 1024;
 
   final LocalStorage _storage;
   final P2PClient _client;
@@ -46,31 +65,55 @@ class ChatService extends ChangeNotifier {
   final Outbox _outbox;
   final ConnectionManager _connections;
   final MeshRouter? _mesh;
+  final PairKeyCache _pairKeys;
   final SenderKeyManager _senderKeys = SenderKeyManager();
   final FileTransferManager files = FileTransferManager();
   final Uuid _uuid = const Uuid();
+
+  /// Optional internet carrier (set by the composition root when enabled).
+  RelayTransport? _relay;
+  StreamSubscription? _relaySub;
+
+  /// Where received files are written (injectable for tests).
+  Future<String> Function()? filesDirectoryProvider;
 
   String _myId = '';
   String _myName = '';
   bool _initialized = false;
   bool sendReadReceipts = true;
 
-  /// Set by PeerService: number of live BLE links (mesh availability).
+  /// Set by PeerService: number of live mesh neighbours.
   int Function()? meshLinkCountProvider;
 
   final Map<String, ChatRoom> _rooms = {};
   final Map<String, List<ChatMessage>> _messages = {};
   final Map<String, Set<String>> _skDistributed = {};
   final LinkedHashSet<String> _recentInnerIds = LinkedHashSet();
+  final Map<String, String> _meshTokenOwner = {};
+  final Map<String, String> _relayTokenOwner = {};
+  final Set<String> _channelTokens = {};
+  GeohashChannel? _emergency;
+  final List<EmergencyMessage> emergencyMessages = [];
+  final LinkedHashSet<String> _emergencyIds = LinkedHashSet();
+  final StreamController<EmergencyMessage> _emergencyStream = StreamController.broadcast();
+  final LinkedHashMap<String, String> _packetToMessage = LinkedHashMap();
+  final Map<String, _OutgoingFile> _outgoingFiles = {};
+  final Map<String, int> _chunkRequestsSent = {};
   final List<StreamSubscription> _subs = [];
   Timer? _expiryTimer;
   Timer? _outboxTimer;
+  Timer? _tokenTimer;
+  Timer? _chunkTimer;
+  int _tokenEpoch = -1;
+  int _relayEpoch = -1;
 
   final StreamController<ChatMessage> _incoming = StreamController.broadcast();
   final StreamController<String> _roomChanged = StreamController.broadcast();
 
   Stream<ChatMessage> get onIncomingMessage => _incoming.stream;
   Stream<String> get onRoomChanged => _roomChanged.stream;
+  Stream<EmergencyMessage> get onEmergencyMessage => _emergencyStream.stream;
+  GeohashChannel? get emergencyChannel => _emergency;
 
   ChatService({
     required LocalStorage storage,
@@ -79,6 +122,7 @@ class ChatService extends ChangeNotifier {
     required SessionManager sessions,
     required Outbox outbox,
     required ConnectionManager connections,
+    required PairKeyCache pairKeys,
     MeshRouter? meshRouter,
   })  : _storage = storage,
         _client = client,
@@ -86,11 +130,13 @@ class ChatService extends ChangeNotifier {
         _sessions = sessions,
         _outbox = outbox,
         _connections = connections,
+        _pairKeys = pairKeys,
         _mesh = meshRouter;
 
   String get myId => _myId;
   Outbox get outbox => _outbox;
   TrustStore get trust => _trust;
+  RelayTransport? get relay => _relay;
 
   // Lifecycle
 
@@ -109,17 +155,117 @@ class ChatService extends ChangeNotifier {
 
     _subs.add(_connections.onPeerReady.listen(_attachConnection));
     _subs.add(_connections.onSessionEstablished.listen(_onSessionEstablished));
-    _mesh?.onPacketForMe = (packet) {
-      unawaited(_handleEnvelopeBytes(packet.payload, via: null));
-    };
+    _mesh?.isForMe = (p) => _meshTokenOwner.containsKey(p.toHex) || _channelTokens.contains(p.toHex);
+    _mesh?.onPacketForMe = (p) => unawaited(_onMeshPacket(p));
+    _mesh?.onAckReceived = _onMeshAck;
+    _trust.addListener(_onTrustChanged);
+    await refreshTokens();
 
-    _expiryTimer =
-        Timer.periodic(const Duration(seconds: 20), (_) => _sweepExpired());
-    _outboxTimer =
-        Timer.periodic(const Duration(seconds: 30), (_) => flushAllOutbox());
+    _expiryTimer = Timer.periodic(const Duration(seconds: 20), (_) => _sweepExpired());
+    _outboxTimer = Timer.periodic(const Duration(seconds: 30), (_) => flushAllOutbox());
+    _tokenTimer = Timer.periodic(const Duration(minutes: 5), (_) => refreshTokens());
+    _chunkTimer = Timer.periodic(const Duration(seconds: 45), (_) => _requestMissingChunks());
     await _sweepExpired();
     notifyListeners();
   }
+
+  /// Attach (or detach with null) the internet relay carrier.
+  void setRelay(RelayTransport? relay) {
+    _relaySub?.cancel();
+    _relaySub = null;
+    _relay = relay;
+    if (relay != null) {
+      _relaySub = relay.onInbound.listen((m) => unawaited(_onRelayInbound(m)));
+      relay.setTokens(_relayTokenOwner.keys.toList());
+    }
+  }
+
+  void _onTrustChanged() => unawaited(refreshTokens(force: true));
+
+  /// Rebuild the rotating mesh and relay addresses we listen on.
+  Future<void> refreshTokens({bool force = false}) async {
+    final epoch = PairKeys.meshEpoch();
+    final day = PairKeys.nostrEpoch();
+    if (!force && epoch == _tokenEpoch && day == _relayEpoch) return;
+    final mesh = <String, String>{};
+    final relay = <String, String>{};
+    for (final pk in await _pairKeys.all()) {
+      for (final e in [epoch - 1, epoch, epoch + 1]) {
+        mesh[_hex(await pk.meshToken(e, _myId))] = pk.peerId;
+      }
+      for (final d in [day - 1, day]) {
+        relay[await pk.nostrToken(d, _myId)] = pk.peerId;
+      }
+    }
+    _meshTokenOwner
+      ..clear()
+      ..addAll(mesh);
+    _relayTokenOwner
+      ..clear()
+      ..addAll(relay);
+    _tokenEpoch = epoch;
+    _relayEpoch = day;
+    _relay?.setTokens(relay.keys.toList());
+    await _refreshChannelTokens(epoch);
+  }
+
+  Future<void> _refreshChannelTokens(int epoch) async {
+    _channelTokens.clear();
+    final ch = _emergency;
+    if (ch == null) return;
+    for (final e in [epoch - 1, epoch, epoch + 1]) {
+      _channelTokens.add(_hex(await ch.token(e)));
+    }
+  }
+
+  // Emergency channel (location-scoped anonymous broadcast)
+
+  Future<void> joinEmergencyChannel(String geohash) async {
+    _emergency = await GeohashChannel.open(geohash);
+    emergencyMessages.clear();
+    _emergencyIds.clear();
+    await _refreshChannelTokens(PairKeys.meshEpoch());
+    notifyListeners();
+  }
+
+  void leaveEmergencyChannel() {
+    _emergency = null;
+    _channelTokens.clear();
+    notifyListeners();
+  }
+
+  /// Broadcast to everyone in the joined cell. Returns false if no mesh
+  /// neighbour or direct link can carry it right now (it is still kept
+  /// locally and sprayed to neighbours that appear later).
+  Future<bool> sendEmergency(String text, {String? displayName, double? lat, double? lon}) async {
+    final ch = _emergency;
+    final mesh = _mesh;
+    if (ch == null || mesh == null || text.trim().isEmpty) return false;
+    final m = EmergencyMessage(
+      id: _uuid.v4(), geohash: ch.geohash, text: text.trim(), timestamp: DateTime.now().toUtc(),
+      displayName: displayName, lat: lat, lon: lon,
+    );
+    _recordEmergency(m);
+    await mesh.send(
+      to: await ch.token(GeohashChannel.currentEpoch()),
+      replyTo: MeshPacket.zeroToken,
+      payload: await ch.seal(m),
+      type: MeshPacket.typeChannel,
+      ttl: 10,
+    );
+    return (meshLinkCountProvider?.call() ?? 0) > 0 || _client.connectedPeerIds.isNotEmpty;
+  }
+
+  void _recordEmergency(EmergencyMessage m) {
+    if (!_emergencyIds.add(m.id)) return;
+    if (_emergencyIds.length > 500) _emergencyIds.remove(_emergencyIds.first);
+    emergencyMessages.add(m);
+    if (emergencyMessages.length > 200) emergencyMessages.removeAt(0);
+    _emergencyStream.add(m);
+    notifyListeners();
+  }
+
+  static String _hex(List<int> b) => b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
 
   void _loadSenderKeys() {
     final store = _storage.groupKeyStore;
@@ -134,8 +280,7 @@ class ChatService extends ChangeNotifier {
     for (final key in store.keys) {
       if (!key.startsWith(_skDistPrefix)) continue;
       try {
-        final list =
-            (jsonDecode(store.get(key)!) as List<dynamic>).cast<String>();
+        final list = (jsonDecode(store.get(key)!) as List<dynamic>).cast<String>();
         _skDistributed[key.substring(_skDistPrefix.length)] = list.toSet();
       } catch (_) {}
     }
@@ -148,7 +293,6 @@ class ChatService extends ChangeNotifier {
       await store.put('$_skDistPrefix${e.key}', jsonEncode(e.value.toList()));
     }
   }
-
   void _attachConnection(PeerConnection conn) {
     final peerId = conn.peerId;
     if (peerId == null) return;
@@ -176,10 +320,10 @@ class ChatService extends ChangeNotifier {
       }
     }, onDone: () => sub.cancel());
   }
+
   Future<void> _onSessionEstablished(SessionEvent ev) async {
-    if (ev.isNew && ev.isInitiator) {
-      await _sendSessionOpen(ev.peerId);
-    }
+    if (ev.isNew && ev.isInitiator) await _sendSessionOpen(ev.peerId);
+    await _deliverPendingTransition(ev.peerId);
     if (ev.isNew) await _requeueUndelivered(ev.peerId);
     await _outbox.resetBackoff(ev.peerId);
     await flushOutbox(ev.peerId);
@@ -187,57 +331,138 @@ class ChatService extends ChangeNotifier {
 
   Future<void> _sendSessionOpen(String peerId) async {
     try {
-      final env = await _sessions.encrypt(
-          peerId: peerId, message: InnerMessage.sessionOpen(id: _uuid.v4()));
+      final env = await _sessions.encrypt(peerId: peerId, message: InnerMessage.sessionOpen(id: _uuid.v4()));
       await _client.sendToPeer(peerId, ProtocolMessage.envelope(env));
     } catch (e) {
       debugPrint('[Chat] session open to $peerId failed: $e');
     }
   }
 
-  /// After a session reset, messages that were sent but never confirmed
-  /// delivered are re-queued so nothing is silently lost.
+  /// After a session reset, messages sent but never confirmed delivered are
+  /// re-queued so nothing is silently lost.
   Future<void> _requeueUndelivered(String peerId) async {
     final room = _directRoomFor(peerId);
     if (room == null) return;
     final cutoff = DateTime.now().subtract(const Duration(hours: 6));
     final candidates = (_messages[room.id] ?? [])
-        .where((m) =>
-            m.senderId == _myId &&
-            m.messageType == MessageType.text &&
-            m.status == MessageStatus.sent &&
-            m.timestamp.isAfter(cutoff))
+        .where((m) => m.senderId == _myId && m.messageType == MessageType.text &&
+            m.status == MessageStatus.sent && m.timestamp.isAfter(cutoff))
         .toList()
         .reversed
         .take(20);
     for (final m in candidates) {
       final inner = InnerMessage.text(
-        id: m.id,
-        text: m.content,
-        replyToId: m.replyToId,
-        disappearAfterSeconds:
-            room.disappearAfterSeconds > 0 ? room.disappearAfterSeconds : null,
+        id: m.id, text: m.content, replyToId: m.replyToId,
+        disappearAfterSeconds: room.disappearAfterSeconds > 0 ? room.disappearAfterSeconds : null,
       );
-      await _outbox.enqueue(
-          OutboxItem.inner(peerId: peerId, message: inner, messageId: m.id));
+      await _outbox.enqueue(OutboxItem.inner(peerId: peerId, message: inner, messageId: m.id));
     }
+  }
+
+  // Identity rotation
+
+  /// Rotate all long-term keys. The signed transition is sent to every
+  /// contact that is reachable now over the existing sessions and queued
+  /// for the others (delivered on their next direct handshake). Returns
+  /// the new handle; the caller must restart the app.
+  Future<String> rotateIdentity(Future<PendingRotation> Function() prepare,
+      Future<void> Function(PendingRotation) commit) async {
+    final r = await prepare();
+    final inner = InnerMessage(type: typeKeyTransition, id: _uuid.v4(), body: r.statement.toJson());
+    final pending = <String>[];
+    for (final p in _trust.all) {
+      if (_client.isPeerConnected(p.nyxChatId)) {
+        final path = await _deliver(p.nyxChatId, inner, queueOnFailure: false);
+        if (path == DeliveryPath.direct) continue;
+      }
+      pending.add(p.nyxChatId);
+    }
+    await _storage.putSetting(_kPendingTransition, jsonEncode(r.statement.toJson()));
+    await _storage.putSetting(_kTransitionRecipients, jsonEncode(pending));
+    await _outbox.clear(); // queued items would carry the old handle
+    await commit(r);
+    return r.newId;
+  }
+
+  Future<void> _deliverPendingTransition(String peerId) async {
+    final raw = _storage.getSetting(_kTransitionRecipients);
+    final stmtRaw = _storage.getSetting(_kPendingTransition);
+    if (raw == null || stmtRaw == null) return;
+    final pending = (jsonDecode(raw) as List<dynamic>).cast<String>().toSet();
+    if (!pending.contains(peerId)) return;
+    final inner = InnerMessage(type: typeKeyTransition, id: _uuid.v4(),
+        body: jsonDecode(stmtRaw) as Map<String, dynamic>);
+    final path = await _deliver(peerId, inner, queueOnFailure: false);
+    if (path == DeliveryPath.direct) {
+      pending.remove(peerId);
+      await _storage.putSetting(_kTransitionRecipients, jsonEncode(pending.toList()));
+    }
+  }
+
+  /// A contact rotated its keys: verify the statement against what we
+  /// have pinned for the old handle and merge the identities.
+  Future<void> _onKeyTransition(String from, InnerMessage m) async {
+    final KeyTransition t;
+    try {
+      t = KeyTransition.fromJson(m.body);
+    } catch (e) {
+      debugPrint('[Chat] bad key transition from $from: $e');
+      return;
+    }
+    if (from != t.oldId && from != t.newId) return;
+    final old = _trust.get(t.oldId);
+    if (old == null || !await t.verify(pinnedOldSigningKey: old.signingKey)) {
+      debugPrint('[Chat] key transition from $from failed verification');
+      return;
+    }
+    final now = DateTime.now().toUtc();
+    final merged = PinnedPeer(
+      nyxChatId: t.newId, displayName: _trust.get(t.newId)?.displayName ?? old.displayName,
+      identityKey: t.newIdentityKey, signingKey: t.newSigningKey, kyberPublicKey: t.newKyberKey,
+      verified: old.verified, firstSeen: old.firstSeen, lastSeen: now, keyChangedAt: now,
+    );
+    await _trust.acceptNewKeys(merged);
+    await _trust.remove(t.oldId);
+    _pairKeys.invalidate(t.oldId);
+    _pairKeys.invalidate(t.newId);
+    if (from == t.oldId && !_sessions.hasSession(t.newId)) {
+      await _sessions.rename(t.oldId, t.newId);
+    } else {
+      await _sessions.reset(t.oldId);
+    }
+    // Move the conversation and group memberships to the new handle.
+    for (final room in _rooms.values.toList()) {
+      if (!room.isGroup && room.peerId == t.oldId) {
+        final existing = _directRoomFor(t.newId);
+        if (existing != null && existing.id != room.id) {
+          _messages.putIfAbsent(room.id, () => []).addAll(_messages.remove(existing.id) ?? []);
+          _messages[room.id]!.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+          await _storage.deleteChatRoom(existing.id);
+          _rooms.remove(existing.id);
+        }
+        await _updateRoom(room.id, (r) => r.copyWith(peerId: t.newId, peerPublicKeyHex: merged.identityKeyHex));
+        await _addSystemMessage(room.id, '${merged.displayName} rotated their keys (verified transition)');
+      } else if (room.isGroup && room.members.any((x) => x.nyxChatId == t.oldId)) {
+        await _updateRoom(room.id, (r) => r.copyWith(members: r.members.map((x) => x.nyxChatId == t.oldId
+            ? GroupMember(nyxChatId: t.newId, displayName: x.displayName, publicKeyHex: merged.identityKeyHex,
+                signingKeyHex: merged.signingKeyHex, kyberKeyHex: merged.kyberPublicKeyHex, isAdmin: x.isAdmin, joinedAt: x.joinedAt)
+            : x).toList()));
+      }
+    }
+    await refreshTokens(force: true);
+    notifyListeners();
   }
 
   // Rooms
 
   List<ChatRoom> get chatRooms {
     final rooms = _rooms.values.toList();
-    rooms.sort((a, b) {
-      final at = a.lastMessageAt ?? a.createdAt;
-      final bt = b.lastMessageAt ?? b.createdAt;
-      return bt.compareTo(at);
-    });
+    rooms.sort((a, b) => (b.lastMessageAt ?? b.createdAt).compareTo(a.lastMessageAt ?? a.createdAt));
     return rooms;
   }
 
   ChatRoom? room(String roomId) => _rooms[roomId];
-  List<ChatMessage> getMessages(String roomId) =>
-      List.unmodifiable(_messages[roomId] ?? const []);
+  List<ChatMessage> getMessages(String roomId) => List.unmodifiable(_messages[roomId] ?? const []);
 
   ChatRoom? _directRoomFor(String peerId) {
     for (final r in _rooms.values) {
@@ -246,8 +471,7 @@ class ChatService extends ChangeNotifier {
     return null;
   }
 
-  Future<ChatRoom> getOrCreateDirectRoom(
-      {required String peerId, required String displayName}) async {
+  Future<ChatRoom> getOrCreateDirectRoom({required String peerId, required String displayName}) async {
     final existing = _directRoomFor(peerId);
     if (existing != null) {
       if (existing.peerDisplayName != displayName && displayName.isNotEmpty) {
@@ -261,11 +485,9 @@ class ChatService extends ChangeNotifier {
     }
     final pinned = _trust.get(peerId);
     final room = ChatRoom(
-      id: _uuid.v4(),
-      peerId: peerId,
+      id: _uuid.v4(), peerId: peerId,
       peerDisplayName: displayName.isNotEmpty ? displayName : peerId,
-      peerPublicKeyHex: pinned?.identityKeyHex ?? '',
-      createdAt: DateTime.now(),
+      peerPublicKeyHex: pinned?.identityKeyHex ?? '', createdAt: DateTime.now(),
     );
     _rooms[room.id] = room;
     _messages[room.id] = [];
@@ -284,46 +506,29 @@ class ChatService extends ChangeNotifier {
     }
     if (sendReadReceipts) {
       final unread = (_messages[roomId] ?? [])
-          .where((m) =>
-              m.senderId != _myId &&
-              m.status != MessageStatus.read &&
-              (m.messageType == MessageType.text ||
-                  m.messageType == MessageType.file ||
-                  m.messageType == MessageType.image))
+          .where((m) => m.senderId != _myId && m.status != MessageStatus.read &&
+              (m.messageType == MessageType.text || m.messageType == MessageType.file || m.messageType == MessageType.image))
           .toList();
       final bySender = <String, List<String>>{};
       for (final m in unread) {
         bySender.putIfAbsent(m.senderId, () => []).add(m.id);
-        await _updateMessage(
-            roomId, m.id, (x) => x.copyWith(status: MessageStatus.read));
+        await _updateMessage(roomId, m.id, (x) => x.copyWith(status: MessageStatus.read));
       }
       for (final e in bySender.entries) {
-        await _deliver(
-            e.key,
-            InnerMessage.receipt(
-                id: _uuid.v4(),
-                messageIds: e.value,
-                kind: 'read',
-                groupId: room.isGroup ? roomId : null),
-            queueOnFailure: false);
+        await _deliver(e.key, InnerMessage.receipt(id: _uuid.v4(), messageIds: e.value, kind: 'read',
+            groupId: room.isGroup ? roomId : null), queueOnFailure: false);
       }
     }
     notifyListeners();
   }
 
-  Future<void> setDisappearing(String roomId, int seconds) async {
-    final room = _rooms[roomId];
-    if (room == null) return;
-    final updated = room.copyWith(disappearAfterSeconds: seconds);
-    _rooms[roomId] = updated;
-    await _storage.saveChatRoom(updated);
-    notifyListeners();
-  }
+  Future<void> setDisappearing(String roomId, int seconds) => _updateRoom(roomId, (r) => r.copyWith(disappearAfterSeconds: seconds));
+  Future<void> setMuted(String roomId, bool muted) => _updateRoom(roomId, (r) => r.copyWith(muted: muted));
 
-  Future<void> setMuted(String roomId, bool muted) async {
+  Future<void> _updateRoom(String roomId, ChatRoom Function(ChatRoom) fn) async {
     final room = _rooms[roomId];
     if (room == null) return;
-    final updated = room.copyWith(muted: muted);
+    final updated = fn(room);
     _rooms[roomId] = updated;
     await _storage.saveChatRoom(updated);
     notifyListeners();
@@ -343,36 +548,22 @@ class ChatService extends ChangeNotifier {
     await _outbox.removeForMessage(messageId);
     notifyListeners();
   }
+
   // Sending
 
-  Future<ChatMessage?> sendText({
-    required String roomId,
-    required String text,
-    String? replyToId,
-  }) async {
+  Future<ChatMessage?> sendText({required String roomId, required String text, String? replyToId}) async {
     final room = _rooms[roomId];
     if (room == null || text.trim().isEmpty) return null;
     final id = _uuid.v4();
     final ttl = room.disappearAfterSeconds;
     final msg = ChatMessage(
-      id: id,
-      senderId: _myId,
-      receiverId: room.isGroup ? room.id : room.peerId,
-      content: text,
-      timestamp: DateTime.now(),
-      status: MessageStatus.sending,
-      roomId: roomId,
-      replyToId: replyToId,
+      id: id, senderId: _myId, receiverId: room.isGroup ? room.id : room.peerId, content: text,
+      timestamp: DateTime.now(), status: MessageStatus.sending, roomId: roomId, replyToId: replyToId,
       expiresAt: ttl > 0 ? DateTime.now().add(Duration(seconds: ttl)) : null,
     );
     await _addMessage(roomId, msg);
-    final inner = InnerMessage.text(
-      id: id,
-      text: text,
-      replyToId: replyToId,
-      disappearAfterSeconds: ttl > 0 ? ttl : null,
-      groupId: room.isGroup ? room.id : null,
-    );
+    final inner = InnerMessage.text(id: id, text: text, replyToId: replyToId,
+        disappearAfterSeconds: ttl > 0 ? ttl : null, groupId: room.isGroup ? room.id : null);
     final path = room.isGroup
         ? await _sendGroupInner(room, inner, messageId: id)
         : await _deliver(room.peerId, inner, messageId: id);
@@ -380,34 +571,30 @@ class ChatService extends ChangeNotifier {
     return _find(roomId, id);
   }
 
-  Future<void> _applyPath(
-      String roomId, String messageId, DeliveryPath path) async {
+  Future<void> _applyPath(String roomId, String messageId, DeliveryPath path) async {
     final status = switch (path) {
-      DeliveryPath.direct || DeliveryPath.mesh => MessageStatus.sent,
+      DeliveryPath.direct || DeliveryPath.mesh || DeliveryPath.relay => MessageStatus.sent,
       DeliveryPath.queued => MessageStatus.sending,
       DeliveryPath.failed => MessageStatus.failed,
     };
     await _updateMessage(roomId, messageId, (m) => m.copyWith(status: status));
   }
 
-  /// Send an inner message to one peer: direct link, else mesh, else outbox.
-  Future<DeliveryPath> _deliver(String peerId, InnerMessage inner,
-      {String? messageId, bool queueOnFailure = true}) async {
-    final path = await _tryDeliver(peerId, inner);
+  /// Send an inner message to one peer: direct link, mesh, relay, else outbox.
+  Future<DeliveryPath> _deliver(String peerId, InnerMessage inner, {String? messageId, bool queueOnFailure = true}) async {
+    final path = await _tryDeliver(peerId, inner, messageId: messageId);
     if (path == DeliveryPath.failed && queueOnFailure) {
-      await _outbox.enqueue(OutboxItem.inner(
-          peerId: peerId, message: inner, messageId: messageId));
+      await _outbox.enqueue(OutboxItem.inner(peerId: peerId, message: inner, messageId: messageId));
       return DeliveryPath.queued;
     }
     return path;
   }
 
-  Future<DeliveryPath> _tryDeliver(String peerId, InnerMessage inner) async {
+  Future<DeliveryPath> _tryDeliver(String peerId, InnerMessage inner, {String? messageId}) async {
     final pinned = _trust.get(peerId);
     if (_client.isPeerConnected(peerId)) {
       try {
-        final env = await _sessions.encrypt(
-            peerId: peerId, message: inner, pinned: pinned);
+        final env = await _sessions.encrypt(peerId: peerId, message: inner, pinned: pinned);
         await _client.sendToPeer(peerId, ProtocolMessage.envelope(env));
         return DeliveryPath.direct;
       } on SessionNotReadyException {
@@ -416,33 +603,139 @@ class ChatService extends ChangeNotifier {
         debugPrint('[Chat] direct send to $peerId failed: $e');
       }
     }
-    if (_meshAvailable && pinned != null) {
+    if (pinned == null) return DeliveryPath.failed;
+    if (_meshAvailable) {
       try {
-        final env = await _sessions.encrypt(
-            peerId: peerId, message: inner, pinned: pinned);
-        await _mesh!.send(recipientId: peerId, payload: env.toBytes());
+        final env = await _sessions.encrypt(peerId: peerId, message: inner, pinned: pinned);
+        await _sendViaMesh(peerId, env.toBytes(), messageId: messageId);
         return DeliveryPath.mesh;
       } catch (e) {
         debugPrint('[Chat] mesh send to $peerId failed: $e');
       }
     }
+    if (_relay?.isConnected ?? false) {
+      try {
+        final env = await _sessions.encrypt(peerId: peerId, message: inner, pinned: pinned);
+        if (await _sendViaRelay(peerId, env.toBytes())) return DeliveryPath.relay;
+      } catch (e) {
+        debugPrint('[Chat] relay send to $peerId failed: $e');
+      }
+    }
     return DeliveryPath.failed;
   }
 
-  bool get _meshAvailable =>
-      _mesh != null &&
-      _mesh.myHash != null &&
-      (meshLinkCountProvider?.call() ?? 0) > 0;
+  bool get _meshAvailable => _mesh != null && (meshLinkCountProvider?.call() ?? 0) > 0;
+  // Sealed-sender carriers
+
+  /// Seal [bytes] for the pair and hand them to the mesh under rotating
+  /// tokens. Relays learn nothing but a random-looking address.
+  Future<MeshPacket> _sendViaMesh(String peerId, List<int> bytes, {String? messageId, int type = MeshPacket.typeMessage}) async {
+    final pk = await _pairKeys.forPeer(peerId);
+    if (pk == null) throw StateError('no pinned keys for $peerId');
+    final epoch = PairKeys.meshEpoch();
+    final packet = await _mesh!.send(
+      to: await pk.meshToken(epoch, peerId),
+      replyTo: await pk.meshToken(epoch, _myId),
+      payload: await pk.wrap(bytes),
+      type: type,
+    );
+    if (messageId != null) {
+      _packetToMessage[packet.id] = messageId;
+      while (_packetToMessage.length > 2000) {
+        _packetToMessage.remove(_packetToMessage.keys.first);
+      }
+    }
+    return packet;
+  }
+
+  Future<bool> _sendViaRelay(String peerId, List<int> bytes) async {
+    final relay = _relay;
+    final pk = await _pairKeys.forPeer(peerId);
+    if (relay == null || pk == null) return false;
+    return relay.publish(
+      recipientTokenHex: await pk.nostrToken(PairKeys.nostrEpoch(), peerId),
+      payload: await pk.wrap(bytes),
+    );
+  }
+
+  Future<void> _onMeshPacket(MeshPacket packet) async {
+    if (packet.type == MeshPacket.typeChannel) {
+      final ch = _emergency;
+      if (ch == null || !_channelTokens.contains(packet.toHex)) return;
+      final m = await ch.unseal(packet.payload);
+      if (m != null) _recordEmergency(m);
+      return;
+    }
+    final peerId = _meshTokenOwner[packet.toHex];
+    if (peerId == null) return;
+    final pk = await _pairKeys.forPeer(peerId);
+    final plain = pk == null ? null : await pk.unwrap(packet.payload);
+    if (plain == null) {
+      debugPrint('[Chat] mesh packet for our token could not be unsealed');
+      return;
+    }
+    await _mesh?.sendAck(packet);
+    switch (packet.type) {
+      case MeshPacket.typeMessage:
+        try {
+          final env = Envelope.fromBytes(plain);
+          if (env.from != peerId && env.kind == EnvelopeKind.ratchet) return;
+          await _handleEnvelope(env);
+        } catch (e) {
+          debugPrint('[Chat] bad mesh envelope from $peerId: $e');
+        }
+        break;
+      case MeshPacket.typeChunk:
+        try {
+          await _handleChunk(jsonDecode(utf8.decode(plain)) as Map<String, dynamic>, peerId);
+        } catch (e) {
+          debugPrint('[Chat] bad mesh chunk from $peerId: $e');
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  void _onMeshAck(String packetId) {
+    final mid = _packetToMessage.remove(packetId);
+    if (mid == null) return;
+    final roomId = _roomIdOfMessage(mid);
+    if (roomId == null) return;
+    unawaited(_updateMessage(roomId, mid, (m) =>
+        m.status == MessageStatus.sending || m.status == MessageStatus.sent ? m.copyWith(status: MessageStatus.delivered) : m));
+  }
+
+  Future<void> _onRelayInbound(RelayInbound inbound) async {
+    final peerId = _relayTokenOwner[inbound.token];
+    if (peerId == null) return;
+    final pk = await _pairKeys.forPeer(peerId);
+    final plain = pk == null ? null : await pk.unwrap(inbound.payload);
+    if (plain == null) return;
+    try {
+      final env = Envelope.fromBytes(plain);
+      if (env.from != peerId && env.kind == EnvelopeKind.ratchet) return;
+      await _handleEnvelope(env);
+    } catch (e) {
+      debugPrint('[Chat] bad relay envelope from $peerId: $e');
+    }
+  }
 
   Future<DeliveryPath> _sendRawEnvelope(String peerId, Envelope env) async {
     if (_client.isPeerConnected(peerId)) {
       await _client.sendToPeer(peerId, ProtocolMessage.envelope(env));
       return DeliveryPath.direct;
     }
+    if (_trust.get(peerId) == null) return DeliveryPath.failed;
     if (_meshAvailable) {
       try {
-        await _mesh!.send(recipientId: peerId, payload: env.toBytes());
+        await _sendViaMesh(peerId, env.toBytes());
         return DeliveryPath.mesh;
+      } catch (_) {}
+    }
+    if (_relay?.isConnected ?? false) {
+      try {
+        if (await _sendViaRelay(peerId, env.toBytes())) return DeliveryPath.relay;
       } catch (_) {}
     }
     return DeliveryPath.failed;
@@ -455,7 +748,7 @@ class ChatService extends ChangeNotifier {
       DeliveryPath path;
       try {
         if (item.kind == OutboxItem.kindInner) {
-          path = await _tryDeliver(peerId, item.innerMessage);
+          path = await _tryDeliver(peerId, item.innerMessage, messageId: item.messageId);
         } else if (item.kind == OutboxItem.kindEnvelope) {
           path = await _sendRawEnvelope(peerId, Envelope.fromJson(item.payload));
         } else {
@@ -465,18 +758,13 @@ class ChatService extends ChangeNotifier {
         debugPrint('[Chat] outbox item ${item.id} failed: $e');
         path = DeliveryPath.failed;
       }
-      if (path == DeliveryPath.direct || path == DeliveryPath.mesh) {
+      if (path == DeliveryPath.direct || path == DeliveryPath.mesh || path == DeliveryPath.relay) {
         await _outbox.remove(item.id);
         final mid = item.messageId;
         if (mid != null) {
           final roomId = _roomIdOfMessage(mid);
           if (roomId != null) {
-            await _updateMessage(
-                roomId,
-                mid,
-                (m) => m.status == MessageStatus.sending
-                    ? m.copyWith(status: MessageStatus.sent)
-                    : m);
+            await _updateMessage(roomId, mid, (m) => m.status == MessageStatus.sending ? m.copyWith(status: MessageStatus.sent) : m);
           }
         }
       } else {
@@ -493,45 +781,24 @@ class ChatService extends ChangeNotifier {
 
   // Groups
 
-  GroupMember _memberFromPinned(PinnedPeer p, {bool admin = false}) =>
-      GroupMember(
-        nyxChatId: p.nyxChatId,
-        displayName: p.displayName,
-        publicKeyHex: p.identityKeyHex,
-        signingKeyHex: p.signingKeyHex,
-        kyberKeyHex: p.kyberPublicKeyHex,
-        isAdmin: admin,
-        joinedAt: DateTime.now(),
+  GroupMember _memberFromPinned(PinnedPeer p, {bool admin = false}) => GroupMember(
+        nyxChatId: p.nyxChatId, displayName: p.displayName, publicKeyHex: p.identityKeyHex,
+        signingKeyHex: p.signingKeyHex, kyberKeyHex: p.kyberPublicKeyHex, isAdmin: admin, joinedAt: DateTime.now(),
       );
 
   GroupMember _selfMember({bool admin = false}) {
     final k = _sessions.keys;
     return GroupMember(
-      nyxChatId: _myId,
-      displayName: _myName,
-      publicKeyHex: k.identityPublicKeyHex,
-      signingKeyHex: k.signingPublicKeyHex,
-      kyberKeyHex: k.kyberPublicKeyHex,
-      isAdmin: admin,
-      joinedAt: DateTime.now(),
+      nyxChatId: _myId, displayName: _myName, publicKeyHex: k.identityPublicKeyHex,
+      signingKeyHex: k.signingPublicKeyHex, kyberKeyHex: k.kyberPublicKeyHex, isAdmin: admin, joinedAt: DateTime.now(),
     );
   }
 
-  Future<ChatRoom> createGroup({
-    required String name,
-    required List<PinnedPeer> members,
-    String? description,
-  }) async {
+  Future<ChatRoom> createGroup({required String name, required List<PinnedPeer> members, String? description}) async {
     final groupId = _uuid.v4();
-    final all = [_selfMember(admin: true), ...members.map(_memberFromPinned)];
     final room = ChatRoom(
-      id: groupId,
-      peerId: groupId,
-      peerDisplayName: name,
-      peerPublicKeyHex: '',
-      createdAt: DateTime.now(),
-      roomType: ChatRoomType.group,
-      members: all,
+      id: groupId, peerId: groupId, peerDisplayName: name, peerPublicKeyHex: '', createdAt: DateTime.now(),
+      roomType: ChatRoomType.group, members: [_selfMember(admin: true), ...members.map(_memberFromPinned)],
       groupDescription: description,
     );
     _rooms[groupId] = room;
@@ -549,12 +816,10 @@ class ChatService extends ChangeNotifier {
     final ids = room.members.map((m) => m.nyxChatId).toSet();
     final added = newMembers.where((p) => !ids.contains(p.nyxChatId)).toList();
     if (added.isEmpty) return;
-    final updated = room.copyWith(
-        members: [...room.members, ...added.map(_memberFromPinned)]);
+    final updated = room.copyWith(members: [...room.members, ...added.map(_memberFromPinned)]);
     _rooms[roomId] = updated;
     await _storage.saveChatRoom(updated);
-    await _addSystemMessage(
-        roomId, '${added.map((p) => p.displayName).join(', ')} added');
+    await _addSystemMessage(roomId, '${added.map((p) => p.displayName).join(', ')} added');
     await _broadcastGroupUpdate(updated, 'add');
     notifyListeners();
   }
@@ -562,8 +827,7 @@ class ChatService extends ChangeNotifier {
   Future<void> removeGroupMember(String roomId, String memberId) async {
     final room = _rooms[roomId];
     if (room == null || !room.isGroup) return;
-    final updated = room.copyWith(
-        members: room.members.where((m) => m.nyxChatId != memberId).toList());
+    final updated = room.copyWith(members: room.members.where((m) => m.nyxChatId != memberId).toList());
     _rooms[roomId] = updated;
     await _storage.saveChatRoom(updated);
     await _addSystemMessage(roomId, 'Member removed');
@@ -576,9 +840,7 @@ class ChatService extends ChangeNotifier {
   Future<void> leaveGroup(String roomId) async {
     final room = _rooms[roomId];
     if (room == null || !room.isGroup) return;
-    final remaining = room.copyWith(
-        members: room.members.where((m) => m.nyxChatId != _myId).toList(),
-        left: true);
+    final remaining = room.copyWith(members: room.members.where((m) => m.nyxChatId != _myId).toList(), left: true);
     _rooms[roomId] = remaining;
     await _storage.saveChatRoom(remaining);
     await _broadcastGroupUpdate(remaining, 'leave');
@@ -592,28 +854,18 @@ class ChatService extends ChangeNotifier {
   Future<void> renameGroup(String roomId, String name) async {
     final room = _rooms[roomId];
     if (room == null || !room.isGroup) return;
-    final updated = room.copyWith(peerDisplayName: name);
-    _rooms[roomId] = updated;
-    await _storage.saveChatRoom(updated);
-    await _broadcastGroupUpdate(updated, 'rename');
-    notifyListeners();
+    await _updateRoom(roomId, (r) => r.copyWith(peerDisplayName: name));
+    await _broadcastGroupUpdate(_rooms[roomId]!, 'rename');
   }
-
-  InnerMessage _groupUpdateInner(ChatRoom room, String action) =>
-      InnerMessage.groupUpdate(
-        id: _uuid.v4(),
-        groupId: room.id,
-        action: action,
-        groupName: room.peerDisplayName,
-        members: room.members.map((m) => m.toJson()).toList(),
-        description: room.groupDescription,
+  InnerMessage _groupUpdateInner(ChatRoom room, String action) => InnerMessage.groupUpdate(
+        id: _uuid.v4(), groupId: room.id, action: action, groupName: room.peerDisplayName,
+        members: room.members.map((m) => m.toJson()).toList(), description: room.groupDescription,
       );
 
   Future<void> _broadcastGroupUpdate(ChatRoom room, String action) async {
     final inner = _groupUpdateInner(room, action);
     for (final m in room.members) {
-      if (m.nyxChatId == _myId) continue;
-      await _deliver(m.nyxChatId, inner);
+      if (m.nyxChatId != _myId) await _deliver(m.nyxChatId, inner);
     }
   }
 
@@ -629,72 +881,47 @@ class ChatService extends ChangeNotifier {
     final sent = _skDistributed.putIfAbsent(room.id, () => {});
     for (final m in room.members) {
       if (m.nyxChatId == _myId || sent.contains(m.nyxChatId)) continue;
-      await _deliver(
-          m.nyxChatId,
-          InnerMessage.senderKeyDistribution(
-              id: _uuid.v4(), groupId: room.id, distribution: dist.toJson()));
+      await _deliver(m.nyxChatId, InnerMessage.senderKeyDistribution(id: _uuid.v4(), groupId: room.id, distribution: dist.toJson()));
       sent.add(m.nyxChatId);
     }
     await _persistSenderKeys();
   }
 
-  Future<DeliveryPath> _sendGroupInner(ChatRoom room, InnerMessage inner,
-      {String? messageId}) async {
+  Future<DeliveryPath> _sendGroupInner(ChatRoom room, InnerMessage inner, {String? messageId}) async {
     await _ensureSenderKeyDistributed(room);
     final ad = Envelope.associatedDataFor(_myId, room.id, EnvelopeKind.senderKey);
-    final skm = await _senderKeys.encrypt(room.id, inner.toBytes(), ad);
+    final skm = await _senderKeys.encrypt(room.id, Padding.pad(inner.toBytes()), ad);
     await _persistSenderKeys();
-    final env = Envelope.senderKey(
-      from: _myId,
-      groupId: room.id,
-      iteration: skm.iteration,
-      ciphertext: skm.ciphertext,
-      signature: skm.signature,
-    );
-    var anyDirect = false;
+    final env = Envelope.senderKey(from: _myId, groupId: room.id, iteration: skm.iteration, ciphertext: skm.ciphertext, signature: skm.signature);
+    var anySent = false;
     var anyQueued = false;
     for (final m in room.members) {
       if (m.nyxChatId == _myId) continue;
       final path = await _sendRawEnvelope(m.nyxChatId, env);
       if (path == DeliveryPath.failed) {
         anyQueued = true;
-        await _outbox.enqueue(OutboxItem(
-          id: '${m.nyxChatId}_${inner.id}',
-          peerId: m.nyxChatId,
-          kind: OutboxItem.kindEnvelope,
-          payload: env.toJson(),
-          messageId: messageId,
-        ));
+        await _outbox.enqueue(OutboxItem(id: '${m.nyxChatId}_${inner.id}', peerId: m.nyxChatId,
+            kind: OutboxItem.kindEnvelope, payload: env.toJson(), messageId: messageId));
       } else {
-        anyDirect = true;
+        anySent = true;
       }
     }
-    if (anyDirect) return DeliveryPath.direct;
+    if (anySent) return DeliveryPath.direct;
     return anyQueued ? DeliveryPath.queued : DeliveryPath.failed;
   }
 
   // Reactions
 
-  Future<void> toggleReaction({
-    required String roomId,
-    required String messageId,
-    required String emoji,
-  }) async {
+  Future<void> toggleReaction({required String roomId, required String messageId, required String emoji}) async {
     final room = _rooms[roomId];
     final msg = _find(roomId, messageId);
     if (room == null || msg == null) return;
     final mine = msg.reactions.where((r) => r.userId == _myId).toList();
     final remove = mine.isNotEmpty && mine.first.emoji == emoji;
-    final updated = remove
-        ? msg.removeReaction(_myId)
-        : msg.addReaction(MessageReaction(
-            userId: _myId, emoji: emoji, timestamp: DateTime.now()));
+    final updated = remove ? msg.removeReaction(_myId)
+        : msg.addReaction(MessageReaction(userId: _myId, emoji: emoji, timestamp: DateTime.now()));
     await _replaceMessage(roomId, updated);
-    final inner = InnerMessage.reaction(
-        id: _uuid.v4(),
-        targetMessageId: messageId,
-        emoji: emoji,
-        remove: remove,
+    final inner = InnerMessage.reaction(id: _uuid.v4(), targetMessageId: messageId, emoji: emoji, remove: remove,
         groupId: room.isGroup ? room.id : null);
     if (room.isGroup) {
       await _sendGroupInner(room, inner);
@@ -702,91 +929,81 @@ class ChatService extends ChangeNotifier {
       await _deliver(room.peerId, inner);
     }
   }
+
   // Files
 
-  Future<ChatMessage?> sendFile(
-      {required String roomId, required String filePath}) async {
+  /// True if a file of [size] can currently reach [peerId] (direct link,
+  /// or mesh for files up to [maxMeshFileBytes]).
+  bool canSendFileTo(String peerId, int size) =>
+      _client.isPeerConnected(peerId) || (_meshAvailable && _trust.get(peerId) != null && size <= maxMeshFileBytes);
+
+  Future<ChatMessage?> sendFile({required String roomId, required String filePath}) async {
     final room = _rooms[roomId];
     if (room == null) return null;
     final file = File(filePath);
     if (!await file.exists()) return null;
+    final size = await file.length();
     final targets = room.isGroup
-        ? room.members
-            .map((m) => m.nyxChatId)
-            .where((id) => id != _myId)
-            .toList()
+        ? room.members.map((m) => m.nyxChatId).where((id) => id != _myId).toList()
         : [room.peerId];
-    final online = targets.where(_client.isPeerConnected).toList();
-    if (online.isEmpty) {
-      debugPrint('[Chat] file transfer needs a direct link');
+    final reachable = targets.where((t) => canSendFileTo(t, size)).toList();
+    if (reachable.isEmpty) {
+      debugPrint('[Chat] no carrier can take this file right now');
       return null;
     }
     final fileId = _uuid.v4();
     final mime = _mimeFor(file.path);
-    final d = await FileTransferManager.describe(file,
-        fileId: fileId, mimeType: mime);
+    final d = await FileTransferManager.describe(file, fileId: fileId, mimeType: mime);
+    _outgoingFiles[fileId] = _OutgoingFile(file, d);
     final msg = ChatMessage(
-      id: fileId,
-      senderId: _myId,
-      receiverId: room.isGroup ? room.id : room.peerId,
-      content: d.fileName,
-      timestamp: DateTime.now(),
-      status: MessageStatus.sending,
-      roomId: roomId,
-      messageType:
-          mime.startsWith('image/') ? MessageType.image : MessageType.file,
+      id: fileId, senderId: _myId, receiverId: room.isGroup ? room.id : room.peerId, content: d.fileName,
+      timestamp: DateTime.now(), status: MessageStatus.sending, roomId: roomId,
+      messageType: mime.startsWith('image/') ? MessageType.image : MessageType.file,
       attachment: FileAttachment(
-        fileName: d.fileName,
-        mimeType: mime,
-        fileSize: d.fileSize,
-        filePath: filePath,
-        fileId: fileId,
-        fileKeyB64: base64Encode(d.key),
-        fileNonceB64: base64Encode(d.noncePrefix),
-        sha256Hex: d.sha256Hex,
-        totalChunks: d.totalChunks,
-        receivedChunks: d.totalChunks,
+        fileName: d.fileName, mimeType: mime, fileSize: d.fileSize, filePath: filePath, fileId: fileId,
+        fileKeyB64: base64Encode(d.key), fileNonceB64: base64Encode(d.noncePrefix), sha256Hex: d.sha256Hex,
+        totalChunks: d.totalChunks, receivedChunks: d.totalChunks,
       ),
     );
     await _addMessage(roomId, msg);
     final inner = InnerMessage.file(
-      id: fileId,
-      fileId: fileId,
-      fileName: d.fileName,
-      mimeType: mime,
-      fileSize: d.fileSize,
-      fileKey: d.key,
-      fileNonce: d.noncePrefix,
-      totalChunks: d.totalChunks,
-      chunkSize: d.chunkSize,
-      sha256Hex: d.sha256Hex,
-      groupId: room.isGroup ? room.id : null,
+      id: fileId, fileId: fileId, fileName: d.fileName, mimeType: mime, fileSize: d.fileSize,
+      fileKey: d.key, fileNonce: d.noncePrefix, totalChunks: d.totalChunks, chunkSize: d.chunkSize,
+      sha256Hex: d.sha256Hex, groupId: room.isGroup ? room.id : null,
     );
     var sentAny = false;
-    for (final peerId in online) {
-      final path = await _deliver(peerId, inner,
-          messageId: fileId, queueOnFailure: false);
-      if (path != DeliveryPath.direct) continue;
+    for (final peerId in reachable) {
+      final path = await _deliver(peerId, inner, messageId: fileId, queueOnFailure: false);
+      if (path == DeliveryPath.failed) continue;
       sentAny = true;
       unawaited(_streamChunks(file, d, peerId));
     }
-    await _updateMessage(
-        roomId,
-        fileId,
-        (m) => m.copyWith(
-            status: sentAny ? MessageStatus.sent : MessageStatus.failed));
+    await _updateMessage(roomId, fileId, (m) => m.copyWith(status: sentAny ? MessageStatus.sent : MessageStatus.failed));
     return _find(roomId, fileId);
+  }
+
+  Future<bool> _sendChunk(String peerId, FileChunkFrame frame) async {
+    if (_client.isPeerConnected(peerId)) {
+      await _client.sendToPeer(peerId, ProtocolMessage.fileChunk(frame.toJson()));
+      return true;
+    }
+    if (_meshAvailable && _trust.get(peerId) != null) {
+      try {
+        await _sendViaMesh(peerId, utf8.encode(jsonEncode(frame.toJson())), type: MeshPacket.typeChunk);
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        return true;
+      } catch (e) {
+        debugPrint('[Chat] mesh chunk failed: $e');
+      }
+    }
+    return false;
   }
 
   Future<void> _streamChunks(File file, FileDescriptor d, String peerId) async {
     for (var i = 0; i < d.totalChunks; i++) {
-      if (!_client.isPeerConnected(peerId)) return;
       final frame = await FileTransferManager.encryptChunk(file, d, i);
-      await _client.sendToPeer(
-          peerId, ProtocolMessage.fileChunk(frame.toJson()));
-      if (i % 8 == 7) {
-        await Future<void>.delayed(const Duration(milliseconds: 5));
-      }
+      if (!await _sendChunk(peerId, frame)) return; // receiver will request the rest
+      if (i % 8 == 7) await Future<void>.delayed(const Duration(milliseconds: 5));
     }
   }
 
@@ -797,40 +1014,67 @@ class ChatService extends ChangeNotifier {
       final done = await files.accept(frame);
       final roomId = _roomIdOfMessage(frame.fileId);
       if (roomId == null) return;
-      final received =
-          files.incoming[frame.fileId]?.received.length ?? frame.total;
-      await _updateMessage(
-          roomId,
-          frame.fileId,
-          (m) => m.copyWith(
-                attachment: m.attachment?.copyWith(receivedChunks: received),
-                status: done != null ? MessageStatus.delivered : m.status,
-              ));
+      final received = files.incoming[frame.fileId]?.received.length ?? frame.total;
+      await _updateMessage(roomId, frame.fileId, (m) => m.copyWith(
+            attachment: m.attachment?.copyWith(receivedChunks: received),
+            status: done != null ? MessageStatus.delivered : m.status,
+          ));
       if (done != null) {
-        await _deliver(
-            fromPeer,
-            InnerMessage.receipt(
-                id: _uuid.v4(), messageIds: [frame.fileId], kind: 'delivered'),
-            queueOnFailure: false);
+        _chunkRequestsSent.remove(frame.fileId);
+        await _deliver(fromPeer, InnerMessage.receipt(id: _uuid.v4(), messageIds: [frame.fileId], kind: 'delivered'), queueOnFailure: false);
       }
     } catch (e) {
       debugPrint('[Chat] chunk error: $e');
     }
   }
 
-  // Inbound
-
-  Future<void> _handleEnvelopeBytes(List<int> bytes,
-      {PeerConnection? via}) async {
-    try {
-      await _handleEnvelope(Envelope.fromBytes(bytes), via: via);
-    } catch (e) {
-      debugPrint('[Chat] bad envelope bytes: $e');
+  /// Receiver side: ask the sender for chunks that never arrived.
+  Future<void> _requestMissingChunks() async {
+    for (final t in files.incoming.values.toList()) {
+      if (DateTime.now().difference(t.lastUpdate) < const Duration(seconds: 20)) continue;
+      final sent = _chunkRequestsSent[t.descriptor.fileId] ?? 0;
+      if (sent >= 30) continue;
+      final missing = files.missingChunks(t.descriptor.fileId).take(24).toList();
+      if (missing.isEmpty) continue;
+      final roomId = _roomIdOfMessage(t.descriptor.fileId);
+      final msg = roomId == null ? null : _find(roomId, t.descriptor.fileId);
+      if (msg == null) continue;
+      _chunkRequestsSent[t.descriptor.fileId] = sent + 1;
+      await _deliver(msg.senderId,
+          InnerMessage(type: typeChunkRequest, id: _uuid.v4(), body: {'fileId': t.descriptor.fileId, 'idx': missing}),
+          queueOnFailure: false);
     }
   }
 
-  Future<void> _handleEnvelopeJson(Map<String, dynamic> json,
-      {PeerConnection? via}) async {
+  /// Sender side: re-send requested chunks.
+  Future<void> _onChunkRequest(String from, InnerMessage m) async {
+    final fileId = m.body['fileId'];
+    final idx = (m.body['idx'] as List<dynamic>?)?.whereType<int>().take(24).toList() ?? const [];
+    if (fileId is! String || idx.isEmpty) return;
+    var out = _outgoingFiles[fileId];
+    if (out == null) {
+      final roomId = _roomIdOfMessage(fileId);
+      final msg = roomId == null ? null : _find(roomId, fileId);
+      final a = msg?.attachment;
+      if (msg == null || a == null || msg.senderId != _myId || a.filePath == null || a.fileKeyB64 == null) return;
+      final file = File(a.filePath!);
+      if (!await file.exists()) return;
+      out = _OutgoingFile(file, FileDescriptor(
+        fileId: fileId, fileName: a.fileName, mimeType: a.mimeType, fileSize: a.fileSize,
+        key: base64Decode(a.fileKeyB64!), noncePrefix: base64Decode(a.fileNonceB64!),
+        totalChunks: a.totalChunks, chunkSize: FileTransferManager.chunkSize, sha256Hex: a.sha256Hex ?? '',
+      ));
+      _outgoingFiles[fileId] = out;
+    }
+    for (final i in idx) {
+      if (i < 0 || i >= out.descriptor.totalChunks) continue;
+      final frame = await FileTransferManager.encryptChunk(out.file, out.descriptor, i);
+      if (!await _sendChunk(from, frame)) return;
+    }
+  }
+  // Inbound
+
+  Future<void> _handleEnvelopeJson(Map<String, dynamic> json, {PeerConnection? via}) async {
     try {
       await _handleEnvelope(Envelope.fromJson(json), via: via);
     } catch (e) {
@@ -891,29 +1135,19 @@ class ChatService extends ChangeNotifier {
       return;
     }
     try {
-      final ad =
-          Envelope.associatedDataFor(env.from, env.to, EnvelopeKind.senderKey);
-      final plain = await _senderKeys.decrypt(
-        groupId: env.to,
-        senderId: env.from,
-        message:
-            SenderKeyMessage(env.iteration!, env.ciphertext, env.signature!),
-        associatedData: ad,
-      );
+      final ad = Envelope.associatedDataFor(env.from, env.to, EnvelopeKind.senderKey);
+      final plain = await _senderKeys.decrypt(groupId: env.to, senderId: env.from,
+          message: SenderKeyMessage(env.iteration!, env.ciphertext, env.signature!), associatedData: ad);
       await _persistSenderKeys();
-      await _handleInner(env.from, InnerMessage.fromBytes(plain),
-          groupId: env.to);
+      await _handleInner(env.from, InnerMessage.fromBytes(Padding.unpad(plain)), groupId: env.to);
     } catch (e) {
       debugPrint('[Chat] group envelope from ${env.from} failed: $e');
     }
   }
 
-  Future<void> _handleInner(String from, InnerMessage m,
-      {String? groupId}) async {
+  Future<void> _handleInner(String from, InnerMessage m, {String? groupId}) async {
     if (!_recentInnerIds.add('$from:${m.id}')) return;
-    if (_recentInnerIds.length > _maxRecentIds) {
-      _recentInnerIds.remove(_recentInnerIds.first);
-    }
+    if (_recentInnerIds.length > _maxRecentIds) _recentInnerIds.remove(_recentInnerIds.first);
     final gid = groupId ?? m.groupId;
     switch (m.type) {
       case InnerMessage.typeText:
@@ -938,6 +1172,12 @@ class ChatService extends ChangeNotifier {
         await _outbox.resetBackoff(from);
         await flushOutbox(from);
         break;
+      case typeChunkRequest:
+        await _onChunkRequest(from, m);
+        break;
+      case typeKeyTransition:
+        await _onKeyTransition(from, m);
+        break;
       default:
         break;
     }
@@ -950,8 +1190,7 @@ class ChatService extends ChangeNotifier {
       if (!r.members.any((m) => m.nyxChatId == from)) return null;
       return r;
     }
-    final name = _trust.get(from)?.displayName ?? from;
-    return getOrCreateDirectRoom(peerId: from, displayName: name);
+    return getOrCreateDirectRoom(peerId: from, displayName: _trust.get(from)?.displayName ?? from);
   }
 
   Future<void> _onText(String from, InnerMessage m, String? gid) async {
@@ -960,24 +1199,12 @@ class ChatService extends ChangeNotifier {
     if (await _storage.getMessage(m.id) != null) return;
     final ttl = m.body['ttl'];
     final msg = ChatMessage(
-      id: m.id,
-      senderId: from,
-      receiverId: gid ?? _myId,
-      content: m.text,
-      timestamp: m.timestamp.toLocal(),
-      status: MessageStatus.delivered,
-      roomId: room.id,
-      replyToId: m.body['replyTo'] as String?,
-      expiresAt: ttl is int && ttl > 0
-          ? DateTime.now().add(Duration(seconds: ttl))
-          : null,
+      id: m.id, senderId: from, receiverId: gid ?? _myId, content: m.text, timestamp: m.timestamp.toLocal(),
+      status: MessageStatus.delivered, roomId: room.id, replyToId: m.body['replyTo'] as String?,
+      expiresAt: ttl is int && ttl > 0 ? DateTime.now().add(Duration(seconds: ttl)) : null,
     );
     await _addMessage(room.id, msg, incoming: true);
-    await _deliver(
-        from,
-        InnerMessage.receipt(
-            id: _uuid.v4(), messageIds: [m.id], kind: 'delivered', groupId: gid),
-        queueOnFailure: false);
+    await _deliver(from, InnerMessage.receipt(id: _uuid.v4(), messageIds: [m.id], kind: 'delivered', groupId: gid), queueOnFailure: false);
   }
 
   Future<void> _onFile(String from, InnerMessage m, String? gid) async {
@@ -985,30 +1212,15 @@ class ChatService extends ChangeNotifier {
     if (room == null) return;
     final d = FileDescriptor.fromInnerBody(m.body);
     if (await _storage.getMessage(d.fileId) != null) return;
-    final dir = await getApplicationDocumentsDirectory();
-    final savePath = '${dir.path}/nyxchat_files/${d.fileId}_${d.fileName}';
+    final dir = filesDirectoryProvider != null ? await filesDirectoryProvider!() : (await getApplicationDocumentsDirectory()).path;
+    final savePath = '$dir/nyxchat_files/${d.fileId}_${d.fileName}';
     await files.begin(d, savePath);
     final msg = ChatMessage(
-      id: d.fileId,
-      senderId: from,
-      receiverId: gid ?? _myId,
-      content: d.fileName,
-      timestamp: m.timestamp.toLocal(),
-      status: MessageStatus.sent,
-      roomId: room.id,
-      messageType: d.mimeType.startsWith('image/')
-          ? MessageType.image
-          : MessageType.file,
-      attachment: FileAttachment(
-        fileName: d.fileName,
-        mimeType: d.mimeType,
-        fileSize: d.fileSize,
-        filePath: savePath,
-        fileId: d.fileId,
-        sha256Hex: d.sha256Hex,
-        totalChunks: d.totalChunks,
-        receivedChunks: 0,
-      ),
+      id: d.fileId, senderId: from, receiverId: gid ?? _myId, content: d.fileName, timestamp: m.timestamp.toLocal(),
+      status: MessageStatus.sent, roomId: room.id,
+      messageType: d.mimeType.startsWith('image/') ? MessageType.image : MessageType.file,
+      attachment: FileAttachment(fileName: d.fileName, mimeType: d.mimeType, fileSize: d.fileSize, filePath: savePath,
+          fileId: d.fileId, sha256Hex: d.sha256Hex, totalChunks: d.totalChunks, receivedChunks: 0),
     );
     await _addMessage(room.id, msg, incoming: true);
   }
@@ -1018,18 +1230,15 @@ class ChatService extends ChangeNotifier {
     final emoji = m.body['emoji'] as String?;
     if (target == null || emoji == null) return;
     final roomId = _roomIdOfMessage(target);
-    if (roomId == null) return;
-    final msg = _find(roomId, target);
+    final msg = roomId == null ? null : _find(roomId, target);
     if (msg == null) return;
-    final updated = (m.body['remove'] == true)
-        ? msg.removeReaction(from)
-        : msg.addReaction(MessageReaction(
-            userId: from, emoji: emoji, timestamp: DateTime.now()));
-    await _replaceMessage(roomId, updated);
+    final updated = (m.body['remove'] == true) ? msg.removeReaction(from)
+        : msg.addReaction(MessageReaction(userId: from, emoji: emoji, timestamp: DateTime.now()));
+    await _replaceMessage(roomId!, updated);
   }
 
   Future<void> _onReceipt(String from, InnerMessage m) async {
-    final ids = (m.body['ids'] as List<dynamic>?)?.cast<String>() ?? const [];
+    final ids = (m.body['ids'] as List<dynamic>?)?.whereType<String>() ?? const <String>[];
     final kind = m.body['kind'] as String?;
     for (final id in ids) {
       final roomId = _roomIdOfMessage(id);
@@ -1037,18 +1246,10 @@ class ChatService extends ChangeNotifier {
       await _updateMessage(roomId, id, (msg) {
         if (msg.senderId != _myId) return msg;
         if (kind == 'read') {
-          return msg.copyWith(
-            status: MessageStatus.read,
-            readBy: {...msg.readBy, from}.toList(),
-            deliveredTo: {...msg.deliveredTo, from}.toList(),
-          );
+          return msg.copyWith(status: MessageStatus.read, readBy: {...msg.readBy, from}.toList(), deliveredTo: {...msg.deliveredTo, from}.toList());
         }
-        return msg.copyWith(
-          status: msg.status == MessageStatus.read
-              ? msg.status
-              : MessageStatus.delivered,
-          deliveredTo: {...msg.deliveredTo, from}.toList(),
-        );
+        return msg.copyWith(status: msg.status == MessageStatus.read ? msg.status : MessageStatus.delivered,
+            deliveredTo: {...msg.deliveredTo, from}.toList());
       });
     }
   }
@@ -1258,6 +1459,10 @@ class ChatService extends ChangeNotifier {
     _skDistributed.clear();
     _senderKeys.clear();
     _recentInnerIds.clear();
+    _packetToMessage.clear();
+    _outgoingFiles.clear();
+    _meshTokenOwner.clear();
+    _relayTokenOwner.clear();
     await _outbox.clear();
     notifyListeners();
   }
@@ -1266,11 +1471,16 @@ class ChatService extends ChangeNotifier {
   void dispose() {
     _expiryTimer?.cancel();
     _outboxTimer?.cancel();
+    _tokenTimer?.cancel();
+    _chunkTimer?.cancel();
+    _relaySub?.cancel();
+    _trust.removeListener(_onTrustChanged);
     for (final s in _subs) {
       s.cancel();
     }
     _incoming.close();
     _roomChanged.close();
+    _emergencyStream.close();
     super.dispose();
   }
 }

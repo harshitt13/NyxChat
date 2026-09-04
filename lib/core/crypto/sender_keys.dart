@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import '../protocol/parse.dart';
 import 'crypto_utils.dart';
 
 /// Group messaging with Sender Keys (the scheme used by Signal groups).
@@ -50,24 +51,36 @@ class SenderKeyState {
             .toList(),
       };
 
-  factory SenderKeyState.fromJson(Map<String, dynamic> json) {
-    final spk = CryptoUtils.fromHex(json['spk'] as String);
-    final ssk = json['ssk'] as String?;
-    final skipped = <int, Uint8List>{};
-    for (final e in (json['skipped'] as List<dynamic>? ?? const [])) {
-      final pair = e as List<dynamic>;
-      skipped[pair[0] as int] = CryptoUtils.fromHex(pair[1] as String);
-    }
-    return SenderKeyState(
-      chainKey: CryptoUtils.fromHex(json['ck'] as String),
-      iteration: json['it'] as int,
-      signingPublicKey: spk,
-      signingKeyPair: ssk == null
-          ? null
-          : CryptoUtils.ed25519KeyPairFromBytes(CryptoUtils.fromHex(ssk), spk),
-      skipped: skipped,
-    );
-  }
+  factory SenderKeyState.fromJson(Map<String, dynamic> json) => parseOr(() {
+        const ctx = 'sender key state';
+        final spk = requireHex(json, 'spk',
+            length: CryptoUtils.ed25519KeyLength, context: ctx);
+        final ssk = optionalHex(json, 'ssk', length: 32, context: ctx);
+        final skipped = <int, Uint8List>{};
+        final rawSkipped = optionalList(json, 'skipped',
+                maxLength: maxStoredSkipped, context: ctx) ??
+            const <dynamic>[];
+        for (final entry in rawSkipped) {
+          if (entry is! List || entry.length != 2) {
+            throw const FormatException('sender key state: bad skipped entry');
+          }
+          final it = entry[0];
+          final mk = entry[1];
+          if (it is! int || it < 0 || mk is! String) {
+            throw const FormatException('sender key state: bad skipped entry');
+          }
+          skipped[it] = CryptoUtils.decodeKey(mk, 32, 'skipped message key');
+        }
+        return SenderKeyState(
+          chainKey: requireHex(json, 'ck', length: 32, context: ctx),
+          iteration: requireInt(json, 'it', min: 0, max: 1 << 30, context: ctx),
+          signingPublicKey: spk,
+          signingKeyPair: ssk == null
+              ? null
+              : CryptoUtils.ed25519KeyPairFromBytes(ssk, spk),
+          skipped: skipped,
+        );
+      }, context: 'sender key state');
 }
 
 /// What a member sends to the others (inside a ratchet envelope).
@@ -91,17 +104,18 @@ class SenderKeyDistribution {
         'spk': CryptoUtils.toHex(signingPublicKey),
       };
 
-  factory SenderKeyDistribution.fromJson(Map<String, dynamic> json) {
-    final it = json['it'];
-    if (it is! int || it < 0) throw const FormatException('bad iteration');
-    return SenderKeyDistribution(
-      groupId: json['g'] as String,
-      chainKey: CryptoUtils.decodeKey(json['ck'] as String, 32, 'chain key'),
-      iteration: it,
-      signingPublicKey: CryptoUtils.decodeKey(
-          json['spk'] as String, CryptoUtils.ed25519KeyLength, 'signing key'),
-    );
-  }
+  factory SenderKeyDistribution.fromJson(Map<String, dynamic> json) =>
+      parseOr(() {
+        const ctx = 'sender key distribution';
+        return SenderKeyDistribution(
+          groupId: requireString(json, 'g',
+              minLength: 1, maxLength: 64, context: ctx),
+          chainKey: requireHex(json, 'ck', length: 32, context: ctx),
+          iteration: requireInt(json, 'it', min: 0, max: 1 << 30, context: ctx),
+          signingPublicKey: requireHex(json, 'spk',
+              length: CryptoUtils.ed25519KeyLength, context: ctx),
+        );
+      }, context: 'sender key distribution');
 }
 
 class SenderKeyMessage {

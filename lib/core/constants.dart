@@ -1,7 +1,7 @@
 class AppConstants {
   // App Info
   static const String appName = 'NyxChat';
-  static const String appVersion = '3.0.0';
+  static const String appVersion = '3.1.0';
 
   // Networking
   static const String serviceType = '_nyxchat._tcp';
@@ -22,7 +22,7 @@ class AppConstants {
   static const String userBox = 'user';
 
   // Protocol
-  static const String protocolVersion = '3';
+  static const String protocolVersion = '4';
 
   // UI
   static const double maxChatBubbleWidth = 0.75; // 75% of screen width

@@ -64,6 +64,14 @@ class SettingsScreen extends StatelessWidget {
                 _nav(Icons.hub_outlined, 'Mesh diagnostics', () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MeshMapScreen()))),
               ]),
               const SizedBox(height: 24),
+              _title('Internet delivery'),
+              _card([
+                _toggle(Icons.public_rounded, 'Deliver through public relays (Nostr)', settings.nostrEnabled, settings.setNostrEnabled,
+                    subtitle: 'Sealed envelopes under rotating tokens on public Nostr relays. No account, no server of ours. Off by default.'),
+                _toggle(Icons.shield_moon_outlined, 'Route relays through Tor (Orbot)', settings.nostrViaTor, settings.setNostrViaTor,
+                    subtitle: 'Requires Orbot running with its HTTP proxy on 127.0.0.1:8118'),
+              ]),
+              const SizedBox(height: 24),
               _title('Security'),
               _card([
                 _nav(Icons.lock_outline_rounded, 'App lock, duress password, panic wipe',

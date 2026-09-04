@@ -1,7 +1,7 @@
 name: nyxchat
 description: "NyxChat — Decentralized P2P encrypted messaging"
 publish_to: 'none'
-version: 3.0.0+3
+version: 3.1.0+4
 
 environment:
   sdk: ^3.11.0
@@ -48,8 +48,12 @@ dependencies:
   animate_do: ^3.3.4
   intl: ^0.19.0
   file_picker: ^8.1.6
-  post_quantum: ^1.0.0-prerelease.8
   qr_flutter: ^4.1.0
+  mobile_scanner: ^7.4.0
+
+  # Native ML-KEM (FIPS 203) binding and Nostr relay signing
+  ffi: ^2.2.0
+  bip340: ^0.3.1
 
 dev_dependencies:
   flutter_test:

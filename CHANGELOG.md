@@ -1,5 +1,68 @@
 # Changelog
 
+## 3.1.0 (2026-09) - protocol v4
+
+Not compatible with 3.0.x peers (mesh packet format, beacon format and
+KEM changed). Re-pair once after upgrading.
+
+### Post-quantum
+- Kyber replaced by ML-KEM-768 (FIPS 203) from PQClean, compiled from C
+  and bound through dart:ffi on Android and on the host for tests. The
+  pure-Dart round-3 Kyber dependency is gone.
+- The handshake encapsulates to a fresh per-handshake KEM key
+  (post-quantum forward secrecy); the responder's signature now also covers
+  the hash of the initiator's hello (no identity misbinding) and the
+  responder refuses replayed initiator nonces. Hello version is 4.
+- Simultaneous asynchronous initiation: the loser announces its abandoned
+  ephemeral (`ab` on envelopes) and the winner blacklists ignored inits, so
+  a delayed copy of the abandoned initiation can no longer replace the
+  surviving session.
+
+### Privacy
+- Private discovery: mDNS and BLE beacons carry a Bloom filter of
+  per-contact presence tokens for the current 15-minute slot instead of
+  the handle and name. Only pinned contacts can recognise you; a
+  "visible to everyone" switch keeps the old behaviour for meeting new
+  people. Service names are random per launch.
+- Sealed sender on the mesh: binary packet format with rotating recipient
+  and reply tokens derived per contact pair and epoch, per-launch random
+  relay ids, and the envelope wrapped under a pair key. Relays see only
+  opaque bytes and short-lived tokens.
+- Length hiding: every plaintext is padded to a power-of-two bucket
+  (256 B minimum) before end-to-end encryption.
+- Mesh acknowledgements: destinations answer with an ack; every relay
+  that sees it purges the packet from its store.
+
+### Delivery
+- Files travel over the mesh (up to 4 MiB) with per-chunk requests for
+  anything that went missing; larger files still need a direct link.
+- Internet path with no servers of our own: sealed envelopes can be posted
+  to public Nostr relays (kind 1059, rotating daily tokens), optionally
+  through Tor via Orbot. Off by default.
+- Wi-Fi Direct (Nearby Connections) endpoints now forward mesh packets.
+- Emergency broadcast: a one-tap, location-scoped (geohash cell) anonymous
+  channel over the mesh, with optional name and position.
+
+### Identity
+- Signed key-transition statements: rotate all keys and let contacts merge
+  the new identity without a key-change alarm.
+- Encrypted backup and restore (Argon2id + AES-256-GCM) of keys,
+  contacts, sessions and messages.
+- QR code scanning of contact cards with the camera.
+
+### Robustness
+- End-to-end integration tests: two and three complete stacks over
+  loopback TCP and a simulated mesh (handshake, session open, receipts,
+  reconnect, session reset, sealed mesh delivery with ack, groups with
+  removal).
+- Seeded fuzz tests for every wire parser; parsers now fail only with
+  FormatException; BLE reassembly capped at 64 KiB.
+- Tamarin models of the handshake and asynchronous initiation (formal/).
+- Release workflow publishes SHA-256 checksums of the APK and AAB.
+
+### App
+- Conversation and message search, image thumbnails, relay settings,
+  visibility toggle, emergency screen, backup screen.
 ## 3.0.0 (2026-09)
 
 Protocol v3. Not backward compatible with 2.x peers.

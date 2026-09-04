@@ -32,6 +32,9 @@ class BleProtocol {
   static const int defaultMtu = 20;
   static const int maxPacketSize = 65536; // 64KB max message
 
+  /// Upper bound on a reassembled message; larger ones are dropped.
+  static const int maxAssembledBytes = 64 * 1024;
+
   // Flags
   static const int flagFirst = 0x01;
   static const int flagLast = 0x02;
@@ -103,47 +106,57 @@ class BleProtocol {
 }
 
 /// Assembles chunked BLE packets back into complete messages.
+///
+/// Hostile or corrupt input never throws: chunks shorter than the header
+/// are ignored, a message that would grow past [maxAssembledBytes] is
+/// dropped (and the assembler reset), and continuation chunks that arrive
+/// without a first chunk are discarded.
 class BlePacketAssembler {
+  /// Largest message this assembler will ever return.
+  static const int maxAssembledBytes = BleProtocol.maxAssembledBytes;
+
   final List<Uint8List> _chunks = [];
+  int _size = 0;
   bool _receiving = false;
 
-  /// Feed a raw chunk. Returns the complete message when all chunks received,
-  /// or null if still waiting for more.
+  /// Feed a raw chunk. Returns the complete message when all chunks have
+  /// been received, or null if still waiting (or the chunk was dropped).
   Uint8List? addChunk(Uint8List chunk) {
     if (chunk.length < BleProtocol.headerSize) return null;
 
     final flags = chunk[1];
-    final payload = chunk.sublist(BleProtocol.headerSize);
+    final payloadLength = chunk.length - BleProtocol.headerSize;
 
     if (flags == BleProtocol.flagSingle) {
-      // Single chunk message
-      _chunks.clear();
-      _receiving = false;
-      return Uint8List.fromList(payload);
+      reset();
+      if (payloadLength > maxAssembledBytes) return null;
+      return chunk.sublist(BleProtocol.headerSize);
     }
 
     if (flags & BleProtocol.flagFirst != 0) {
-      // Start of multi-chunk message
-      _chunks.clear();
+      // Start of a multi-chunk message (any partial one is abandoned).
+      reset();
       _receiving = true;
     }
 
-    if (_receiving) {
-      _chunks.add(payload);
+    // A continuation without a preceding first chunk is noise.
+    if (!_receiving) return null;
+
+    if (_size + payloadLength > maxAssembledBytes) {
+      reset();
+      return null;
     }
+    _chunks.add(chunk.sublist(BleProtocol.headerSize));
+    _size += payloadLength;
 
     if (flags & BleProtocol.flagLast != 0) {
-      // Last chunk — assemble
-      _receiving = false;
-      final total =
-          _chunks.fold<int>(0, (sum, c) => sum + c.length);
-      final assembled = Uint8List(total);
-      int offset = 0;
+      final assembled = Uint8List(_size);
+      var offset = 0;
       for (final c in _chunks) {
         assembled.setRange(offset, offset + c.length, c);
         offset += c.length;
       }
-      _chunks.clear();
+      reset();
       return assembled;
     }
 
@@ -153,6 +166,7 @@ class BlePacketAssembler {
   /// Reset assembler state.
   void reset() {
     _chunks.clear();
+    _size = 0;
     _receiving = false;
   }
 }

@@ -59,8 +59,8 @@ class MeshMapScreen extends StatelessWidget {
                 if (router.routingTable.isEmpty) _hint('Routes are learned from the path recorded in every packet and from periodic beacons.'),
                 ...router.routingTable.entries.map((e) => _tile(
                       Icons.alt_route_rounded,
-                      '${e.key.substring(0, 12)}...',
-                      'via ${e.value.nextHopHash.substring(0, 12)}... · ${e.value.hopCount} hops',
+                      'token ${e.key.substring(0, 12)}...',
+                      'via relay ${e.value.nextHopHex}... · ${e.value.hopCount} hops',
                       AppTheme.accentPurple,
                     )),
                 const SizedBox(height: 20),

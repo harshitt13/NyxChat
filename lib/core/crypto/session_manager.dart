@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../protocol/envelope.dart';
 import '../protocol/inner_message.dart';
+import '../protocol/padding.dart';
 import '../storage/key_value_store.dart';
 import '../storage/trust_store.dart';
 import 'double_ratchet.dart';
@@ -48,6 +49,16 @@ class SessionRecord {
   /// repeated init blocks from the same initiator).
   String? acceptedInitEph;
 
+  /// Init ephemerals we deliberately ignored (we won a collision). A
+  /// stale message carrying one of them must never replace the session.
+  final List<String> ignoredInitEphs;
+
+  /// Our own init ephemeral that we abandoned when we lost a collision and
+  /// adopted the peer's session. Announced on every outgoing envelope until
+  /// the peer has heard from us, so the peer can blacklist it before a late
+  /// copy of the abandoned initiation reaches them.
+  String? abandonedInitEph;
+
   /// 'handshake' or 'async'.
   String origin;
   DateTime createdAt;
@@ -58,15 +69,20 @@ class SessionRecord {
     required this.origin,
     this.pendingInit,
     this.acceptedInitEph,
+    List<String>? ignoredInitEphs,
+    this.abandonedInitEph,
     DateTime? createdAt,
     DateTime? updatedAt,
-  })  : createdAt = createdAt ?? DateTime.now().toUtc(),
+  })  : ignoredInitEphs = ignoredInitEphs ?? [],
+        createdAt = createdAt ?? DateTime.now().toUtc(),
         updatedAt = updatedAt ?? DateTime.now().toUtc();
 
   Map<String, dynamic> toJson() => {
         'ratchet': ratchet.toJson(),
         if (pendingInit != null) 'pendingInit': pendingInit!.toJson(),
         if (acceptedInitEph != null) 'acceptedInitEph': acceptedInitEph,
+        if (ignoredInitEphs.isNotEmpty) 'ignoredInit': ignoredInitEphs,
+        if (abandonedInitEph != null) 'abandonedInit': abandonedInitEph,
         'origin': origin,
         'created': createdAt.toIso8601String(),
         'updated': updatedAt.toIso8601String(),
@@ -80,6 +96,8 @@ class SessionRecord {
             : SessionInitBlock.fromJson(
                 j['pendingInit'] as Map<String, dynamic>),
         acceptedInitEph: j['acceptedInitEph'] as String?,
+        ignoredInitEphs: (j['ignoredInit'] as List<dynamic>?)?.cast<String>().toList(),
+        abandonedInitEph: j['abandonedInit'] as String?,
         origin: j['origin'] as String? ?? 'handshake',
         createdAt: DateTime.parse(j['created'] as String),
         updatedAt: DateTime.parse(j['updated'] as String),
@@ -166,12 +184,17 @@ class SessionManager {
       _sessions[peerId] = rec;
     }
     if (!rec.ratchet.canSend) throw SessionNotReadyException(peerId);
-    final ad = Envelope.associatedDataFor(myId, peerId, EnvelopeKind.ratchet);
-    final sealed =
-        await rec.ratchet.encrypt(message.toBytes(), associatedData: ad);
+    final ad = Envelope.associatedDataFor(myId, peerId, EnvelopeKind.ratchet,
+        abandonedInitEph: rec.abandonedInitEph);
+    final sealed = await rec.ratchet
+        .encrypt(Padding.pad(message.toBytes()), associatedData: ad);
     await _save(peerId, rec);
     return Envelope.ratchet(
-        from: myId, to: peerId, message: sealed, init: rec.pendingInit);
+        from: myId,
+        to: peerId,
+        message: sealed,
+        init: rec.pendingInit,
+        abandonedInitEph: rec.abandonedInitEph);
   }
 
   /// Decrypt a ratchet envelope addressed to us.
@@ -183,7 +206,8 @@ class SessionManager {
       throw const FormatException('envelope not addressed to us');
     }
     final peerId = envelope.from;
-    final ad = Envelope.associatedDataFor(peerId, myId, EnvelopeKind.ratchet);
+    final ad = Envelope.associatedDataFor(peerId, myId, EnvelopeKind.ratchet,
+        abandonedInitEph: envelope.abandonedInitEph);
     final ratchetMsg = RatchetMessage(envelope.header!, envelope.ciphertext);
     final existing = _sessions[peerId];
     final init = envelope.init;
@@ -194,18 +218,33 @@ class SessionManager {
       final plain =
           await existing.ratchet.decrypt(ratchetMsg, associatedData: ad);
       existing.pendingInit = null; // we heard from them: they have our key
+      if (init == null) {
+        // They stopped sending their init: they have heard from us, so the
+        // abandoned-ephemeral announcement has done its job.
+        existing.abandonedInitEph = null;
+      }
+      final abandoned = envelope.abandonedInitEph;
+      if (abandoned != null) _remember(existing.ignoredInitEphs, abandoned);
       await _save(peerId, existing);
-      return InnerMessage.fromBytes(plain);
+      return InnerMessage.fromBytes(Padding.unpad(plain));
     }
 
     if (init == null || pinned == null) {
       throw NoSessionException(peerId);
     }
 
+    // A late message from an initiation we already declined must not be
+    // mistaken for the peer having lost its state.
+    if (existing != null && existing.ignoredInitEphs.contains(init.ephemeralHex)) {
+      throw SessionCollisionException(peerId);
+    }
+
     // Simultaneous async initiation: the lexicographically smaller id wins.
     if (existing != null &&
         existing.pendingInit != null &&
         myId.compareTo(peerId) < 0) {
+      _remember(existing.ignoredInitEphs, init.ephemeralHex);
+      await _save(peerId, existing);
       throw SessionCollisionException(peerId);
     }
 
@@ -228,9 +267,29 @@ class SessionManager {
         ratchet: ratchet,
         origin: 'async',
         acceptedInitEph: init.ephemeralHex,
+        // If we were mid-initiation ourselves we lost the collision: tell
+        // the peer which ephemeral to blacklist. Keep what we already ignore.
+        abandonedInitEph: existing?.pendingInit?.ephemeralHex,
+        ignoredInitEphs: existing?.ignoredInitEphs,
       ),
     );
-    return InnerMessage.fromBytes(plain);
+    return InnerMessage.fromBytes(Padding.unpad(plain));
+  }
+
+  static void _remember(List<String> list, String eph) {
+    if (list.contains(eph)) return;
+    list.add(eph);
+    while (list.length > 8) {
+      list.removeAt(0);
+    }
+  }
+
+  /// A contact rotated its identity: carry the session over to the new id.
+  Future<void> rename(String oldPeerId, String newPeerId) async {
+    final rec = _sessions.remove(oldPeerId);
+    await store.delete(oldPeerId);
+    if (rec == null) return;
+    await _save(newPeerId, rec);
   }
 
   Future<void> reset(String peerId) async {

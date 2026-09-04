@@ -1,5 +1,7 @@
 import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
+
 import 'mesh_packet.dart';
 
 /// Bounded store for undelivered mesh packets plus a seen-id set for
@@ -52,16 +54,13 @@ class MeshStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  List<MeshPacket> getForwardable(String myHash) {
+  List<MeshPacket> getForwardable(Uint8List myRelayId) {
     _cleanup();
     return _packets.values
         .where((p) => p.canForward && !p.isExpired)
-        .map((p) => p.forward(myHash))
+        .map((p) => p.forward(myRelayId))
         .toList();
   }
-
-  List<MeshPacket> getForRecipient(String recipientHash) =>
-      _packets.values.where((p) => p.recipientHash == recipientHash).toList();
 
   void _cleanup() {
     final dead = _packets.entries

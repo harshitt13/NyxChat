@@ -1,13 +1,13 @@
 | Strategy | Nodes | Delivery ratio | Mean latency (s) | p95 latency (s) | Transmissions per delivered msg | Mean stored packets per node |
 |---|---|---|---|---|---|---|
-| Direct contact only | 10 | 0.48 | 653 | 1392 | 50 | 4.9 |
-| Direct contact only | 20 | 0.54 | 750 | 1395 | 142 | 2.5 |
-| Direct contact only | 40 | 0.52 | 653 | 1419 | 288 | 1.2 |
+| Direct contact only | 10 | 0.47 | 631 | 1336 | 50 | 4.9 |
+| Direct contact only | 20 | 0.54 | 761 | 1394 | 142 | 2.5 |
+| Direct contact only | 40 | 0.52 | 652 | 1419 | 287 | 1.2 |
 | Direct contact only | 80 | 0.46 | 688 | 1412 | 465 | 0.6 |
-| Spray-and-Wait (L=3), NyxChat default | 10 | 0.72 | 708 | 1343 | 35 | 18.4 |
-| Spray-and-Wait (L=3), NyxChat default | 20 | 0.88 | 682 | 1311 | 113 | 24.5 |
-| Spray-and-Wait (L=3), NyxChat default | 40 | 0.96 | 491 | 1111 | 351 | 30.4 |
-| Spray-and-Wait (L=3), NyxChat default | 80 | 0.98 | 425 | 1024 | 994 | 32.4 |
+| Spray-and-Wait (L=3), NyxChat default | 10 | 0.68 | 698 | 1333 | 38 | 18.2 |
+| Spray-and-Wait (L=3), NyxChat default | 20 | 0.91 | 642 | 1184 | 110 | 24.4 |
+| Spray-and-Wait (L=3), NyxChat default | 40 | 0.96 | 502 | 1129 | 350 | 30.5 |
+| Spray-and-Wait (L=3), NyxChat default | 80 | 0.99 | 434 | 948 | 980 | 32.4 |
 | Epidemic flooding | 10 | 0.90 | 603 | 1152 | 324 | 25.3 |
 | Epidemic flooding | 20 | 1.00 | 479 | 932 | 1654 | 32.0 |
 | Epidemic flooding | 40 | 1.00 | 272 | 647 | 7417 | 37.3 |

@@ -31,6 +31,11 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // Native ML-KEM-768 (native/mlkem) is built for these ABIs only.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
     }
 
     // 1. Define the signing config FIRST
@@ -48,6 +53,14 @@ android {
         release {
             // Replaced the "debug" config with our new "release" config
             signingConfig = signingConfigs.getByName("release")
+        }
+    }
+
+    // Builds libnyxpq.so (PQClean ML-KEM-768, FIPS 203) into the APK.
+    externalNativeBuild {
+        cmake {
+            path = file("../../native/mlkem/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 }

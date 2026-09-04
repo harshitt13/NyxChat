@@ -64,8 +64,12 @@ class BlePeripheral(private val context: Context) : MethodChannel.MethodCallHand
             when (call.method) {
                 "isSupported" -> result.success(isSupported())
                 "start" -> {
-                    val nyxId = call.argument<String>("nyxId") ?: ""
-                    result.success(start(nyxId))
+                    val payload = call.argument<ByteArray>("payload") ?: ByteArray(0)
+                    result.success(start(payload))
+                }
+                "updatePayload" -> {
+                    val payload = call.argument<ByteArray>("payload") ?: ByteArray(0)
+                    result.success(updatePayload(payload))
                 }
                 "stop" -> { stop(); result.success(true) }
                 "notify" -> {
@@ -103,8 +107,44 @@ class BlePeripheral(private val context: Context) : MethodChannel.MethodCallHand
     }
 
     @Suppress("MissingPermission")
-    private fun start(nyxId: String): Boolean {
-        if (advertising) return true
+    private var currentPayload: ByteArray = ByteArray(0)
+
+    /// Restart advertising with a new scan-response payload (called every
+    /// discovery slot when private beacons rotate).
+    @Suppress("MissingPermission")
+    private fun updatePayload(payload: ByteArray): Boolean {
+        currentPayload = payload
+        if (!advertising) return false
+        val adv = advertiser ?: return false
+        try { adv.stopAdvertising(advertiseCallback) } catch (_: Exception) {}
+        return startAdvertisingOnly(adv)
+    }
+
+    @Suppress("MissingPermission")
+    private fun startAdvertisingOnly(adv: BluetoothLeAdvertiser): Boolean {
+        val settings = AdvertiseSettings.Builder()
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .setConnectable(true)
+            .setTimeout(0)
+            .build()
+        val data = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .addServiceUuid(ParcelUuid(SERVICE_UUID))
+            .build()
+        // The beacon payload (<= 24 bytes) rides in the scan response so the
+        // 31-byte primary advertisement keeps room for the 128-bit UUID.
+        val scanResponse = AdvertiseData.Builder()
+            .addManufacturerData(MANUFACTURER_ID, currentPayload.take(24).toByteArray())
+            .build()
+        adv.startAdvertising(settings, data, scanResponse, advertiseCallback)
+        advertising = true
+        return true
+    }
+
+    private fun start(payload: ByteArray): Boolean {
+        currentPayload = payload
+        if (advertising) return updatePayload(payload)
         val a = adapter ?: return false
         if (!a.isEnabled) return false
         val server = manager?.openGattServer(context, serverCallback) ?: return false
@@ -134,25 +174,7 @@ class BlePeripheral(private val context: Context) : MethodChannel.MethodCallHand
 
         val adv = a.bluetoothLeAdvertiser ?: return false
         advertiser = adv
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
-            .setConnectable(true)
-            .setTimeout(0)
-            .build()
-        val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(false)
-            .addServiceUuid(ParcelUuid(SERVICE_UUID))
-            .build()
-        // The NyxChat id (<= 24 bytes) rides in the scan response so the
-        // 31-byte primary advertisement keeps room for the 128-bit UUID.
-        val idBytes = nyxId.toByteArray(Charsets.UTF_8).take(24).toByteArray()
-        val scanResponse = AdvertiseData.Builder()
-            .addManufacturerData(MANUFACTURER_ID, idBytes)
-            .build()
-        adv.startAdvertising(settings, data, scanResponse, advertiseCallback)
-        advertising = true
-        return true
+        return startAdvertisingOnly(adv)
     }
 
     @Suppress("MissingPermission")

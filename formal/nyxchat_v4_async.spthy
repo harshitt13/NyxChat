@@ -1,0 +1,383 @@
+/*
+ * NyxChat asynchronous session initiation -- Tamarin model
+ * =======================================================
+ *
+ * Part 1 models Handshake.asyncInitiate / Handshake.asyncRespond as driven
+ * by SessionManager.encrypt / SessionManager.decrypt (lib/core/crypto/).
+ * Part 2 models the concurrent-initiation collision rule of
+ * SessionManager.decrypt with two fixed parties whose handles are ordered.
+ *
+ *   A -> B : 'init', A, EK_A, kct, senc('session-open', mk)
+ *   kct  = KEM.Encaps(KPK_B) carrying fresh secret kem
+ *   root = kdf(dh1, dh2, kem)   dh1 = DH(IK_A, IK_B)   dh2 = DH(EK_A, IK_B)
+ *   mk   = kdf('NyxChat_DR_Root_v3', root)        (first Double Ratchet message key, abstracted)
+ *
+ * B holds A's pinned IK/KPK (the !Pk lookup by the sender handle carried in
+ * the envelope), derives root with its private IK/KPK and accepts only if
+ * the first message decrypts. The Double Ratchet itself is not modelled:
+ * the first message key is abstracted as a KDF of root (the real one also
+ * mixes DH(ratchet key, IK_B); this does not change who can compute it).
+ *
+ * NOTE: the code labels these derivations "v3" ('NyxChat-Async-Session-v3');
+ * docs call the protocol v4. See formal/README.md.
+ *
+ * This file has NOT been machine-checked in this repository.
+ * Run:  tamarin-prover --prove formal/nyxchat_v4_async.spthy
+ */
+
+theory NyxChat_Async
+begin
+
+builtins: diffie-hellman, signing, hashing, symmetric-encryption
+
+functions: kdf/1, kempk/1, kemenc/2, kemdec/2
+equations: kemdec(kemenc(kempk(k), r), k) = r
+
+/* ------------------------------------------------------------------ */
+/* Restrictions                                                        */
+/* ------------------------------------------------------------------ */
+
+restriction Equality:
+  "All x y #i. Eq(x, y) @i ==> x = y"
+
+restriction Inequality:
+  "All x #i. Neq(x, x) @i ==> F"
+
+restriction UniqueKeys:
+  "All A #i #j. KeyGen(A) @i & KeyGen(A) @j ==> #i = #j"
+
+/* The two-party collision world is set up exactly once. */
+restriction OnlyOnce:
+  "All x #i #j. OnlyOnce(x) @i & OnlyOnce(x) @j ==> #i = #j"
+
+/* ------------------------------------------------------------------ */
+/* PART 1: asynchronous initiation between arbitrary pinned contacts   */
+/* ------------------------------------------------------------------ */
+
+rule Register_Keys:
+  [ Fr(~ik), Fr(~sk), Fr(~kk) ]
+  --[ KeyGen($A) ]->
+  [ !Ltk($A, ~ik, ~sk, ~kk)
+  , !Pk($A, 'g'^~ik, pk(~sk), kempk(~kk))
+  , Out(<'g'^~ik, pk(~sk), kempk(~kk)>) ]
+
+rule Reveal_LTK:
+  [ !Ltk($A, ~ik, ~sk, ~kk) ]
+  --[ RevealLTK($A) ]->
+  [ Out(<~ik, ~sk, ~kk>) ]
+
+rule Reveal_KEM_Key:
+  [ !Ltk($A, ~ik, ~sk, ~kk) ]
+  --[ RevealKPK($A) ]->
+  [ Out(~kk) ]
+
+rule Reveal_DH_Identity:
+  [ !Ltk($A, ~ik, ~sk, ~kk) ]
+  --[ RevealDH($A) ]->
+  [ Out(~ik) ]
+
+rule Reveal_DH_Ephemeral:
+  [ !Eph($A, ~ek) ]
+  --[ RevealDH($A) ]->
+  [ Out(~ek) ]
+
+/* SessionManager.encrypt with no session and pinned keys for $B:
+ * Handshake.asyncInitiate, DoubleRatchetSession.initAlice, and the first
+ * envelope carrying the SessionInitBlock (EK_A, kct). */
+rule Async_Initiate:
+  let dh1  = pkIKB^~ikA
+      ekA  = 'g'^~ekA
+      dh2  = pkIKB^~ekA
+      kct  = kemenc(pkKPKB, ~kem)
+      root = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, ~kem>)
+      mk   = kdf(<'NyxChat_DR_Root_v3', root>)
+  in
+  [ !Ltk($A, ~ikA, ~skA, ~kkA)
+  , !Pk($B, pkIKB, pkSKB, pkKPKB)
+  , Fr(~ekA), Fr(~kem) ]
+  --[ Neq($A, $B)
+    , AsyncInit($A, $B, root)
+    , AsyncRunningI($A, $B, ekA, kct, root)
+    , AsyncKey($A, $B, root)
+    , Honest($A), Honest($B) ]->
+  [ Out(<'init', $A, ekA, kct, senc('session_open', mk)>)
+  , !Eph($A, ~ekA) ]
+
+/* SessionManager.decrypt with an init block and no usable session:
+ * Handshake.asyncRespond with B's private IK/KPK and A's pinned IK, then
+ * DoubleRatchetSession.initBob and a decryption that must succeed before
+ * the session is saved (commit-on-success). */
+rule Async_Respond:
+  let dh1  = pkIKA^~ikB
+      dh2  = ekA^~ikB
+      kem  = kemdec(kct, ~kkB)
+      root = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)
+      mk   = kdf(<'NyxChat_DR_Root_v3', root>)
+  in
+  [ !Ltk($B, ~ikB, ~skB, ~kkB)
+  , !Pk($A, pkIKA, pkSKA, pkKPKA)
+  , In(<'init', $A, ekA, kct, c>) ]
+  --[ Eq(sdec(c, mk), 'session_open')
+    , Neq($A, $B)
+    , AsyncAccept($B, $A, root)
+    , AsyncCommitR($B, $A, ekA, kct, root)
+    , AsyncKey($B, $A, root)
+    , Honest($A), Honest($B) ]->
+  [ ]
+
+
+/* ------------------------------------------------------------------ */
+/* PART 2: concurrent-initiation collision rule (SessionManager.decrypt) */
+/* ------------------------------------------------------------------ */
+/* Two fixed parties named by their handles 'a' < 'b'. Each keeps one
+ * state fact per peer: Idle (no session), Pending(root, ek) (initiated
+ * with ephemeral ek, pendingInit set, no reply seen yet) or
+ * Final(root, ab) (settled; ab is the ephemeral of the init this party
+ * abandoned when it lost a collision, SessionRecord.abandonedInitEph, or
+ * 'none'). The adversary controls the network but holds no private key in
+ * this sub-model; it can delay, reorder, replay and drop. Reveal rules
+ * above do not apply here (separate !CLtk facts).
+ *
+ * Blacklist (SessionRecord.ignoredInitEphs): the action Ignored(X, Y, e)
+ * marks every point where the code appends e to the list; the action
+ * NotIgnored(X, Y, e) marks the rules that would derive a session from an
+ * init with ephemeral e; the restriction below forbids the latter after
+ * the former. Being action history, the list is automatically carried
+ * over when a session is replaced (the code copies it explicitly). The
+ * real list keeps 8 entries; the model keeps all.
+ *
+ * Abandoned-init announcement: a party that loses a collision stores the
+ * ephemeral of its own pending init and sends it with every message
+ * ('ab' field) until it receives a message without an init block from the
+ * winner; a receiver records every 'ab' it sees on a successful fast-path
+ * decrypt. 'ab' is modelled INSIDE the authenticated payload; the code
+ * sends it as a plaintext envelope field that Envelope.associatedDataFor
+ * does not cover (from, to, kind only) -- see README, finding 6. */
+
+restriction IgnoredInitsDropped:
+  "All X Y e #i #j. NotIgnored(X, Y, e) @i & Ignored(X, Y, e) @j & #j < #i ==> F"
+
+rule Collision_Setup:
+  [ Fr(~ika), Fr(~kka), Fr(~ikb), Fr(~kkb) ]
+  --[ OnlyOnce('collision_setup') ]->
+  [ !CLtk('a', ~ika, ~kka), !CPk('a', 'g'^~ika, kempk(~kka))
+  , !CLtk('b', ~ikb, ~kkb), !CPk('b', 'g'^~ikb, kempk(~kkb))
+  , !Less('a', 'b')
+  , Idle('a', 'b'), Idle('b', 'a')
+  , Out(<'g'^~ika, kempk(~kka), 'g'^~ikb, kempk(~kkb)>) ]
+
+/* SessionManager.encrypt with no session: start an async session and
+ * remember it as pendingInit (attached to every envelope until a reply). */
+rule C_Initiate:
+  let dh1  = pkIKY^~ikX
+      ekX  = 'g'^~ekX
+      dh2  = pkIKY^~ekX
+      kct  = kemenc(pkKPKY, ~kem)
+      root = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, ~kem>)
+      mk   = kdf(<'NyxChat_DR_Root_v3', root>)
+  in
+  [ Idle(X, Y), !CLtk(X, ~ikX, ~kkX), !CPk(Y, pkIKY, pkKPKY), Fr(~ekX), Fr(~kem) ]
+  --[ CInit(X, Y, root) ]->
+  [ Pending(X, Y, root, ekX)
+  , Out(<'init', X, ekX, kct, senc('session_open', mk)>) ]
+
+/* decrypt(): no session, init block present -> respond and adopt. */
+rule C_Adopt_From_Idle:
+  let dh1  = pkIKY^~ikX
+      dh2  = ekY^~ikX
+      kem  = kemdec(kct, ~kkX)
+      root = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)
+      mk   = kdf(<'NyxChat_DR_Root_v3', root>)
+  in
+  [ Idle(X, Y), !CLtk(X, ~ikX, ~kkX), !CPk(Y, pkIKY, pkKPKY)
+  , In(<'init', Y, ekY, kct, c>) ]
+  --[ Eq(sdec(c, mk), 'session_open'), Adopted(X, Y, root) ]->
+  [ Final(X, Y, root, 'none') ]
+
+/* decrypt(): own init pending AND incoming init AND my handle is smaller
+ * -> record the ignored ephemeral, SessionCollisionException, keep my
+ * session (state otherwise unchanged). */
+rule C_Collision_Ignore:
+  [ Pending(X, Y, root, ekX), !Less(X, Y), In(<'init', Y, ekY, kct, c>) ]
+  --[ CollisionIgnored(X, Y), Ignored(X, Y, ekY), Adopted(X, Y, root) ]->
+  [ Pending(X, Y, root, ekX) ]
+
+/* decrypt(): own init pending AND incoming init AND my handle is larger
+ * -> derive the peer's session, adopt it if the message decrypts, and
+ * remember my own abandoned ephemeral to announce it. */
+rule C_Collision_Adopt:
+  let dh1   = pkIKY^~ikX
+      dh2   = ekY^~ikX
+      kem   = kemdec(kct, ~kkX)
+      root2 = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)
+      mk    = kdf(<'NyxChat_DR_Root_v3', root2>)
+  in
+  [ Pending(X, Y, root, ekX), !Less(Y, X), !CLtk(X, ~ikX, ~kkX), !CPk(Y, pkIKY, pkKPKY)
+  , In(<'init', Y, ekY, kct, c>) ]
+  --[ Eq(sdec(c, mk), 'session_open'), NotIgnored(X, Y, ekY)
+    , Abandoned(X, Y, ekX), Adopted(X, Y, root2) ]->
+  [ Final(X, Y, root2, ekX) ]
+
+/* A settled party sends a message (no init block) under its session,
+ * carrying its abandoned ephemeral ('ab') while it has one. */
+rule C_Reply:
+  [ Final(X, Y, root, ab) ]
+  --[ Replied(X, Y, root, ab) ]->
+  [ Final(X, Y, root, ab), Out(senc(<'reply', ab>, kdf(<'NyxChat_DR_Reply', root>))) ]
+
+/* decrypt() fast path for a pending initiator: a message from the peer
+ * under its own session clears pendingInit (session confirmed) and
+ * blacklists the announced abandoned ephemeral. */
+rule C_Confirm:
+  [ Pending(X, Y, root, ekX), In(senc(<'reply', ab>, kdf(<'NyxChat_DR_Reply', root>))) ]
+  --[ Confirmed(X, Y, root), Ignored(X, Y, ab), Adopted(X, Y, root) ]->
+  [ Final(X, Y, root, 'none') ]
+
+/* decrypt() fast path for a settled party: a message without an init
+ * block proves the peer has heard from us, so our own announcement stops
+ * (abandonedInitEph cleared); the peer's announcement is blacklisted. */
+rule C_Recv_Reply_Final:
+  [ Final(X, Y, root, ab), In(senc(<'reply', ab2>, kdf(<'NyxChat_DR_Reply', root>))) ]
+  --[ Ignored(X, Y, ab2), AbCleared(X, Y) ]->
+  [ Final(X, Y, root, 'none') ]
+
+/* decrypt() recovery path: a settled session (pendingInit == null) that
+ * receives an init block with a new ephemeral that is not blacklisted
+ * re-derives and REPLACES its session if the message decrypts. Meant for
+ * a peer that lost its state. The blacklist is carried over. */
+rule C_Recover:
+  let dh1   = pkIKY^~ikX
+      dh2   = ekY^~ikX
+      kem   = kemdec(kct, ~kkX)
+      root2 = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)
+      mk    = kdf(<'NyxChat_DR_Root_v3', root2>)
+  in
+  [ Final(X, Y, root, ab), !CLtk(X, ~ikX, ~kkX), !CPk(Y, pkIKY, pkKPKY)
+  , In(<'init', Y, ekY, kct, c>) ]
+  --[ Eq(sdec(c, mk), 'session_open'), NotIgnored(X, Y, ekY)
+    , Recover(X, Y, ekY), Adopted(X, Y, root2) ]->
+  [ Final(X, Y, root2, 'none') ]
+/* ------------------------------------------------------------------ */
+/* Lemmas: asynchronous initiation                                     */
+/* ------------------------------------------------------------------ */
+
+/* Sanity: an honest async initiation is accepted with the same root. */
+lemma async_executable:
+  exists-trace
+  "Ex A B r #i #j.
+     AsyncInit(A, B, r) @i & AsyncAccept(B, A, r) @j & #i < #j
+   & not (Ex X #k. RevealLTK(X) @k)
+   & not (Ex X #k. RevealDH(X) @k)
+   & not (Ex X #k. RevealKPK(X) @k)"
+
+/* Secrecy (both roles): root is secret while no key of either party is
+ * compromised in any way. */
+lemma async_secrecy:
+  "All P Q r #i.
+     AsyncKey(P, Q, r) @i
+   & not (Ex X #j. RevealLTK(X) @j & Honest(X) @i)
+   & not (Ex X #j. RevealDH(X) @j  & Honest(X) @i)
+   & not (Ex X #j. RevealKPK(X) @j & Honest(X) @i)
+   ==> not (Ex #k. K(r) @k)"
+
+/* Responder's view: the root B accepted from A stays secret unless A's
+ * X25519 secrets leaked BEFORE B accepted (impersonation window), B's
+ * X25519 identity key leaked before B accepted, or B's long-term KEM key
+ * leaks at ANY time. A's keys leaking after acceptance do not matter.
+ * (Unlike the direct-link handshake, the async flow encapsulates to the
+ * LONG-TERM KPK_B and B contributes no ephemeral, so the async root has
+ * no forward secrecy against B's long-term keys. SECURITY.md: protection
+ * starts at the first reply, via the ratchet, out of scope here.) */
+lemma async_secrecy_responder:
+  "All A B r #i.
+     AsyncAccept(B, A, r) @i
+   & not (Ex #j. RevealLTK(A) @j & #j < #i)
+   & not (Ex #j. RevealDH(A) @j  & #j < #i)
+   & not (Ex #j. RevealDH(B) @j  & #j < #i)
+   & not (Ex #j. RevealLTK(B) @j)
+   & not (Ex #j. RevealKPK(B) @j)
+   ==> not (Ex #k. K(r) @k)"
+
+/* PQ-hybrid, KEM-only: the initiator's root survives a total X25519 break
+ * (all identity and ephemeral DH secrets of both parties public) as long
+ * as B's long-term KEM private key is not revealed. */
+lemma async_kem_only_secrecy:
+  "All A B r #i.
+     AsyncInit(A, B, r) @i
+   & not (Ex #j. RevealLTK(B) @j)
+   & not (Ex #j. RevealKPK(B) @j)
+   ==> not (Ex #k. K(r) @k)"
+
+/* PQ-hybrid, DH-only: the initiator's root survives a KEM break (B's KEM
+ * private key public) and even a full compromise of A's long-term keys,
+ * as long as B's identity DH key and A's ephemeral are not revealed. */
+lemma async_dh_only_secrecy:
+  "All A B r #i.
+     AsyncInit(A, B, r) @i
+   & not (Ex #j. RevealLTK(B) @j)
+   & not (Ex #j. RevealDH(B) @j)
+   & not (Ex #j. RevealDH(A) @j)
+   ==> not (Ex #k. K(r) @k)"
+
+/* Agreement: if B accepts (EK_A, kct, root) as coming from A, then A
+ * really initiated toward B with exactly those values, provided neither
+ * party's X25519 secrets were compromised beforehand. Non-injective:
+ * de-duplication of repeated init blocks is done by the ratchet
+ * (acceptedInitEph + replay rejection), which is not modelled. */
+lemma async_agreement:
+  "All A B ekA kct r #i.
+     AsyncCommitR(B, A, ekA, kct, r) @i
+   & not (Ex X #j. RevealLTK(X) @j & Honest(X) @i & #j < #i)
+   & not (Ex X #j. RevealDH(X) @j  & Honest(X) @i & #j < #i)
+   ==> Ex #k. AsyncRunningI(A, B, ekA, kct, r) @k & #k < #i"
+
+/* ------------------------------------------------------------------ */
+/* Lemmas: collision rule                                              */
+/* ------------------------------------------------------------------ */
+
+/* Sanity: both parties initiate concurrently, the smaller handle ignores
+ * the incoming init, and both end up settled. */
+lemma collision_executable:
+  exists-trace
+  "Ex X Y rX rY r1 r2 #i #j #k #l.
+     CInit(X, Y, rX) @i & CInit(Y, X, rY) @j
+   & CollisionIgnored(X, Y) @k & Adopted(X, Y, r1) @k
+   & Adopted(Y, X, r2) @l
+   & #i < #k & #j < #l"
+
+/* Consistency, recovery path included: whenever both parties have
+ * settled on a session with each other, they hold the same root.
+ *
+ * History. Without ignoredInitEphs a stale copy of the loser's init,
+ * delivered after the winner had settled, took the recovery path and made
+ * the winner replace its session while the loser kept the winner's.
+ * ignoredInitEphs alone closed only the ordering in which the winner saw
+ * the loser's init (and ignored it) before the loser's first reply; when
+ * the reply arrived first, the winner cleared pendingInit without having
+ * ignored anything and the stale init still won. The abandoned-init
+ * announcement closes that ordering too: the winner can only leave
+ * Pending by decrypting a message from the loser, every such message
+ * carries the abandoned ephemeral until the loser has proof the winner
+ * heard it, so the winner blacklists it no later than the moment it
+ * clears pendingInit. Both orderings are covered by this lemma. */
+lemma collision_consistency:
+  "All X Y r1 r2 #i #j.
+     Adopted(X, Y, r1) @i & Adopted(Y, X, r2) @j
+   ==> r1 = r2"
+
+/* The announcement mechanism itself: if Y lost a collision against X and
+ * abandoned ephemeral e, then by the time X confirms its own session it
+ * has blacklisted e. */
+lemma abandoned_init_blacklisted:
+  "All X Y e r #j #i.
+     Abandoned(Y, X, e) @j & Confirmed(X, Y, r) @i
+   ==> Ex #k. Ignored(X, Y, e) @k & not (#i < #k)"
+
+/* The previously found trace is gone: an init that its sender abandoned
+ * never re-enters through the recovery path at the winner. */
+lemma abandoned_init_never_adopted:
+  "All X Y e #j #i.
+     Abandoned(Y, X, e) @j & Recover(X, Y, e) @i
+   ==> F"
+
+end

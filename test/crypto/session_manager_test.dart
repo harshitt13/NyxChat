@@ -175,6 +175,74 @@ void main() {
       expect((await small.sessions.decrypt(_wire(resend))).text, 'again');
     });
 
+    test('a stale init from a lost collision cannot replace a confirmed session', () async {
+      final p1 = await _Party.create();
+      final p2 = await _Party.create();
+      final small = p1.id.compareTo(p2.id) < 0 ? p1 : p2;
+      final large = small == p1 ? p2 : p1;
+      final fromSmall = await small.sessions.encrypt(peerId: large.id,
+          message: InnerMessage.text(id: 's', text: 'from small'), pinned: large.pinned());
+      final staleFromLarge = await large.sessions.encrypt(peerId: small.id,
+          message: InnerMessage.text(id: 'l', text: 'from large'), pinned: small.pinned());
+      await expectLater(small.sessions.decrypt(_wire(staleFromLarge), pinned: large.pinned()),
+          throwsA(isA<SessionCollisionException>()));
+      await large.sessions.decrypt(_wire(fromSmall), pinned: small.pinned());
+      final reply = await large.sessions.encrypt(peerId: small.id,
+          message: InnerMessage.text(id: 'r', text: 'adopted reply'));
+      expect((await small.sessions.decrypt(_wire(reply))).text, 'adopted reply');
+      // The abandoned initiation arrives again, late (mesh reordering).
+      await expectLater(small.sessions.decrypt(_wire(staleFromLarge), pinned: large.pinned()),
+          throwsA(isA<SessionCollisionException>()));
+      // The confirmed session is intact in both directions.
+      final more = await large.sessions.encrypt(peerId: small.id,
+          message: InnerMessage.text(id: 'r2', text: 'still fine'));
+      expect((await small.sessions.decrypt(_wire(more))).text, 'still fine');
+      final back = await small.sessions.encrypt(peerId: large.id,
+          message: InnerMessage.text(id: 's2', text: 'and back'));
+      expect((await large.sessions.decrypt(_wire(back))).text, 'and back');
+    });
+
+    test('a stale init arriving after the adopted reply is still rejected', () async {
+      // The ordering the Tamarin model flagged: the winner clears its
+      // pending init on the loser's reply before the loser's stale init lands.
+      final p1 = await _Party.create();
+      final p2 = await _Party.create();
+      final small = p1.id.compareTo(p2.id) < 0 ? p1 : p2;
+      final large = small == p1 ? p2 : p1;
+      final fromSmall = await small.sessions.encrypt(peerId: large.id,
+          message: InnerMessage.text(id: 's', text: 'from small'), pinned: large.pinned());
+      final staleFromLarge = await large.sessions.encrypt(peerId: small.id,
+          message: InnerMessage.text(id: 'l', text: 'from large'), pinned: small.pinned());
+      // Large adopts small's session and replies; the reply names the
+      // ephemeral it abandoned.
+      await large.sessions.decrypt(_wire(fromSmall), pinned: small.pinned());
+      final reply = await large.sessions.encrypt(peerId: small.id,
+          message: InnerMessage.text(id: 'r', text: 'adopted reply'));
+      expect(reply.abandonedInitEph, staleFromLarge.init!.ephemeralHex);
+      expect(_wire(reply).abandonedInitEph, staleFromLarge.init!.ephemeralHex);
+      // The announcement is authenticated: stripping or forging it fails
+      // the AEAD and, thanks to commit-on-success, leaves the session intact.
+      final stripped = Envelope.fromJson(reply.toJson()..remove('ab'));
+      await expectLater(small.sessions.decrypt(stripped), throwsA(anything));
+      final forged = Envelope.fromJson(reply.toJson()..['ab'] = 'ab' * 32);
+      await expectLater(small.sessions.decrypt(forged), throwsA(anything));
+      expect((await small.sessions.decrypt(_wire(reply))).text, 'adopted reply');
+      // Only now does the abandoned initiation arrive: it must not win.
+      await expectLater(small.sessions.decrypt(_wire(staleFromLarge), pinned: large.pinned()),
+          throwsA(isA<SessionCollisionException>()));
+      final back = await small.sessions.encrypt(peerId: large.id,
+          message: InnerMessage.text(id: 's2', text: 'and back'));
+      expect(back.init, isNull);
+      expect((await large.sessions.decrypt(_wire(back))).text, 'and back');
+      // Small has heard from large, so the announcement stops.
+      final more = await large.sessions.encrypt(peerId: small.id,
+          message: InnerMessage.text(id: 'r2', text: 'still fine'));
+      expect(more.abandonedInitEph, isNull);
+      expect((await small.sessions.decrypt(_wire(more))).text, 'still fine');
+      await expectLater(small.sessions.decrypt(_wire(staleFromLarge), pinned: large.pinned()),
+          throwsA(isA<SessionCollisionException>()));
+    });
+
     test('peer that lost its session is re-bootstrapped', () async {
       final a = await _Party.create();
       final b = await _Party.create();

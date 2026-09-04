@@ -31,17 +31,31 @@ class BlePeripheral {
     }
   }
 
-  Future<bool> start(String nyxId) async {
+  /// Start advertising with a discovery beacon payload (<= 24 bytes).
+  Future<bool> start(Uint8List beaconPayload) async {
     _sub ??= _events.receiveBroadcastStream().listen(_onEvent, onError: (e) {
       debugPrint('[BLE-P] event error: $e');
     });
     try {
-      final ok =
-          await _method.invokeMethod<bool>('start', {'nyxId': nyxId}) ?? false;
+      final ok = await _method
+              .invokeMethod<bool>('start', {'payload': beaconPayload}) ??
+          false;
       _advertising = ok;
       return ok;
     } catch (e) {
       debugPrint('[BLE-P] start failed: $e');
+      return false;
+    }
+  }
+
+  /// Rotate the advertised beacon (private beacons change every slot).
+  Future<bool> updateBeacon(Uint8List beaconPayload) async {
+    try {
+      return await _method.invokeMethod<bool>(
+              'updatePayload', {'payload': beaconPayload}) ??
+          false;
+    } catch (e) {
+      debugPrint('[BLE-P] update failed: $e');
       return false;
     }
   }

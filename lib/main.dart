@@ -5,6 +5,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:provider/provider.dart';
 
 import 'core/constants.dart';
+import 'core/crypto/pair_keys.dart';
 import 'core/crypto/session_manager.dart';
 import 'core/mesh/mesh_router.dart';
 import 'core/mesh/mesh_store.dart';
@@ -13,6 +14,8 @@ import 'core/network/connection_manager.dart';
 import 'core/network/p2p_client.dart';
 import 'core/network/p2p_server.dart';
 import 'core/privacy/privacy_manager.dart';
+import 'core/relay/nostr_relay_adapter.dart';
+import 'core/relay/nostr_transport.dart';
 import 'core/storage/local_storage.dart';
 import 'core/storage/outbox.dart';
 import 'core/storage/trust_store.dart';
@@ -21,6 +24,7 @@ import 'screens/onboarding_screen.dart';
 import 'screens/password_screen.dart';
 import 'services/app_lock_service.dart';
 import 'services/background_service.dart';
+import 'services/backup_service.dart';
 import 'services/chat_service.dart';
 import 'services/identity_service.dart';
 import 'services/peer_service.dart';
@@ -43,17 +47,23 @@ class AppServices extends ChangeNotifier {
   late final TrustStore trust = TrustStore(storage.trustStore);
   late final Outbox outbox = Outbox(storage.outboxStore);
   final PrivacyManager privacy = PrivacyManager();
+  late final BackupService backup = BackupService(storage, identity.keyManager);
 
   SessionManager? _sessions;
+  PairKeyCache? _pairKeys;
   ConnectionManager? _connections;
   ChatService? _chat;
   PeerService? _peers;
+  NostrTransport? _nostr;
+  bool _nostrViaTor = false;
   bool _bringingUp = false;
 
   SessionManager get sessions => _sessions!;
+  PairKeyCache get pairKeys => _pairKeys!;
   ConnectionManager get connections => _connections!;
   ChatService get chat => _chat!;
   PeerService get peers => _peers!;
+  NostrTransport? get nostr => _nostr;
   bool get ready => _chat != null && _peers != null;
 
   /// Called once the database is open and the identity is loaded.
@@ -73,6 +83,7 @@ class AppServices extends ChangeNotifier {
         myId: id,
       );
       await _sessions!.load();
+      _pairKeys ??= PairKeyCache(identity.keyManager, trust);
       _connections ??= ConnectionManager(
         keys: identity.keyManager,
         client: client,
@@ -87,6 +98,7 @@ class AppServices extends ChangeNotifier {
         sessions: _sessions!,
         outbox: outbox,
         connections: _connections!,
+        pairKeys: _pairKeys!,
         meshRouter: meshRouter,
       );
       _peers ??= PeerService(
@@ -99,31 +111,77 @@ class AppServices extends ChangeNotifier {
         keys: identity.keyManager,
         meshStore: meshStore,
         meshRouter: meshRouter,
+        pairKeys: _pairKeys!,
       );
-      _chat!.meshLinkCountProvider = () => ble.linkCount;
+      _peers!.isDiscoverableToEveryone = () => settings.discoverableToEveryone;
+      _chat!.meshLinkCountProvider = () => _peers!.meshNeighbourCount;
       _chat!.sendReadReceipts = settings.readReceipts;
       await _chat!.init(myId: id, displayName: identity.displayName);
       _wirePrivacy();
+      await _applyRelaySetting();
     } finally {
       _bringingUp = false;
     }
     notifyListeners();
   }
 
+  /// Start or stop the Nostr carrier according to settings.
+  Future<void> _applyRelaySetting() async {
+    final chat = _chat;
+    if (chat == null) return;
+    final wanted = settings.nostrEnabled;
+    final torChanged = _nostr != null && _nostrViaTor != settings.nostrViaTor;
+    if (!wanted || torChanged) {
+      if (_nostr != null) {
+        chat.setRelay(null);
+        await _nostr!.stop();
+        _nostr!.dispose();
+        _nostr = null;
+      }
+      if (!wanted) return;
+    }
+    if (_nostr == null) {
+      _nostrViaTor = settings.nostrViaTor;
+      final t = NostrTransport(useTor: _nostrViaTor);
+      _nostr = t;
+      chat.setRelay(NostrRelayAdapter(t));
+      await t.start();
+    }
+  }
+
   void _wirePrivacy() {
     // Cover traffic: opaque packets to a random address over the mesh.
     privacy.onCoverPacket = (payload) async {
       if (ble.linkCount == 0) return;
-      final target = 'NC-${payload.sublist(0, 8).map((b) => b.toRadixString(16).padLeft(2, '0')).join().toUpperCase()}';
-      await meshRouter.send(recipientId: target, payload: payload);
+      await meshRouter.send(
+        to: payload.sublist(0, 16),
+        replyTo: payload.sublist(16, 32),
+        payload: payload.sublist(32),
+      );
     };
     privacy.setCoverTraffic(settings.dummyTraffic);
+    var discoverable = settings.discoverableToEveryone;
     settings.addListener(() {
       if (privacy.isCoverTrafficEnabled != settings.dummyTraffic) {
         privacy.setCoverTraffic(settings.dummyTraffic);
       }
       if (_chat != null) _chat!.sendReadReceipts = settings.readReceipts;
+      if (discoverable != settings.discoverableToEveryone) {
+        discoverable = settings.discoverableToEveryone;
+        unawaited(_peers?.refreshBeacons() ?? Future.value());
+      }
+      unawaited(_applyRelaySetting());
     });
+  }
+
+  /// Rotate identity keys, notify contacts, then close the app so every
+  /// service restarts with the new handle.
+  Future<String> rotateIdentity() async {
+    final chat = _chat;
+    if (chat == null) throw StateError('services not ready');
+    final newId = await chat.rotateIdentity(identity.prepareRotation, identity.commitRotation);
+    await _sessions?.clearAll(); // sessions belonged to the old handle
+    return newId;
   }
 
   /// Panic wipe: stop networking, destroy data and keys, reset to onboarding.
@@ -131,6 +189,9 @@ class AppServices extends ChangeNotifier {
     try {
       await _peers?.stopNetwork();
     } catch (_) {}
+    _chat?.setRelay(null);
+    await _nostr?.stop();
+    _nostr = null;
     await _chat?.clearAll();
     await _sessions?.clearAll();
     meshRouter.clearAll();
@@ -140,6 +201,8 @@ class AppServices extends ChangeNotifier {
     _peers = null;
     _connections = null;
     _sessions = null;
+    _pairKeys?.clear();
+    _pairKeys = null;
     notifyListeners();
   }
 }

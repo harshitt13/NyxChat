@@ -1,0 +1,23 @@
+native/mlkem - licensing summary
+================================
+
+pqclean/crypto_kem/ml-kem-768/clean/*  and  pqclean/common/fips202.[ch]
+    Public domain (CC0), as published by the PQClean project.
+    See pqclean/crypto_kem/ml-kem-768/clean/LICENSE. fips202.c is based on
+    the public-domain Keccak code by Ronny Van Keer (SUPERCOP) and the
+    "TweetFips202" implementation by Gilles Van Assche, Daniel J. Bernstein
+    and Peter Schwabe (attribution retained in the file header).
+
+pqclean/common/randombytes.[ch]
+    MIT License, Copyright (c) 2017 Daan Sprenkels (full text in the file
+    header of randombytes.c).
+
+pqclean/common/compat.h, pqclean/crypto_kem/ml-kem-768/META.yml
+    Public domain (CC0), PQClean project.
+
+nyxpq.c, nyxpq.h, CMakeLists.txt, README.md, this file
+    Part of NyxChat; covered by the repository's top-level LICENSE
+    (GNU General Public License v3).
+
+Upstream: https://github.com/PQClean/PQClean
+Commit:   0586a824fc0d49df0b6b6e9179d8d15d06d0974f

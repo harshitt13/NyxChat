@@ -163,6 +163,17 @@ class WifiDirectManager extends ChangeNotifier {
     }
   }
 
+  /// Send raw bytes to every connected endpoint (mesh forwarding).
+  Future<void> broadcast(Uint8List data) async {
+    for (final endpointId in _connectedEndpoints.keys.toList()) {
+      try {
+        await Nearby().sendBytesPayload(endpointId, data);
+      } catch (e) {
+        debugPrint('[WiFi-Direct] broadcast to $endpointId failed: $e');
+      }
+    }
+  }
+
   Future<void> stop() async {
     await Nearby().stopAdvertising();
     await Nearby().stopDiscovery();

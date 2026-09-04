@@ -15,6 +15,9 @@ class SettingsService extends ChangeNotifier {
   bool _lockOnBackground = true;
   bool _dummyTraffic = false;
   bool _longRangeBle = false;
+  bool _discoverableToEveryone = true;
+  bool _nostrEnabled = false;
+  bool _nostrViaTor = false;
   int _defaultDisappearSeconds = 0;
 
   SettingsService(this._storage);
@@ -26,6 +29,9 @@ class SettingsService extends ChangeNotifier {
   bool get lockOnBackground => _lockOnBackground;
   bool get dummyTraffic => _dummyTraffic;
   bool get longRangeBle => _longRangeBle;
+  bool get discoverableToEveryone => _discoverableToEveryone;
+  bool get nostrEnabled => _nostrEnabled;
+  bool get nostrViaTor => _nostrViaTor;
   int get defaultDisappearSeconds => _defaultDisappearSeconds;
 
   Future<void> load() async {
@@ -36,6 +42,9 @@ class SettingsService extends ChangeNotifier {
     _lockOnBackground = _storage.getSetting('lockOnBackground') != 'false';
     _dummyTraffic = _storage.getSetting('dummyTraffic') == 'true';
     _longRangeBle = _storage.getSetting('longRangeBle') == 'true';
+    _discoverableToEveryone = _storage.getSetting('discoverable') != 'false';
+    _nostrEnabled = _storage.getSetting('nostrEnabled') == 'true';
+    _nostrViaTor = _storage.getSetting('nostrViaTor') == 'true';
     _defaultDisappearSeconds =
         int.tryParse(_storage.getSetting('defaultDisappear') ?? '0') ?? 0;
     notifyListeners();
@@ -91,6 +100,24 @@ class SettingsService extends ChangeNotifier {
   Future<void> setLongRangeBle(bool v) async {
     _longRangeBle = v;
     await _set('longRangeBle', '$v');
+    notifyListeners();
+  }
+
+  Future<void> setDiscoverableToEveryone(bool v) async {
+    _discoverableToEveryone = v;
+    await _set('discoverable', '$v');
+    notifyListeners();
+  }
+
+  Future<void> setNostrEnabled(bool v) async {
+    _nostrEnabled = v;
+    await _set('nostrEnabled', '$v');
+    notifyListeners();
+  }
+
+  Future<void> setNostrViaTor(bool v) async {
+    _nostrViaTor = v;
+    await _set('nostrViaTor', '$v');
     notifyListeners();
   }
 

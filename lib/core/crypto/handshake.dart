@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import '../protocol/parse.dart';
 import 'crypto_utils.dart';
 import 'hybrid_key_exchange.dart';
 import 'key_manager.dart';
@@ -21,7 +22,7 @@ class HandshakeException implements Exception {
 /// nonce (freshness / anti-replay) and includes the Kyber ciphertext for
 /// the initiator's Kyber public key.
 class HelloMessage {
-  static const int protocolVersion = 3;
+  static const int protocolVersion = 4;
   static const int maxDisplayNameLength = 64;
   static const int maxCapabilities = 16;
 
@@ -36,6 +37,14 @@ class HelloMessage {
   final List<String> capabilities;
   final Uint8List? kyberCiphertext;
   final Uint8List? peerNonce;
+
+  /// Initiator only: fresh ML-KEM public key for this handshake, so the
+  /// post-quantum secret is forward secret too.
+  final Uint8List? ephemeralKemKey;
+
+  /// Responder only: SHA-256 of the initiator's transcript, binding the
+  /// response to exactly the hello it answers (no identity misbinding).
+  final Uint8List? initiatorHelloHash;
   final Uint8List signature;
 
   HelloMessage({
@@ -51,6 +60,8 @@ class HelloMessage {
     required this.signature,
     this.kyberCiphertext,
     this.peerNonce,
+    this.ephemeralKemKey,
+    this.initiatorHelloHash,
   });
 
   bool get isResponse => peerNonce != null;
@@ -69,6 +80,8 @@ class HelloMessage {
         capabilities: capabilities,
         peerNonce: peerNonce,
         kyberCiphertext: kyberCiphertext,
+        ephemeralKemKey: ephemeralKemKey,
+        initiatorHelloHash: initiatorHelloHash,
       );
 
   static Uint8List transcriptFor({
@@ -84,6 +97,8 @@ class HelloMessage {
     required List<String> capabilities,
     List<int>? peerNonce,
     List<int>? kyberCiphertext,
+    List<int>? ephemeralKemKey,
+    List<int>? initiatorHelloHash,
   }) {
     return CryptoUtils.lengthPrefixed([
       'NyxChat-Hello-v3'.codeUnits,
@@ -99,6 +114,8 @@ class HelloMessage {
       utf8.encode(capabilities.join(',')),
       peerNonce ?? const <int>[],
       kyberCiphertext ?? const <int>[],
+      ephemeralKemKey ?? const <int>[],
+      initiatorHelloHash ?? const <int>[],
     ]);
   }
 
@@ -115,17 +132,32 @@ class HelloMessage {
         'caps': capabilities,
         if (kyberCiphertext != null) 'kct': CryptoUtils.toHex(kyberCiphertext!),
         if (peerNonce != null) 'pn': CryptoUtils.toHex(peerNonce!),
+        if (ephemeralKemKey != null) 'ekpk': CryptoUtils.toHex(ephemeralKemKey!),
+        if (initiatorHelloHash != null) 'ih': CryptoUtils.toHex(initiatorHelloHash!),
         'sig': CryptoUtils.toHex(signature),
       };
 
+  /// Parses a hello from an untrusted peer. Every malformed input (wrong
+  /// version, missing or mistyped field, bad hex, wrong key length, bad
+  /// capability list) fails with a [HandshakeException]; no TypeError,
+  /// RangeError or FormatException escapes.
   factory HelloMessage.fromJson(Map<String, dynamic> json) {
+    try {
+      return parseOr(() => HelloMessage._parse(json), context: 'hello');
+    } on FormatException catch (e) {
+      throw HandshakeException('malformed hello: ${e.message}');
+    }
+  }
+
+  factory HelloMessage._parse(Map<String, dynamic> json) {
     if (json['v'] != protocolVersion) {
-      throw HandshakeException('unsupported hello version ${json['v']}');
+      throw HandshakeException(
+          'unsupported hello version ${describeValue(json['v'])}');
     }
     final id = json['id'];
     final name = json['name'];
     final port = json['port'];
-    if (id is! String || !NyxId.isValidFormat(id)) {
+    if (id is! String || id.length > 64 || !NyxId.isValidFormat(id)) {
       throw HandshakeException('malformed NyxChat ID');
     }
     if (name is! String || name.isEmpty || name.length > maxDisplayNameLength) {
@@ -135,48 +167,48 @@ class HelloMessage {
       throw HandshakeException('malformed port');
     }
     final capsRaw = json['caps'];
+    if (capsRaw is! List) {
+      throw HandshakeException('malformed capability list');
+    }
+    if (capsRaw.length > maxCapabilities) {
+      throw HandshakeException('too many capabilities');
+    }
     final caps = <String>[];
-    if (capsRaw is List) {
-      if (capsRaw.length > maxCapabilities) {
-        throw HandshakeException('too many capabilities');
+    for (final c in capsRaw) {
+      if (c is! String || c.length > 32 || c.contains(',')) {
+        throw HandshakeException('malformed capability');
       }
-      for (final c in capsRaw) {
-        if (c is! String || c.length > 32 || c.contains(',')) {
-          throw HandshakeException('malformed capability');
-        }
-        caps.add(c);
+      caps.add(c);
+    }
+    Uint8List key(String field, int length, String label) {
+      final v = json[field];
+      if (v is! String) throw HandshakeException('missing field $field');
+      if (v.length != length * 2) {
+        throw HandshakeException('$label must be $length bytes');
       }
+      return CryptoUtils.decodeKey(v, length, label);
     }
-    String str(String key) {
-      final v = json[key];
-      if (v is! String) throw HandshakeException('missing field $key');
-      return v;
-    }
+
+    Uint8List? optionalKey(String field, int length, String label) =>
+        json[field] == null ? null : key(field, length, label);
+
     return HelloMessage(
       nyxChatId: id,
       displayName: name,
-      identityKey: CryptoUtils.decodeKey(
-          str('ik'), CryptoUtils.x25519KeyLength, 'identity key'),
-      signingKey: CryptoUtils.decodeKey(
-          str('sk'), CryptoUtils.ed25519KeyLength, 'signing key'),
-      kyberPublicKey: CryptoUtils.decodeKey(
-          str('kpk'), CryptoUtils.kyber768PublicKeyLength, 'kyber key'),
-      ephemeralKey: CryptoUtils.decodeKey(
-          str('eph'), CryptoUtils.x25519KeyLength, 'ephemeral key'),
-      nonce: CryptoUtils.decodeKey(
-          str('nonce'), CryptoUtils.nonceLength, 'nonce'),
+      identityKey: key('ik', CryptoUtils.x25519KeyLength, 'identity key'),
+      signingKey: key('sk', CryptoUtils.ed25519KeyLength, 'signing key'),
+      kyberPublicKey:
+          key('kpk', CryptoUtils.kyber768PublicKeyLength, 'kyber key'),
+      ephemeralKey: key('eph', CryptoUtils.x25519KeyLength, 'ephemeral key'),
+      nonce: key('nonce', CryptoUtils.nonceLength, 'nonce'),
       listeningPort: port,
       capabilities: caps,
-      kyberCiphertext: json['kct'] == null
-          ? null
-          : CryptoUtils.decodeKey(str('kct'),
-              CryptoUtils.kyber768CiphertextLength, 'kyber ciphertext'),
-      peerNonce: json['pn'] == null
-          ? null
-          : CryptoUtils.decodeKey(
-              str('pn'), CryptoUtils.nonceLength, 'peer nonce'),
-      signature: CryptoUtils.decodeKey(
-          str('sig'), CryptoUtils.ed25519SignatureLength, 'signature'),
+      kyberCiphertext: optionalKey(
+          'kct', CryptoUtils.kyber768CiphertextLength, 'kyber ciphertext'),
+      peerNonce: optionalKey('pn', CryptoUtils.nonceLength, 'peer nonce'),
+      ephemeralKemKey: optionalKey('ekpk', CryptoUtils.kyber768PublicKeyLength, 'ephemeral kem key'),
+      initiatorHelloHash: optionalKey('ih', 32, 'initiator hello hash'),
+      signature: key('sig', CryptoUtils.ed25519SignatureLength, 'signature'),
     );
   }
 }
@@ -216,9 +248,10 @@ class HandshakeResult {
 /// response.
 class InitiatorState {
   final SimpleKeyPairData ephemeral;
+  final KyberKeyPair ephemeralKem;
   final Uint8List nonce;
   final HelloMessage hello;
-  InitiatorState(this.ephemeral, this.nonce, this.hello);
+  InitiatorState(this.ephemeral, this.ephemeralKem, this.nonce, this.hello);
 }
 
 /// Result of starting an asynchronous (store-and-forward) session.
@@ -242,14 +275,16 @@ class AsyncSessionInit {
 ///   dh2 = X25519(EK_A,   IK_B)         forward secrecy vs. IK_A compromise
 ///   dh3 = X25519(IK_A,   EK_B)         forward secrecy vs. IK_B compromise
 ///   dh4 = X25519(EK_A,   EK_B)         forward secrecy vs. both
-///   kem = Kyber-768 shared secret      post-quantum confidentiality
+///   kem = ML-KEM-768 secret encapsulated to the initiator's per-handshake
+///         KEM key                       post-quantum forward secrecy
 ///   master = HKDF(salt = nonce_A || nonce_B,
 ///                 ikm  = 0xFF*32 || dh1 || dh2 || dh3 || dh4 || kem,
 ///                 info = "NyxChat-Handshake-v3")
 ///
 /// Both hellos are signed with the long-term Ed25519 key over a transcript
 /// that includes every field; the responder also signs the initiator's
-/// nonce, so a response cannot be replayed.
+/// nonce and the hash of the initiator's whole hello, so a response can
+/// neither be replayed nor bound to a different initiator.
 class Handshake {
   Handshake._();
 
@@ -265,6 +300,7 @@ class Handshake {
     List<String> capabilities = const <String>[],
   }) async {
     final ephemeral = await CryptoUtils.newX25519KeyPair();
+    final ephemeralKem = await KyberKem.generateKeyPair();
     final nonce = CryptoUtils.randomBytes(CryptoUtils.nonceLength);
     final hello = await _buildHello(
       keys: keys,
@@ -274,8 +310,9 @@ class Handshake {
       capabilities: capabilities,
       ephemeral: ephemeral,
       nonce: nonce,
+      ephemeralKemKey: ephemeralKem.publicKey,
     );
-    return InitiatorState(ephemeral, nonce, hello);
+    return InitiatorState(ephemeral, ephemeralKem, nonce, hello);
   }
 
   static Future<(HelloMessage, HandshakeResult)> respond({
@@ -292,7 +329,10 @@ class Handshake {
     }
     final ephemeral = await CryptoUtils.newX25519KeyPair();
     final nonce = CryptoUtils.randomBytes(CryptoUtils.nonceLength);
-    final kem = await KyberKem.encapsulate(initiatorHello.kyberPublicKey);
+    // Encapsulate to the initiator's per-handshake KEM key: a later
+    // compromise of its long-term KEM key does not expose this session.
+    final kem = await KyberKem.encapsulate(initiatorHello.ephemeralKemKey!);
+    final initiatorHash = await CryptoUtils.sha256(initiatorHello.transcript());
 
     final derived = await _derive(
       keys: keys,
@@ -316,6 +356,7 @@ class Handshake {
       nonce: nonce,
       peerNonce: initiatorHello.nonce,
       kyberCiphertext: kem.ciphertext,
+      initiatorHelloHash: initiatorHash,
     );
 
     return (
@@ -349,8 +390,13 @@ class Handshake {
     if (response.nyxChatId == state.hello.nyxChatId) {
       throw HandshakeException('peer claims our own identity');
     }
+    final ownHash = await CryptoUtils.sha256(state.hello.transcript());
+    if (!CryptoUtils.constantTimeEquals(response.initiatorHelloHash!, ownHash)) {
+      throw HandshakeException('response answers a different hello');
+    }
     final kemSecret = await KyberKem.decapsulate(
-        response.kyberCiphertext!, keys.kyberKeyPair.privateKey);
+        response.kyberCiphertext!, state.ephemeralKem.privateKey);
+    CryptoUtils.wipe(state.ephemeralKem.privateKey);
     final derived = await _derive(
       keys: keys,
       myEphemeral: state.ephemeral,
@@ -444,6 +490,8 @@ class Handshake {
     required Uint8List nonce,
     Uint8List? peerNonce,
     Uint8List? kyberCiphertext,
+    Uint8List? ephemeralKemKey,
+    Uint8List? initiatorHelloHash,
   }) async {
     final ephPub = CryptoUtils.publicKeyBytes(ephemeral);
     final transcript = HelloMessage.transcriptFor(
@@ -459,6 +507,8 @@ class Handshake {
       capabilities: capabilities,
       peerNonce: peerNonce,
       kyberCiphertext: kyberCiphertext,
+      ephemeralKemKey: ephemeralKemKey,
+      initiatorHelloHash: initiatorHelloHash,
     );
     final signature = await keys.sign(transcript);
     return HelloMessage(
@@ -474,6 +524,8 @@ class Handshake {
       signature: signature,
       kyberCiphertext: kyberCiphertext,
       peerNonce: peerNonce,
+      ephemeralKemKey: ephemeralKemKey,
+      initiatorHelloHash: initiatorHelloHash,
     );
   }
 
@@ -484,6 +536,12 @@ class Handshake {
     }
     if (expectResponse && hello.kyberCiphertext == null) {
       throw HandshakeException('response lacks Kyber ciphertext');
+    }
+    if (expectResponse && hello.initiatorHelloHash == null) {
+      throw HandshakeException('response lacks initiator hello hash');
+    }
+    if (!expectResponse && hello.ephemeralKemKey == null) {
+      throw HandshakeException('hello lacks ephemeral KEM key');
     }
     final idOk = await NyxId.verify(
       id: hello.nyxChatId,

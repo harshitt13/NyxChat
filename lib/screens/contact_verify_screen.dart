@@ -9,6 +9,7 @@ import '../services/chat_service.dart';
 import '../services/identity_service.dart';
 import '../theme/app_theme.dart';
 import 'chat_screen.dart';
+import 'scan_card_screen.dart';
 
 /// Safety-number verification for one contact.
 class ContactVerifyScreen extends StatefulWidget {
@@ -102,6 +103,15 @@ class _ContactVerifyScreenState extends State<ContactVerifyScreen> {
                             color: AppTheme.textSecondary, onTap: () => _openChat(peer)),
                       ),
                     ]),
+                    const SizedBox(height: 10),
+                    _button('Scan their QR code', icon: Icons.qr_code_scanner_rounded, color: AppTheme.accentPurple, onTap: () async {
+                      final scanned = await Navigator.push<PinnedPeer?>(context, MaterialPageRoute(builder: (_) => const ScanCardScreen()));
+                      if (scanned != null && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
+                            scanned.nyxChatId == peer.nyxChatId ? 'Verified: keys match this contact' : 'That card belongs to ${scanned.displayName}, pinned separately')));
+                        await _compute();
+                      }
+                    }),
                     const SizedBox(height: 24),
                     _section('Their fingerprint'),
                     _mono(_theirFingerprint ?? '...'),

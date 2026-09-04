@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import '../crypto/crypto_utils.dart';
 import '../crypto/double_ratchet.dart';
+import 'parse.dart';
 
 /// How an envelope was encrypted.
 enum EnvelopeKind {
@@ -27,17 +28,15 @@ class SessionInitBlock {
         'kct': base64Encode(kyberCiphertext),
       };
 
-  factory SessionInitBlock.fromJson(Map<String, dynamic> json) {
-    final kct = base64Decode(json['kct'] as String);
-    if (kct.length != CryptoUtils.kyber768CiphertextLength) {
-      throw const FormatException('bad kyber ciphertext length');
-    }
-    return SessionInitBlock(
-      ephemeralKey: CryptoUtils.decodeKey(
-          json['eph'] as String, CryptoUtils.x25519KeyLength, 'init ephemeral'),
-      kyberCiphertext: kct,
-    );
-  }
+  factory SessionInitBlock.fromJson(Map<String, dynamic> json) => parseOr(() {
+        const ctx = 'session init';
+        return SessionInitBlock(
+          ephemeralKey: requireHex(json, 'eph',
+              length: CryptoUtils.x25519KeyLength, context: ctx),
+          kyberCiphertext: requireBase64(json, 'kct',
+              length: CryptoUtils.kyber768CiphertextLength, context: ctx),
+        );
+      }, context: 'session init');
 
   String get ephemeralHex => CryptoUtils.toHex(ephemeralKey);
 }
@@ -57,6 +56,11 @@ class Envelope {
   final EnvelopeKind kind;
   final RatchetHeader? header;
   final SessionInitBlock? init;
+
+  /// Hex of an initiation ephemeral the sender abandoned when it adopted
+  /// our session after a simultaneous initiation. The receiver records it
+  /// so that a late copy of that initiation can never replace the session.
+  final String? abandonedInitEph;
   final int? iteration;
   final Uint8List? signature;
   final Uint8List ciphertext;
@@ -68,15 +72,19 @@ class Envelope {
     required this.ciphertext,
     this.header,
     this.init,
+    this.abandonedInitEph,
     this.iteration,
     this.signature,
   });
+
+  static final RegExp _hex64 = RegExp(r'^[0-9a-f]{64}$');
 
   factory Envelope.ratchet({
     required String from,
     required String to,
     required RatchetMessage message,
     SessionInitBlock? init,
+    String? abandonedInitEph,
   }) =>
       Envelope._(
         from: from,
@@ -84,6 +92,7 @@ class Envelope {
         kind: EnvelopeKind.ratchet,
         header: message.header,
         init: init,
+        abandonedInitEph: abandonedInitEph,
         ciphertext: message.ciphertext,
       );
 
@@ -107,14 +116,20 @@ class Envelope {
 
   /// Associated data bound into the AEAD so that ciphertext cannot be
   /// re-addressed to a different sender/recipient pair.
-  Uint8List associatedData() => associatedDataFor(from, to, kind);
+  Uint8List associatedData() =>
+      associatedDataFor(from, to, kind, abandonedInitEph: abandonedInitEph);
 
-  static Uint8List associatedDataFor(String from, String to, EnvelopeKind kind) =>
+  /// Associated data authenticated by the AEAD: addressing, kind and the
+  /// abandoned-ephemeral announcement (presence and value), so a relay can
+  /// neither strip nor inject `ab`.
+  static Uint8List associatedDataFor(String from, String to, EnvelopeKind kind,
+          {String? abandonedInitEph}) =>
       CryptoUtils.lengthPrefixed([
         'NyxChat-Envelope-v3'.codeUnits,
         utf8.encode(from),
         utf8.encode(to),
         [kind.index],
+        utf8.encode(abandonedInitEph ?? ''),
       ]);
 
   Map<String, dynamic> toJson() => {
@@ -124,58 +139,56 @@ class Envelope {
         'k': kind == EnvelopeKind.ratchet ? 'dr' : 'sk',
         if (header != null) 'h': header!.toJson(),
         if (init != null) 'i': init!.toJson(),
+        if (abandonedInitEph != null) 'ab': abandonedInitEph,
         if (iteration != null) 'it': iteration,
         if (signature != null) 's': CryptoUtils.toHex(signature!),
         'c': base64Encode(ciphertext),
       };
 
-  factory Envelope.fromJson(Map<String, dynamic> json) {
+  factory Envelope.fromJson(Map<String, dynamic> json) =>
+      parseOr(() => Envelope._parse(json), context: 'envelope');
+
+  factory Envelope._parse(Map<String, dynamic> json) {
+    const ctx = 'envelope';
     if (json['v'] != version) {
-      throw FormatException('unsupported envelope version ${json['v']}');
+      throw FormatException(
+          'unsupported envelope version ${describeValue(json['v'])}');
     }
-    final from = json['from'];
-    final to = json['to'];
+    final from =
+        requireString(json, 'from', minLength: 1, maxLength: 64, context: ctx);
+    final to =
+        requireString(json, 'to', minLength: 1, maxLength: 64, context: ctx);
     final k = json['k'];
-    final c = json['c'];
-    if (from is! String || from.isEmpty || from.length > 64) {
-      throw const FormatException('envelope: bad from');
-    }
-    if (to is! String || to.isEmpty || to.length > 64) {
-      throw const FormatException('envelope: bad to');
-    }
-    if (c is! String) throw const FormatException('envelope: bad ciphertext');
-    final ciphertext = base64Decode(c);
+    final ciphertext =
+        requireBase64(json, 'c', maxBytes: maxEncodedBytes, context: ctx);
     if (ciphertext.length < CryptoUtils.aesGcmTagLength) {
       throw const FormatException('envelope: ciphertext too short');
     }
     if (k == 'dr') {
-      final h = json['h'];
-      if (h is! Map<String, dynamic>) {
-        throw const FormatException('envelope: missing ratchet header');
+      final init = optionalMap(json, 'i', context: ctx);
+      final abandoned = optionalString(json, 'ab',
+          minLength: 64, maxLength: 64, context: ctx);
+      if (abandoned != null && !_hex64.hasMatch(abandoned)) {
+        throw const FormatException('envelope: "ab" is not hex');
       }
-      final i = json['i'];
       return Envelope._(
         from: from,
         to: to,
         kind: EnvelopeKind.ratchet,
-        header: RatchetHeader.fromJson(h),
-        init: i is Map<String, dynamic> ? SessionInitBlock.fromJson(i) : null,
+        header: RatchetHeader.fromJson(requireMap(json, 'h', context: ctx)),
+        init: init == null ? null : SessionInitBlock.fromJson(init),
+        abandonedInitEph: abandoned,
         ciphertext: ciphertext,
       );
     }
     if (k == 'sk') {
-      final it = json['it'];
-      final s = json['s'];
-      if (it is! int || it < 0 || s is! String) {
-        throw const FormatException('envelope: bad sender-key fields');
-      }
       return Envelope._(
         from: from,
         to: to,
         kind: EnvelopeKind.senderKey,
-        iteration: it,
-        signature: CryptoUtils.decodeKey(
-            s, CryptoUtils.ed25519SignatureLength, 'sender-key signature'),
+        iteration: requireInt(json, 'it', min: 0, max: 1 << 30, context: ctx),
+        signature: requireHex(json, 's',
+            length: CryptoUtils.ed25519SignatureLength, context: ctx),
         ciphertext: ciphertext,
       );
     }
@@ -188,7 +201,7 @@ class Envelope {
     if (data.length > maxEncodedBytes) {
       throw const FormatException('envelope too large');
     }
-    return Envelope.fromJson(jsonDecode(data) as Map<String, dynamic>);
+    return Envelope.fromJson(decodeJsonObject(data, context: 'envelope'));
   }
 
   Uint8List toBytes() => Uint8List.fromList(utf8.encode(encode()));
@@ -197,7 +210,8 @@ class Envelope {
     if (bytes.length > maxEncodedBytes) {
       throw const FormatException('envelope too large');
     }
-    return Envelope.decode(utf8.decode(bytes));
+    return Envelope.decode(
+        parseOr(() => utf8.decode(bytes), context: 'envelope'));
   }
 
   @override

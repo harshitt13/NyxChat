@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import '../protocol/parse.dart';
 import 'crypto_utils.dart';
 
 /// Header carried with every Double Ratchet message.
@@ -20,17 +21,15 @@ class RatchetHeader {
   Map<String, dynamic> toJson() =>
       {'dh': CryptoUtils.toHex(dh), 'pn': pn, 'n': n};
 
-  factory RatchetHeader.fromJson(Map<String, dynamic> json) {
-    final dh = CryptoUtils.decodeKey(
-        json['dh'] as String, CryptoUtils.x25519KeyLength, 'ratchet key');
-    final pn = json['pn'];
-    final n = json['n'];
-    if (pn is! int || n is! int || pn < 0 || n < 0 || pn > 1 << 30 ||
-        n > 1 << 30) {
-      throw const FormatException('invalid ratchet header counters');
-    }
-    return RatchetHeader(dh: dh, pn: pn, n: n);
-  }
+  factory RatchetHeader.fromJson(Map<String, dynamic> json) => parseOr(() {
+        const ctx = 'ratchet header';
+        return RatchetHeader(
+          dh: requireHex(json, 'dh',
+              length: CryptoUtils.x25519KeyLength, context: ctx),
+          pn: requireInt(json, 'pn', min: 0, max: 1 << 30, context: ctx),
+          n: requireInt(json, 'n', min: 0, max: 1 << 30, context: ctx),
+        );
+      }, context: 'ratchet header');
 
   /// Canonical bytes, bound into the AEAD associated data.
   Uint8List toBytes() => CryptoUtils.concat(
@@ -221,7 +220,13 @@ class DoubleRatchetSession {
     _ns = 0;
     _nr = 0;
     _dhr = Uint8List.fromList(theirRatchetKey);
-    final recv = await _kdfRk(_rk, await CryptoUtils.x25519(_dhs, _dhr!));
+    final Uint8List dhRecv;
+    try {
+      dhRecv = await CryptoUtils.x25519(_dhs, _dhr!);
+    } on StateError {
+      throw RatchetException('peer ratchet key is a low-order point');
+    }
+    final recv = await _kdfRk(_rk, dhRecv);
     _rk = recv.$1;
     _ckr = recv.$2;
     _dhs = await CryptoUtils.newX25519KeyPair();
@@ -316,27 +321,38 @@ class DoubleRatchetSession {
             .toList(),
       };
 
-  factory DoubleRatchetSession.fromJson(Map<String, dynamic> json) {
-    Uint8List? opt(String key) =>
-        json[key] == null ? null : CryptoUtils.fromHex(json[key] as String);
-    final skipped = <String, Uint8List>{};
-    for (final entry in (json['skipped'] as List<dynamic>? ?? const [])) {
-      final pair = entry as List<dynamic>;
-      skipped[pair[0] as String] = CryptoUtils.fromHex(pair[1] as String);
-    }
-    return DoubleRatchetSession._(
-      dhs: CryptoUtils.x25519KeyPairFromBytes(
-        CryptoUtils.fromHex(json['dhsPriv'] as String),
-        CryptoUtils.fromHex(json['dhsPub'] as String),
-      ),
-      dhr: opt('dhr'),
-      rk: CryptoUtils.fromHex(json['rk'] as String),
-      cks: opt('cks'),
-      ckr: opt('ckr'),
-      ns: json['ns'] as int,
-      nr: json['nr'] as int,
-      pn: json['pn'] as int,
-      skipped: skipped,
-    );
-  }
+  factory DoubleRatchetSession.fromJson(Map<String, dynamic> json) =>
+      parseOr(() {
+        const ctx = 'ratchet state';
+        const keyLength = CryptoUtils.x25519KeyLength;
+        final skipped = <String, Uint8List>{};
+        final rawSkipped = optionalList(json, 'skipped',
+                maxLength: maxStoredSkipped, context: ctx) ??
+            const <dynamic>[];
+        for (final entry in rawSkipped) {
+          if (entry is! List || entry.length != 2) {
+            throw const FormatException('ratchet state: bad skipped entry');
+          }
+          final id = entry[0];
+          final mk = entry[1];
+          if (id is! String || id.isEmpty || id.length > 128 || mk is! String) {
+            throw const FormatException('ratchet state: bad skipped entry');
+          }
+          skipped[id] = CryptoUtils.decodeKey(mk, 32, 'skipped message key');
+        }
+        return DoubleRatchetSession._(
+          dhs: CryptoUtils.x25519KeyPairFromBytes(
+            requireHex(json, 'dhsPriv', length: keyLength, context: ctx),
+            requireHex(json, 'dhsPub', length: keyLength, context: ctx),
+          ),
+          dhr: optionalHex(json, 'dhr', length: keyLength, context: ctx),
+          rk: requireHex(json, 'rk', length: 32, context: ctx),
+          cks: optionalHex(json, 'cks', length: 32, context: ctx),
+          ckr: optionalHex(json, 'ckr', length: 32, context: ctx),
+          ns: requireInt(json, 'ns', min: 0, max: 1 << 30, context: ctx),
+          nr: requireInt(json, 'nr', min: 0, max: 1 << 30, context: ctx),
+          pn: requireInt(json, 'pn', min: 0, max: 1 << 30, context: ctx),
+          skipped: skipped,
+        );
+      }, context: 'ratchet state');
 }

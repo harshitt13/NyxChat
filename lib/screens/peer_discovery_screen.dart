@@ -6,9 +6,12 @@ import '../core/storage/trust_store.dart';
 import '../models/peer.dart';
 import '../services/chat_service.dart';
 import '../services/peer_service.dart';
+import '../services/settings_service.dart';
 import '../theme/app_theme.dart';
 import 'chat_screen.dart';
 import 'contact_verify_screen.dart';
+import 'emergency_screen.dart';
+import 'scan_card_screen.dart';
 
 /// Find people: LAN discovery, Bluetooth neighbours, pinned contacts,
 /// manual connection, contact-card import and the experimental DHT.
@@ -57,19 +60,22 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen> {
         color: ok ? AppTheme.accentGreen.withValues(alpha: 0.3) : AppTheme.error.withValues(alpha: 0.3));
   }
 
+  Future<void> _scanCard() async {
+    final peer = await Navigator.push<PinnedPeer?>(context, MaterialPageRoute(builder: (_) => const ScanCardScreen()));
+    if (peer != null && mounted) {
+      _snack('Pinned and verified ${peer.displayName}', color: AppTheme.accentGreen.withValues(alpha: 0.3));
+      await context.read<PeerService>().refreshBeacons();
+    }
+  }
+
   Future<void> _importCard() async {
     final raw = _card.text.trim();
     if (raw.isEmpty) return;
     try {
-      Map<String, dynamic> card;
-      if (raw.startsWith('nyx3;')) {
-        final parts = raw.split(';');
-        if (parts.length != 6) throw const FormatException('bad card');
-        card = {'nyx': 3, 'id': parts[1], 'name': parts[2], 'ik': parts[3], 'sk': parts[4], 'kpk': parts[5]};
-      } else {
-        throw const FormatException('unrecognised format');
-      }
+      final card = parseContactCard(raw);
+      if (card == null) throw const FormatException('unrecognised format');
       final peer = await context.read<TrustStore>().pinFromContactCard(card, verified: true);
+      if (mounted) await context.read<PeerService>().refreshBeacons();
       _card.clear();
       _snack('Pinned and verified ${peer.displayName}', color: AppTheme.accentGreen.withValues(alpha: 0.3));
     } catch (e) {
@@ -95,6 +101,35 @@ class _PeerDiscoveryScreenState extends State<PeerDiscoveryScreen> {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
             children: [
               _status(peers, ble),
+              const SizedBox(height: 12),
+              Consumer<SettingsService>(
+                builder: (_, settings, _) => SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Visible to everyone nearby', style: TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
+                  subtitle: Text(
+                    settings.discoverableToEveryone
+                        ? 'Your ID and name are broadcast so new people can find you.'
+                        : 'Private beacons: only pinned contacts can recognise you; others see random noise.',
+                    style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
+                  ),
+                  value: settings.discoverableToEveryone,
+                  activeThumbColor: AppTheme.accentBlue,
+                  onChanged: (v) => settings.setDiscoverableToEveryone(v),
+                ),
+              ),
+              Row(children: [
+                Expanded(child: _button('Scan contact QR', _scanCard)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EmergencyScreen())),
+                    icon: const Icon(Icons.campaign_rounded, size: 16, color: AppTheme.error),
+                    label: const Text('Emergency', style: TextStyle(color: AppTheme.error)),
+                    style: OutlinedButton.styleFrom(side: BorderSide(color: AppTheme.error.withValues(alpha: 0.4)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                  ),
+                ),
+              ]),
               const SizedBox(height: 18),
               _section('Nearby on Wi-Fi'),
               if (nearby.isEmpty) _hint('Nobody discovered yet. Peers on the same Wi-Fi appear here automatically.'),

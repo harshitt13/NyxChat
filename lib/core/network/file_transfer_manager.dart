@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../crypto/crypto_utils.dart';
+import '../protocol/parse.dart';
 
 /// Description of an outgoing/incoming file transfer. Sent to the
 /// recipient inside the Double Ratchet; the chunks themselves travel
@@ -31,33 +32,42 @@ class FileDescriptor {
     required this.sha256Hex,
   });
 
-  factory FileDescriptor.fromInnerBody(Map<String, dynamic> b) {
-    final key = base64Decode(b['key'] as String);
-    final nonce = base64Decode(b['nonce'] as String);
-    final chunks = b['chunks'];
-    final size = b['size'];
-    final chunkSize = b['chunkSize'];
-    if (key.length != 32 || nonce.length != 8) {
-      throw const FormatException('bad file key material');
-    }
-    if (chunks is! int || chunks < 0 || chunks > 1 << 20 ||
-        size is! int || size < 0 || size > FileTransferManager.maxFileBytes ||
-        chunkSize is! int || chunkSize <= 0 || chunkSize > FileTransferManager.maxChunkSize) {
-      throw const FormatException('bad file descriptor');
-    }
-    final name = (b['name'] as String).replaceAll(RegExp(r'[\\/:*?"<>|\x00-\x1f]'), '_');
-    return FileDescriptor(
-      fileId: b['fileId'] as String,
-      fileName: name.isEmpty ? 'file' : name,
-      mimeType: b['mime'] as String,
-      fileSize: size,
-      key: key,
-      noncePrefix: nonce,
-      totalChunks: chunks,
-      chunkSize: chunkSize,
-      sha256Hex: b['sha256'] as String,
-    );
-  }
+  factory FileDescriptor.fromInnerBody(Map<String, dynamic> b) => parseOr(() {
+        const ctx = 'file descriptor';
+        final key = requireBase64(b, 'key', length: 32, context: ctx);
+        final nonce = requireBase64(b, 'nonce', length: 8, context: ctx);
+        final chunks =
+            requireInt(b, 'chunks', min: 0, max: 1 << 20, context: ctx);
+        final size = requireInt(b, 'size',
+            min: 0, max: FileTransferManager.maxFileBytes, context: ctx);
+        final chunkSize = requireInt(b, 'chunkSize',
+            min: 1, max: FileTransferManager.maxChunkSize, context: ctx);
+        // The chunk count must follow from size and chunk size; otherwise a
+        // hostile descriptor could make the receiver write far past the
+        // announced file size.
+        final expectedChunks =
+            size == 0 ? 0 : (size + chunkSize - 1) ~/ chunkSize;
+        if (chunks != expectedChunks) {
+          throw const FormatException('file descriptor: chunk count mismatch');
+        }
+        final name = requireString(b, 'name', maxLength: 512, context: ctx)
+            .replaceAll(RegExp(r'[\\/:*?"<>|\x00-\x1f]'), '_');
+        final sha = requireString(b, 'sha256',
+            minLength: 64, maxLength: 64, context: ctx);
+        CryptoUtils.fromHex(sha); // must be well-formed hex
+        return FileDescriptor(
+          fileId: requireString(b, 'fileId',
+              minLength: 1, maxLength: 128, context: ctx),
+          fileName: name.isEmpty ? 'file' : name,
+          mimeType: requireString(b, 'mime', maxLength: 256, context: ctx),
+          fileSize: size,
+          key: key,
+          noncePrefix: nonce,
+          totalChunks: chunks,
+          chunkSize: chunkSize,
+          sha256Hex: sha,
+        );
+      }, context: 'file descriptor');
 }
 
 class FileChunkFrame {
@@ -71,18 +81,16 @@ class FileChunkFrame {
   Map<String, dynamic> toJson() =>
       {'fileId': fileId, 'i': index, 'n': total, 'd': base64Encode(data)};
 
-  factory FileChunkFrame.fromJson(Map<String, dynamic> j) {
-    final i = j['i'];
-    final n = j['n'];
-    if (i is! int || n is! int || i < 0 || n <= 0 || i >= n) {
-      throw const FormatException('bad chunk index');
-    }
-    final d = base64Decode(j['d'] as String);
-    if (d.length > FileTransferManager.maxChunkSize + 16) {
-      throw const FormatException('chunk too large');
-    }
-    return FileChunkFrame(j['fileId'] as String, i, n, d);
-  }
+  factory FileChunkFrame.fromJson(Map<String, dynamic> j) => parseOr(() {
+        const ctx = 'file chunk';
+        final n = requireInt(j, 'n', min: 1, max: 1 << 20, context: ctx);
+        final i = requireInt(j, 'i', min: 0, max: n - 1, context: ctx);
+        final d = requireBase64(j, 'd',
+            maxBytes: FileTransferManager.maxChunkSize + 16, context: ctx);
+        final fileId = requireString(j, 'fileId',
+            minLength: 1, maxLength: 128, context: ctx);
+        return FileChunkFrame(fileId, i, n, d);
+      }, context: 'file chunk');
 }
 
 /// State of a file being received.

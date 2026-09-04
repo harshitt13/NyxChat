@@ -47,6 +47,11 @@ class ConnectionManager extends ChangeNotifier {
   /// accept the change before a link is allowed.
   final Map<String, PinnedPeer> _pendingKeyChanges = {};
 
+  /// Initiator nonces seen recently: a replayed hello is refused instead
+  /// of being answered with fresh keys.
+  final List<String> _recentInitiatorNonces = [];
+  static const int _nonceCacheSize = 2048;
+
   ConnectionManager({
     required this.keys,
     required this.client,
@@ -113,6 +118,16 @@ class ConnectionManager extends ChangeNotifier {
   Future<void> _handleIncoming(PeerConnection conn) async {
     try {
       final hello = (await conn.nextOfType(ProtocolMessageType.hello)).asHello();
+      final nonceHex = hello.nonce.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      if (_recentInitiatorNonces.contains(nonceHex)) {
+        debugPrint('[Conn] replayed hello from ${conn.remoteAddress}, refused');
+        await conn.disconnect();
+        return;
+      }
+      _recentInitiatorNonces.add(nonceHex);
+      if (_recentInitiatorNonces.length > _nonceCacheSize) {
+        _recentInitiatorNonces.removeAt(0);
+      }
       final (response, result) = await Handshake.respond(
         keys: keys,
         nyxChatId: _myId,

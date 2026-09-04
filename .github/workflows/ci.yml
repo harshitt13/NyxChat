@@ -17,6 +17,8 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter analyze --no-fatal-infos
+      # ML-KEM-768 native library (native/mlkem) needed by the crypto tests
+      - run: bash tool/build_native.sh
       - run: flutter test --reporter expanded
 
   build-apk:

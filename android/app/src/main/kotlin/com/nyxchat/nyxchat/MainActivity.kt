@@ -35,6 +35,9 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, LocationChannel.CHANNEL)
+            .setMethodCallHandler(LocationChannel(applicationContext))
+
         val peripheral = BlePeripheral(applicationContext)
         blePeripheral = peripheral
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BlePeripheral.METHOD_CHANNEL)

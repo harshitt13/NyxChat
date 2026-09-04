@@ -1,0 +1,354 @@
+/*
+ * NyxChat direct-link handshake (protocol v4) -- Tamarin model
+ * ===========================================================
+ *
+ * Models the signed, hybrid (X25519 + ML-KEM-768) handshake implemented in
+ * lib/core/crypto/handshake.dart (Handshake.createInitiatorHello,
+ * Handshake.respond, Handshake.completeInitiator), the handle binding of
+ * lib/core/crypto/nyx_id.dart, and the key-pin lookup plus the initiator
+ * nonce cache of lib/core/network/connection_manager.dart.
+ *
+ * HelloMessage.protocolVersion is 4; the transcript domain strings in the
+ * code still read 'NyxChat-...-v3' and are used here as opaque tags.
+ *
+ * Message flow (A = initiator, B = responder):
+ *
+ *   A -> B : tA, sign(tA, skA)
+ *            tA = (role1, hA, infoA, IK_A, SK_A, KPK_A, EK_A, nA, EKPK_A)
+ *   B -> A : tB, sign(tB, skB)
+ *            tB = (role2, hB, infoB, IK_B, SK_B, KPK_B, EK_B, nB, nA, kct, ih)
+ *
+ *   EKPK_A = per-handshake ML-KEM public key (HelloMessage.ephemeralKemKey)
+ *   kct    = KEM.Encaps(EKPK_A) carrying the fresh secret kem
+ *   ih     = H(tA)  (HelloMessage.initiatorHelloHash); A refuses a response
+ *            whose ih is not the hash of the hello it sent
+ *   master = kdf(nA, nB, dh1, dh2, dh3, dh4, kem)
+ *   dh1 = DH(IK_A, IK_B)  dh2 = DH(EK_A, IK_B)  dh3 = DH(IK_A, EK_B)  dh4 = DH(EK_A, EK_B)
+ *
+ * The responder-side cache of recent initiator nonces
+ * (ConnectionManager._recentInitiatorNonces) is the restriction NonceCache.
+ *
+ * Abstractions (see README): the KEM is public-key encryption of a fresh
+ * secret; HKDF is a free function kdf/1; display name, port and
+ * capabilities are one public value $info; link keys and the ratchet root
+ * are deterministic functions of master and are not modelled. The long-term
+ * KEM key KPK is carried and pinned but no longer used by this handshake.
+ *
+ * This file has NOT been machine-checked in this repository (Tamarin is not
+ * installed here). Run:  tamarin-prover --prove formal/nyxchat_v4_handshake.spthy
+ */
+
+theory NyxChat_Handshake
+begin
+
+builtins: diffie-hellman, signing, hashing
+
+/* KEM abstraction: kempk(k) is the public key of private key k; kemenc(pk, r)
+ * is a ciphertext encapsulating the shared secret r; decapsulation with the
+ * matching private key returns r, with any other key it stays an opaque term
+ * (mirrors ML-KEM implicit rejection: no error, unrelated output). */
+functions: kdf/1, kempk/1, kemenc/2, kemdec/2
+equations: kemdec(kemenc(kempk(k), r), k) = r
+
+/* ------------------------------------------------------------------ */
+/* Restrictions                                                        */
+/* ------------------------------------------------------------------ */
+
+restriction Equality:
+  "All x y #i. Eq(x, y) @i ==> x = y"
+
+restriction Inequality:
+  "All x #i. Neq(x, x) @i ==> F"
+
+/* One long-term key set per identity (NyxId.derive binds handle to keys). */
+restriction UniqueKeys:
+  "All A #i #j. KeyGen(A) @i & KeyGen(A) @j ==> #i = #j"
+
+/* ConnectionManager._recentInitiatorNonces: a responder answers a given
+ * initiator nonce at most once (the real cache holds 2048 entries; the
+ * model treats it as unbounded). */
+restriction NonceCache:
+  "All B n #i #j. RespNonce(B, n) @i & RespNonce(B, n) @j ==> #i = #j"
+
+/* ------------------------------------------------------------------ */
+/* Long-term keys (KeyManager): X25519 IK, Ed25519 SK, ML-KEM-768 KPK    */
+/* ------------------------------------------------------------------ */
+
+rule Register_Keys:
+  [ Fr(~ik), Fr(~sk), Fr(~kk) ]
+  --[ KeyGen($A) ]->
+  [ !Ltk($A, ~ik, ~sk, ~kk)
+  , !Pk($A, 'g'^~ik, pk(~sk), kempk(~kk))
+  , Out(<'g'^~ik, pk(~sk), kempk(~kk)>) ]
+
+/* Full long-term compromise of $A (all three private keys). */
+rule Reveal_LTK:
+  [ !Ltk($A, ~ik, ~sk, ~kk) ]
+  --[ RevealLTK($A) ]->
+  [ Out(<~ik, ~sk, ~kk>) ]
+
+/* Compromise of the long-term ML-KEM private key only. */
+rule Reveal_KEM_Key:
+  [ !Ltk($A, ~ik, ~sk, ~kk) ]
+  --[ RevealKPK($A) ]->
+  [ Out(~kk) ]
+
+/* Compromise of a per-handshake ML-KEM private key (broken KEM). */
+rule Reveal_KEM_Ephemeral:
+  [ !EphKem($A, ~ekk) ]
+  --[ RevealEKK($A) ]->
+  [ Out(~ekk) ]
+
+/* Compromise of the X25519 identity private key only (broken DH, part 1). */
+rule Reveal_DH_Identity:
+  [ !Ltk($A, ~ik, ~sk, ~kk) ]
+  --[ RevealDH($A) ]->
+  [ Out(~ik) ]
+
+/* Compromise of an X25519 ephemeral private key (broken DH, part 2).
+ * Together with Reveal_DH_Identity this hands the adversary every DH
+ * secret of $A, so that all of dh1..dh4 become computable. */
+rule Reveal_DH_Ephemeral:
+  [ !Eph($A, ~ek) ]
+  --[ RevealDH($A) ]->
+  [ Out(~ek) ]
+
+/* ------------------------------------------------------------------ */
+/* Protocol                                                            */
+/* ------------------------------------------------------------------ */
+
+/* Handshake.createInitiatorHello: fresh EK_A, fresh ML-KEM key pair
+ * (InitiatorState.ephemeralKem) and nonce nA, signed hello. The handle
+ * hA = H('NyxChat-ID-v3', SK_A, IK_A) is NyxId.derive. The initiator does
+ * not yet know who will answer (ConnectionManager.connect dials an
+ * address); it learns the peer identity from the response. */
+rule I_Send_Hello:
+  let pkIKA  = 'g'^~ik
+      pkSKA  = pk(~sk)
+      pkKPKA = kempk(~kk)
+      hA     = h(<'NyxChat_ID_v3', pkSKA, pkIKA>)
+      ekA    = 'g'^~ekA
+      ekpk   = kempk(~ekk)
+      tA     = <'NyxChat_Hello_v3', 'role1', hA, $infoA, pkIKA, pkSKA, pkKPKA, ekA, ~nA, ekpk>
+  in
+  [ !Ltk($A, ~ik, ~sk, ~kk), Fr(~ekA), Fr(~ekk), Fr(~nA) ]
+  --[ RunningI($A, ~nA, ekA) ]->
+  [ Out(<tA, sign(tA, ~sk)>)
+  , !Eph($A, ~ekA)
+  , !EphKem($A, ~ekk)
+  , StI($A, ~ik, ~sk, ~kk, ~ekA, ~ekk, ~nA, $infoA) ]
+/* Handshake.respond + ConnectionManager._handleIncoming: refuse a nonce
+ * seen before (RespNonce + NonceCache), verify sig_A and the handle
+ * binding, check the presented keys against the pinned record for that
+ * identity (the !Pk lookup), refuse self-connections, encapsulate to the
+ * initiator's per-handshake KEM key, hash the initiator transcript into
+ * the response, derive master, send the signed response echoing nA.
+ * B "commits" here: after this message it has nothing more to check. */
+rule R_Recv_Hello_Send_Response:
+  let pkIKB  = 'g'^~ikB
+      pkSKB  = pk(~skB)
+      pkKPKB = kempk(~kkB)
+      hB     = h(<'NyxChat_ID_v3', pkSKB, pkIKB>)
+      tA     = <'NyxChat_Hello_v3', 'role1', hA, infoA, pkIKA, pkSKA, pkKPKA, ekA, nA, ekpk>
+      ekB    = 'g'^~ekB
+      kct    = kemenc(ekpk, ~kem)
+      ih     = h(tA)
+      tB     = <'NyxChat_Hello_v3', 'role2', hB, $infoB, pkIKB, pkSKB, pkKPKB, ekB, ~nB, nA, kct, ih>
+      dh1    = pkIKA^~ikB
+      dh2    = ekA^~ikB
+      dh3    = pkIKA^~ekB
+      dh4    = ekA^~ekB
+      master = kdf(<'NyxChat_Handshake_v3', nA, ~nB, dh1, dh2, dh3, dh4, ~kem>)
+  in
+  [ !Ltk($B, ~ikB, ~skB, ~kkB)
+  , !Pk($A, pkIKA, pkSKA, pkKPKA)
+  , In(<tA, sigA>)
+  , Fr(~ekB), Fr(~nB), Fr(~kem) ]
+  --[ Eq(verify(sigA, tA, pkSKA), true)
+    , Eq(hA, h(<'NyxChat_ID_v3', pkSKA, pkIKA>))
+    , Neq($A, $B)
+    , RespNonce($B, nA)
+    , CommitR($B, $A, nA, ekA)
+    , RunningR($B, $A, nA, ~nB, ekA, ekB, master)
+    , RespKey($B, $A, nA, ~nB, master)
+    , SessionKey($B, $A, master)
+    , Honest($A), Honest($B) ]->
+  [ Out(<tB, sign(tB, ~skB)>)
+  , !Eph($B, ~ekB) ]
+
+/* Handshake.completeInitiator + ConnectionManager._finish: verify sig_B and
+ * the handle binding, require the echoed nonce to be our own nA (pattern
+ * match on ~nA), require ih to be the hash of the hello we sent, refuse
+ * self-connections, decapsulate with the per-handshake KEM secret, derive
+ * master. The peer identity $B is fixed by the pinned-key lookup (!Pk). */
+rule I_Recv_Response:
+  let pkIKA  = 'g'^~ik
+      pkSKA  = pk(~sk)
+      pkKPKA = kempk(~kk)
+      hA     = h(<'NyxChat_ID_v3', pkSKA, pkIKA>)
+      ekA    = 'g'^~ekA
+      ekpk   = kempk(~ekk)
+      tA     = <'NyxChat_Hello_v3', 'role1', hA, $infoA, pkIKA, pkSKA, pkKPKA, ekA, ~nA, ekpk>
+      tB     = <'NyxChat_Hello_v3', 'role2', hB, infoB, pkIKB, pkSKB, pkKPKB, ekB, nB, ~nA, kct, ih>
+      kem    = kemdec(kct, ~ekk)
+      dh1    = pkIKB^~ik
+      dh2    = pkIKB^~ekA
+      dh3    = ekB^~ik
+      dh4    = ekB^~ekA
+      master = kdf(<'NyxChat_Handshake_v3', ~nA, nB, dh1, dh2, dh3, dh4, kem>)
+  in
+  [ StI($A, ~ik, ~sk, ~kk, ~ekA, ~ekk, ~nA, $infoA)
+  , !Pk($B, pkIKB, pkSKB, pkKPKB)
+  , In(<tB, sigB>) ]
+  --[ Eq(verify(sigB, tB, pkSKB), true)
+    , Eq(hB, h(<'NyxChat_ID_v3', pkSKB, pkIKB>))
+    , Eq(ih, h(tA))
+    , Neq($A, $B)
+    , CommitI($A, $B, ~nA, nB, ekA, ekB, master)
+    , InitKey($A, $B, ~nA, nB, master)
+    , SessionKey($A, $B, master)
+    , Honest($A), Honest($B) ]->
+  [ ]
+/* ------------------------------------------------------------------ */
+/* Lemmas                                                              */
+/* ------------------------------------------------------------------ */
+
+/* Sanity: an honest run exists in which both parties derive the same
+ * master secret (no compromise at all). If this fails the model is broken. */
+lemma executable:
+  exists-trace
+  "Ex A B nA nB m #i #j.
+     RespKey(B, A, nA, nB, m) @i
+   & InitKey(A, B, nA, nB, m) @j
+   & #i < #j
+   & not (Ex X #r. RevealLTK(X) @r)
+   & not (Ex X #r. RevealDH(X) @r)
+   & not (Ex X #r. RevealKPK(X) @r)
+   & not (Ex X #r. RevealEKK(X) @r)"
+
+/* Secrecy: master stays unknown to the adversary as long as no key of
+ * either participant is compromised in any way. */
+lemma secrecy_master:
+  "All A B m #i.
+     SessionKey(A, B, m) @i
+   & not (Ex X #r. RevealLTK(X) @r & Honest(X) @i)
+   & not (Ex X #r. RevealDH(X) @r  & Honest(X) @i)
+   & not (Ex X #r. RevealKPK(X) @r & Honest(X) @i)
+   & not (Ex X #r. RevealEKK(X) @r & Honest(X) @i)
+   ==> not (Ex #j. K(m) @j)"
+
+/* Forward secrecy (classical): master stays secret even if ALL long-term
+ * keys (IK, SK, KPK) of both parties are revealed after the session key
+ * was derived; the ephemeral DH keys and the ephemeral KEM key protect it. */
+lemma forward_secrecy:
+  "All A B m #i.
+     SessionKey(A, B, m) @i
+   & not (Ex X #r. RevealLTK(X) @r & Honest(X) @i & #r < #i)
+   & not (Ex X #r. RevealKPK(X) @r & Honest(X) @i & #r < #i)
+   & not (Ex X #r. RevealDH(X) @r  & Honest(X) @i)
+   & not (Ex X #r. RevealEKK(X) @r & Honest(X) @i)
+   ==> not (Ex #j. K(m) @j)"
+
+/* PQ-hybrid, KEM-only: even if every X25519 secret (identity AND
+ * ephemeral) of both parties and both long-term KEM keys are handed to
+ * the adversary at any time, master stays secret as long as the signing
+ * keys and the per-handshake KEM key are not revealed (a classical break
+ * of X25519). The long-term KEM key plays no role in this handshake. */
+lemma kem_only_secrecy:
+  "All A B m #i.
+     SessionKey(A, B, m) @i
+   & not (Ex X #r. RevealLTK(X) @r & Honest(X) @i)
+   & not (Ex X #r. RevealEKK(X) @r & Honest(X) @i)
+   ==> not (Ex #j. K(m) @j)"
+
+/* PQ forward secrecy: as kem_only_secrecy, but the full long-term key
+ * sets (including the long-term KEM keys) may additionally be revealed
+ * AFTER the session. A harvest-now-decrypt-later adversary who later
+ * seizes both devices still cannot recover master. */
+lemma kem_only_forward_secrecy:
+  "All A B m #i.
+     SessionKey(A, B, m) @i
+   & not (Ex X #r. RevealLTK(X) @r & Honest(X) @i & #r < #i)
+   & not (Ex X #r. RevealEKK(X) @r & Honest(X) @i)
+   ==> not (Ex #j. K(m) @j)"
+
+/* PQ-hybrid, DH-only: even if every KEM private key (long-term and
+ * per-handshake) is revealed at any time, master stays secret as long as
+ * the X25519 secrets are intact (a break of ML-KEM). */
+lemma dh_only_secrecy:
+  "All A B m #i.
+     SessionKey(A, B, m) @i
+   & not (Ex X #r. RevealLTK(X) @r & Honest(X) @i)
+   & not (Ex X #r. RevealDH(X) @r  & Honest(X) @i)
+   ==> not (Ex #j. K(m) @j)"
+
+/* Initiator authenticates the responder: injective agreement on
+ * (A, B, nA, nB, EK_A, EK_B, master). sig_B covers ih = H(tA), which binds
+ * B's response to the exact hello A sent (A's identity, keys, EK_A, nA,
+ * EKPK_A), so B derived the same master with A as its peer. Needs only
+ * B's signing key to be uncompromised before A commits. */
+lemma mutual_auth_initiator:
+  "All A B nA nB ekA ekB m #i.
+     CommitI(A, B, nA, nB, ekA, ekB, m) @i
+   & not (Ex #r. RevealLTK(B) @r & #r < #i)
+   ==> (Ex #j. RunningR(B, A, nA, nB, ekA, ekB, m) @j & #j < #i)
+     & not (Ex A2 B2 nB2 ekA2 ekB2 m2 #i2.
+              CommitI(A2, B2, nA, nB2, ekA2, ekB2, m2) @i2 & not (#i2 = #i))"
+
+/* Responder authenticates the initiator: injective agreement on
+ * (A, nA, EK_A) per responder. sig_A covers them; the nonce cache makes a
+ * responder commit at most once per nA. (The hello names no intended
+ * responder, so a captured hello can still be delivered to a DIFFERENT
+ * responder: see hello_accepted_by_two_responders.) */
+lemma mutual_auth_responder:
+  "All A B nA ekA #i.
+     CommitR(B, A, nA, ekA) @i
+   & not (Ex #r. RevealLTK(A) @r & #r < #i)
+   ==> (Ex #j. RunningI(A, nA, ekA) @j & #j < #i)
+     & not (Ex A2 ekA2 #i2. CommitR(B, A2, nA, ekA2) @i2 & not (#i2 = #i))"
+
+/* Replay resistance (responder side): a responder commits at most once
+ * per initiator nonce, so a replayed initiator hello is refused rather
+ * than answered with fresh keys. Follows from the NonceCache restriction. */
+lemma replay_resistance:
+  "All B A1 A2 nA e1 e2 #i #j.
+     CommitR(B, A1, nA, e1) @i & CommitR(B, A2, nA, e2) @j
+   ==> #i = #j"
+
+/* Replay resistance (initiator side): an initiator accepts at most one
+ * response per nonce nA, and only the instance that generated nA accepts
+ * it, so a captured hello_B cannot be replayed into a second acceptance. */
+lemma response_replay_resistance:
+  "All A B nA nB ekA ekB m #i.
+     CommitI(A, B, nA, nB, ekA, ekB, m) @i
+   ==> (Ex #k. RunningI(A, nA, ekA) @k & #k < #i)
+     & not (Ex A2 B2 nB2 ekA2 ekB2 m2 #j.
+              CommitI(A2, B2, nA, nB2, ekA2, ekB2, m2) @j & not (#j = #i))"
+
+/* Residual behaviour, witnessed as an existing trace: the nonce cache is
+ * per device, and the initiator hello names no intended responder, so the
+ * same hello can be answered by two different responders. The second
+ * key is orphaned (nobody else can compute it: secrecy_master holds), so
+ * this is a resource issue only. */
+lemma hello_accepted_by_two_responders:
+  exists-trace
+  "Ex B1 B2 A nA ekA #i #j.
+     CommitR(B1, A, nA, ekA) @i
+   & CommitR(B2, A, nA, ekA) @j
+   & not (B1 = B2)
+   & not (Ex X #r. RevealLTK(X) @r)
+   & not (Ex X #r. RevealDH(X) @r)
+   & not (Ex X #r. RevealKPK(X) @r)
+   & not (Ex X #r. RevealEKK(X) @r)"
+
+/* No unknown-key-share: if an initiator holds master m with peer B and
+ * any responder session at B holds the same m, that session has the
+ * initiator as its peer and the same nonces. Holds unconditionally
+ * because dh1 = DH(IK_A, IK_B) and both nonces enter the KDF. */
+lemma key_agreement_consistency:
+  "All A B nA nB m A2 nA2 nB2 #i #j.
+     InitKey(A, B, nA, nB, m) @i
+   & RespKey(B, A2, nA2, nB2, m) @j
+   ==> A2 = A & nA2 = nA & nB2 = nB"
+
+end

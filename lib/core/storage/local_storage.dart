@@ -55,8 +55,14 @@ class LocalStorage {
   KeyValueStore get outboxStore =>
       HiveKeyValueStore(() => _boxes[outboxBox]!);
 
-  Future<void> init() async {
-    await Hive.initFlutter();
+  /// Initialise Hive. [directory] overrides the platform documents
+  /// directory (used by tests and tools that run outside Flutter).
+  Future<void> init({String? directory}) async {
+    if (directory != null) {
+      Hive.init(directory);
+    } else {
+      await Hive.initFlutter();
+    }
   }
 
   /// Open all boxes. If existing files cannot be decrypted the corrupted
@@ -236,6 +242,34 @@ class LocalStorage {
 
   Future<void> deletePeer(String nyxChatId) async =>
       _peersBox?.delete(nyxChatId);
+
+  // Backup
+
+  /// Every box as {boxName: {key: value}}.
+  Map<String, Map<String, String>> exportAll() {
+    final out = <String, Map<String, String>>{};
+    for (final e in _boxes.entries) {
+      if (!e.value.isOpen) continue;
+      final m = <String, String>{};
+      for (final k in e.value.keys) {
+        final v = e.value.get(k);
+        if (v != null) m[k.toString()] = v;
+      }
+      out[e.key] = m;
+    }
+    return out;
+  }
+
+  /// Replace the contents of every box with [data].
+  Future<void> importAll(Map<String, dynamic> data) async {
+    for (final e in data.entries) {
+      final box = _boxes[e.key];
+      final entries = e.value;
+      if (box == null || !box.isOpen || entries is! Map) continue;
+      await box.clear();
+      await box.putAll(entries.map((k, v) => MapEntry(k.toString(), v.toString())));
+    }
+  }
 
   // Cleanup
 

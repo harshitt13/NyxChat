@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 
 import '../crypto/crypto_utils.dart';
 import '../crypto/nyx_id.dart';
+import '../protocol/parse.dart';
 import 'key_value_store.dart';
 
 /// A peer's pinned long-term keys.
@@ -76,19 +77,24 @@ class PinnedPeer {
         if (keyChangedAt != null) 'changed': keyChangedAt!.toIso8601String(),
       };
 
-  factory PinnedPeer.fromJson(Map<String, dynamic> j) => PinnedPeer(
-        nyxChatId: j['id'] as String,
-        displayName: j['name'] as String,
-        identityKey: CryptoUtils.fromHex(j['ik'] as String),
-        signingKey: CryptoUtils.fromHex(j['sk'] as String),
-        kyberPublicKey: CryptoUtils.fromHex(j['kpk'] as String),
-        verified: j['verified'] as bool? ?? false,
-        firstSeen: DateTime.parse(j['first'] as String),
-        lastSeen: DateTime.parse(j['last'] as String),
-        keyChangedAt: j['changed'] == null
-            ? null
-            : DateTime.parse(j['changed'] as String),
-      );
+  factory PinnedPeer.fromJson(Map<String, dynamic> j) => parseOr(() {
+        const ctx = 'pinned peer';
+        return PinnedPeer(
+          nyxChatId:
+              requireString(j, 'id', minLength: 1, maxLength: 64, context: ctx),
+          displayName: requireString(j, 'name', maxLength: 256, context: ctx),
+          identityKey: requireHex(j, 'ik',
+              length: CryptoUtils.x25519KeyLength, context: ctx),
+          signingKey: requireHex(j, 'sk',
+              length: CryptoUtils.ed25519KeyLength, context: ctx),
+          kyberPublicKey: requireHex(j, 'kpk',
+              length: CryptoUtils.kyber768PublicKeyLength, context: ctx),
+          verified: optionalBool(j, 'verified', context: ctx) ?? false,
+          firstSeen: requireDateTime(j, 'first', context: ctx),
+          lastSeen: requireDateTime(j, 'last', context: ctx),
+          keyChangedAt: optionalDateTime(j, 'changed', context: ctx),
+        );
+      }, context: 'pinned peer');
 
   /// A shareable contact card (what a QR code contains).
   Map<String, dynamic> toContactCard() => {
@@ -197,12 +203,23 @@ class TrustStore extends ChangeNotifier {
   /// Pin a contact obtained out of band (QR code / contact card).
   Future<PinnedPeer> pinFromContactCard(Map<String, dynamic> card,
       {bool verified = true}) async {
-    if (card['nyx'] != 3) throw const FormatException('unsupported card');
-    final id = card['id'] as String;
-    final ik = CryptoUtils.decodeKey(card['ik'] as String, 32, 'identity key');
-    final sk = CryptoUtils.decodeKey(card['sk'] as String, 32, 'signing key');
-    final kpk = CryptoUtils.decodeKey(card['kpk'] as String,
-        CryptoUtils.kyber768PublicKeyLength, 'kyber key');
+    const ctx = 'contact card';
+    final (id, name, ik, sk, kpk) = parseOr(() {
+      if (card['nyx'] != 3) throw const FormatException('unsupported card');
+      final id =
+          requireString(card, 'id', minLength: 1, maxLength: 64, context: ctx);
+      if (!NyxId.isValidFormat(id)) {
+        throw const FormatException('contact card: malformed id');
+      }
+      return (
+        id,
+        optionalString(card, 'name', maxLength: 64, context: ctx),
+        requireHex(card, 'ik', length: 32, context: ctx),
+        requireHex(card, 'sk', length: 32, context: ctx),
+        requireHex(card, 'kpk',
+            length: CryptoUtils.kyber768PublicKeyLength, context: ctx),
+      );
+    }, context: ctx);
     final bound = await NyxId.verify(
         id: id, signingPublicKey: sk, identityPublicKey: ik);
     if (!bound) throw const FormatException('card id does not match keys');
@@ -210,7 +227,7 @@ class TrustStore extends ChangeNotifier {
     final existing = _cache[id];
     final peer = PinnedPeer(
       nyxChatId: id,
-      displayName: (card['name'] as String?) ?? existing?.displayName ?? id,
+      displayName: name ?? existing?.displayName ?? id,
       identityKey: ik,
       signingKey: sk,
       kyberPublicKey: kpk,

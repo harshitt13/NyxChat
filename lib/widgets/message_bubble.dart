@@ -96,7 +96,7 @@ class MessageBubble extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 6),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(10),
-          child: Image.file(File(path), fit: BoxFit.cover,
+          child: Image.file(File(path), fit: BoxFit.cover, cacheWidth: 720,
               errorBuilder: (_, _, _) => _fileRow(att, complete)),
         ),
       );

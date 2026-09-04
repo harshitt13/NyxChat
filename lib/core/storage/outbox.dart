@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 
 import '../protocol/inner_message.dart';
+import '../protocol/parse.dart';
 import 'key_value_store.dart';
 
 /// A queued delivery. Plaintext inner messages are stored (the outbox box
@@ -62,16 +63,22 @@ class OutboxItem {
         'next': nextAttemptAt.toIso8601String(),
       };
 
-  factory OutboxItem.fromJson(Map<String, dynamic> j) => OutboxItem(
-        id: j['id'] as String,
-        peerId: j['peerId'] as String,
-        kind: j['kind'] as String,
-        payload: j['payload'] as Map<String, dynamic>,
-        messageId: j['messageId'] as String?,
-        attempts: j['attempts'] as int? ?? 0,
-        createdAt: DateTime.parse(j['created'] as String),
-        nextAttemptAt: DateTime.parse(j['next'] as String),
-      );
+  factory OutboxItem.fromJson(Map<String, dynamic> j) => parseOr(() {
+        const ctx = 'outbox item';
+        return OutboxItem(
+          id: requireString(j, 'id', minLength: 1, maxLength: 256, context: ctx),
+          peerId: requireString(j, 'peerId',
+              minLength: 1, maxLength: 128, context: ctx),
+          kind: requireString(j, 'kind',
+              minLength: 1, maxLength: 32, context: ctx),
+          payload: requireMap(j, 'payload', context: ctx),
+          messageId: optionalString(j, 'messageId', maxLength: 128, context: ctx),
+          attempts:
+              optionalInt(j, 'attempts', min: 0, max: 1 << 30, context: ctx) ?? 0,
+          createdAt: requireDateTime(j, 'created', context: ctx),
+          nextAttemptAt: requireDateTime(j, 'next', context: ctx),
+        );
+      }, context: 'outbox item');
 }
 
 /// Persistent store-and-forward queue for messages we could not deliver

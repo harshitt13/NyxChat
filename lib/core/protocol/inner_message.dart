@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'parse.dart';
+
 /// The plaintext that travels inside an end-to-end encrypted [Envelope].
 ///
 /// Every user-visible or control payload (text, file descriptors,
@@ -150,28 +152,17 @@ class InnerMessage {
         'b': body,
       };
 
-  factory InnerMessage.fromJson(Map<String, dynamic> json) {
-    final type = json['t'];
-    final id = json['id'];
-    final ts = json['ts'];
-    final body = json['b'];
-    if (type is! String || type.isEmpty || type.length > 16) {
-      throw const FormatException('inner message: bad type');
-    }
-    if (id is! String || id.isEmpty || id.length > 64) {
-      throw const FormatException('inner message: bad id');
-    }
-    if (ts is! String) throw const FormatException('inner message: bad ts');
-    if (body is! Map<String, dynamic>) {
-      throw const FormatException('inner message: bad body');
-    }
-    return InnerMessage(
-      type: type,
-      id: id,
-      timestamp: DateTime.parse(ts),
-      body: body,
-    );
-  }
+  factory InnerMessage.fromJson(Map<String, dynamic> json) => parseOr(() {
+        const ctx = 'inner message';
+        return InnerMessage(
+          type: requireString(json, 't',
+              minLength: 1, maxLength: 16, context: ctx),
+          id: requireString(json, 'id',
+              minLength: 1, maxLength: 64, context: ctx),
+          timestamp: requireDateTime(json, 'ts', context: ctx),
+          body: requireMap(json, 'b', context: ctx),
+        );
+      }, context: 'inner message');
 
   Uint8List toBytes() {
     final bytes = utf8.encode(jsonEncode(toJson()));
@@ -185,8 +176,9 @@ class InnerMessage {
     if (bytes.length > maxEncodedBytes) {
       throw const FormatException('inner message too large');
     }
-    return InnerMessage.fromJson(
-        jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>);
+    return InnerMessage.fromJson(parseOr(
+        () => decodeJsonObject(utf8.decode(bytes), context: 'inner message'),
+        context: 'inner message'));
   }
 
   @override

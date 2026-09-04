@@ -168,6 +168,37 @@ class KeyManager {
       isLoaded ? kyberPublicKeyHex
                : (await _storage.read(key: _storageKyberPublic) ?? '');
 
+  /// Persist a freshly generated key set as the current profile's keys
+  /// (identity rotation). The caller must have created any transition
+  /// statement with the old keys before calling this.
+  Future<void> replaceWith(KeyManager fresh) async {
+    await importSecrets(await fresh.exportSecrets());
+  }
+
+  /// All private and public key material (hex) for an encrypted backup.
+  Future<Map<String, String>> exportSecrets() async => {
+        'kx_private': CryptoUtils.toHex(identityKeyPair.bytes),
+        'kx_public': identityPublicKeyHex,
+        'sign_private': CryptoUtils.toHex(signingKeyPair.bytes),
+        'sign_public': signingPublicKeyHex,
+        'kyber_private': CryptoUtils.toHex(kyberKeyPair.privateKey),
+        'kyber_public': kyberPublicKeyHex,
+      };
+
+  /// Restore key material from a backup (overwrites the current profile).
+  Future<void> importSecrets(Map<String, dynamic> m) async {
+    String s(String k) => m[k] as String;
+    CryptoUtils.decodeKey(s('kx_private'), 32, 'kx_private');
+    CryptoUtils.decodeKey(s('sign_private'), 32, 'sign_private');
+    await _storage.write(key: _storageKeyExchangePrivate, value: s('kx_private'));
+    await _storage.write(key: _storageKeyExchangePublic, value: s('kx_public'));
+    await _storage.write(key: _storageSigningPrivate, value: s('sign_private'));
+    await _storage.write(key: _storageSigningPublic, value: s('sign_public'));
+    await _storage.write(key: _storageKyberPrivate, value: s('kyber_private'));
+    await _storage.write(key: _storageKyberPublic, value: s('kyber_public'));
+    await loadKeys();
+  }
+
   /// Ed25519 signature with the long-term signing key.
   Future<Uint8List> sign(List<int> message) =>
       CryptoUtils.ed25519Sign(signingKeyPair, message);

@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../crypto/handshake.dart';
 import '../mesh/mesh_packet.dart';
 import '../protocol/envelope.dart';
+import '../protocol/parse.dart';
 
 /// Frame types on a direct (TCP / Wi-Fi Direct) link.
 ///
@@ -122,25 +123,25 @@ class ProtocolMessage {
         'ts': timestamp.toIso8601String(),
       };
 
-  factory ProtocolMessage.fromJson(Map<String, dynamic> json) {
-    final t = json['t'];
-    final p = json['p'];
-    if (t is! String) throw const FormatException('frame: missing type');
-    if (p is! Map<String, dynamic>) {
-      throw const FormatException('frame: missing payload');
-    }
-    final type = ProtocolMessageType.values.firstWhere(
-      (e) => e.name == t,
-      orElse: () => ProtocolMessageType.unknown,
-    );
-    DateTime ts;
-    try {
-      ts = DateTime.parse(json['ts'] as String);
-    } catch (_) {
-      ts = DateTime.now().toUtc();
-    }
-    return ProtocolMessage(type: type, payload: p, timestamp: ts);
-  }
+  factory ProtocolMessage.fromJson(Map<String, dynamic> json) => parseOr(() {
+        final t = requireString(json, 't', maxLength: 32, context: 'frame');
+        final p = requireMap(json, 'p', context: 'frame');
+        final type = ProtocolMessageType.values.firstWhere(
+          (e) => e.name == t,
+          orElse: () => ProtocolMessageType.unknown,
+        );
+        // The timestamp is informational: a bad one is replaced, not fatal.
+        DateTime ts;
+        try {
+          final raw = json['ts'];
+          ts = raw is String && raw.length <= 64
+              ? DateTime.parse(raw)
+              : DateTime.now().toUtc();
+        } catch (_) {
+          ts = DateTime.now().toUtc();
+        }
+        return ProtocolMessage(type: type, payload: p, timestamp: ts);
+      }, context: 'frame');
 
   /// One frame = one line. The trailing newline is the delimiter.
   String encode() => '${jsonEncode(toJson())}\n';
@@ -150,7 +151,7 @@ class ProtocolMessage {
       throw const FormatException('frame too large');
     }
     return ProtocolMessage.fromJson(
-        jsonDecode(line.trim()) as Map<String, dynamic>);
+        decodeJsonObject(line.trim(), context: 'frame'));
   }
 
   @override

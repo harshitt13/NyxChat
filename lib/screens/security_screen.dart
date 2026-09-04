@@ -1,4 +1,6 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../main.dart';
@@ -81,6 +83,36 @@ class SecurityScreen extends StatelessWidget {
                 ),
             ]),
             const SizedBox(height: 24),
+            _title('Identity'),
+            _card([
+              ListTile(
+                leading: const Icon(Icons.autorenew_rounded, color: AppTheme.textSecondary, size: 20),
+                title: const Text('Rotate identity keys', style: TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
+                subtitle: const Text('New keys and handle. Contacts that are online now receive a signed transition immediately; '
+                    'others receive it the next time you connect directly. The app closes afterwards.',
+                    style: TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+                onTap: () => _rotate(context),
+              ),
+            ]),
+            const SizedBox(height: 24),
+            _title('Backup'),
+            _card([
+              ListTile(
+                leading: const Icon(Icons.save_alt_rounded, color: AppTheme.textSecondary, size: 20),
+                title: const Text('Export encrypted backup', style: TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
+                subtitle: const Text('Identity keys, contacts, sessions and messages, sealed with a passphrase (Argon2id + AES-256-GCM).',
+                    style: TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+                onTap: () => _exportBackup(context),
+              ),
+              ListTile(
+                leading: const Icon(Icons.restore_rounded, color: AppTheme.textSecondary, size: 20),
+                title: const Text('Restore from backup', style: TextStyle(color: AppTheme.textPrimary, fontSize: 14)),
+                subtitle: const Text('Replaces this profile. Wipe the old device afterwards: two live copies of one identity fork its sessions.',
+                    style: TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+                onTap: () => _restoreBackup(context),
+              ),
+            ]),
+            const SizedBox(height: 24),
             _title('Danger zone'),
             _card([
               ListTile(
@@ -102,6 +134,107 @@ class SecurityScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<String?> _askPassphrase(BuildContext context, String title, {bool confirm = false}) async {
+    final a = TextEditingController();
+    final b = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: Text(title, style: const TextStyle(color: AppTheme.textPrimary)),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: a, obscureText: true, autofocus: true, style: const TextStyle(color: AppTheme.textPrimary),
+              decoration: const InputDecoration(hintText: 'Passphrase (8+ characters)')),
+          if (confirm)
+            TextField(controller: b, obscureText: true, style: const TextStyle(color: AppTheme.textPrimary),
+                decoration: const InputDecoration(hintText: 'Confirm passphrase')),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Continue')),
+        ],
+      ),
+    );
+    if (ok != true) return null;
+    if (a.text.length < 8 || (confirm && a.text != b.text)) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Passphrase too short or mismatch')));
+      }
+      return null;
+    }
+    return a.text;
+  }
+
+  Future<void> _rotate(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: const Text('Rotate identity keys?', style: TextStyle(color: AppTheme.textPrimary)),
+        content: const Text('Your NyxChat ID will change. Contacts who are offline will not be able to reach you until you meet again directly.',
+            style: TextStyle(color: AppTheme.textSecondary)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Rotate', style: TextStyle(color: AppTheme.warning))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await services.rotateIdentity();
+      await SystemNavigator.pop();
+    } catch (e) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Rotation failed: $e')));
+    }
+  }
+
+  Future<void> _exportBackup(BuildContext context) async {
+    final pass = await _askPassphrase(context, 'Backup passphrase', confirm: true);
+    if (pass == null || !context.mounted) return;
+    try {
+      final bytes = await services.backup.export(pass);
+      final stamp = DateTime.now().toIso8601String().substring(0, 10);
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save NyxChat backup', fileName: 'nyxchat-backup-$stamp.nyxbk', bytes: Uint8List.fromList(bytes),
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(path == null ? 'Backup cancelled' : 'Backup saved')));
+      }
+    } catch (e) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Backup failed: $e')));
+    }
+  }
+
+  Future<void> _restoreBackup(BuildContext context) async {
+    final picked = await FilePicker.platform.pickFiles(withData: true);
+    final bytes = picked?.files.single.bytes;
+    if (bytes == null || !context.mounted) return;
+    final pass = await _askPassphrase(context, 'Backup passphrase');
+    if (pass == null || !context.mounted) return;
+    try {
+      final backup = await services.backup.inspect(bytes, pass);
+      if (!context.mounted) return;
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppTheme.surface,
+          title: const Text('Replace this profile?', style: TextStyle(color: AppTheme.warning)),
+          content: Text('Backup from ${backup['created']} for "${backup['displayName']}". Everything on this device will be replaced and the app will close.',
+              style: const TextStyle(color: AppTheme.textSecondary)),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Restore', style: TextStyle(color: AppTheme.warning))),
+          ],
+        ),
+      );
+      if (confirm != true) return;
+      await services.backup.restore(backup);
+      await SystemNavigator.pop();
+    } catch (e) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Restore failed: $e')));
+    }
   }
 
   Future<void> _duressDialog(BuildContext context, AppLockService lock) async {

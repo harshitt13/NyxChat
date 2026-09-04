@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -58,12 +58,23 @@ jobs:
           mv build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/NyxChat.apk
           mv build/app/outputs/bundle/release/app-release.aab build/app/outputs/bundle/release/NyxChat.aab
 
-      # Create the GitHub Release and upload BOTH the newly named .aab and .apk
+      # Publish checksums so users can verify what they install
+      - name: Compute SHA-256 checksums
+        run: |
+          cd build/app/outputs
+          sha256sum flutter-apk/NyxChat.apk bundle/release/NyxChat.aab | sed 's#flutter-apk/##; s#bundle/release/##' > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          { echo; echo '### SHA-256'; echo '```'; cat SHA256SUMS.txt; echo '```'; } > release_footer.md
+
+      # Create (or update) the GitHub Release and upload the .aab, .apk and checksums
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          append_body: true
+          body_path: build/app/outputs/release_footer.md
           files: |
             build/app/outputs/bundle/release/NyxChat.aab
             build/app/outputs/flutter-apk/NyxChat.apk
+            build/app/outputs/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

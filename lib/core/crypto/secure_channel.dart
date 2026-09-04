@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import '../protocol/parse.dart';
 import 'crypto_utils.dart';
 
 /// Link-layer encryption for a single authenticated connection.
@@ -64,13 +65,19 @@ class SecureChannel {
   static bool isSealedFrame(Map<String, dynamic> json) =>
       json.containsKey('e') && json.containsKey('c');
 
-  /// Open a sealed frame. Throws on tampering, replay or reordering.
+  /// Open a sealed frame. A malformed frame is a [FormatException]; a
+  /// replayed, reordered or tampered frame is a [StateError] (the link is
+  /// considered compromised). Nothing else escapes.
   Future<String> open(Map<String, dynamic> frame) async {
-    final counter = frame['c'];
-    final encoded = frame['e'];
-    if (counter is! int || encoded is! String) {
-      throw const FormatException('malformed sealed frame');
-    }
+    final (counter, ciphertext) = parseOr(() {
+      const ctx = 'sealed frame';
+      final c = requireInt(frame, 'c', min: 0, max: maxCounter, context: ctx);
+      final ct = requireBase64(frame, 'e', context: ctx);
+      if (ct.length < CryptoUtils.aesGcmTagLength) {
+        throw const FormatException('sealed frame too short');
+      }
+      return (c, ct);
+    }, context: 'sealed frame');
     if (counter != _recvCounter) {
       throw StateError(
           'secure channel replay/reorder: expected $_recvCounter got $counter');
@@ -80,7 +87,7 @@ class SecureChannel {
       plain = await CryptoUtils.aesGcmDecrypt(
         key: _recvKey,
         nonce: _nonce(counter),
-        ciphertextWithTag: base64Decode(encoded),
+        ciphertextWithTag: ciphertext,
         aad: CryptoUtils.int64be(counter),
       );
     } on SecretBoxAuthenticationError {

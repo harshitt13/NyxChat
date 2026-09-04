@@ -3,10 +3,19 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../core/crypto/key_manager.dart';
+import '../core/crypto/key_transition.dart';
 import '../core/crypto/nyx_id.dart';
 import '../core/storage/local_storage.dart';
 import '../core/storage/trust_store.dart';
 import '../models/user_identity.dart';
+
+/// Output of [IdentityService.prepareRotation].
+class PendingRotation {
+  final KeyManager keys;
+  final String newId;
+  final KeyTransition statement;
+  PendingRotation(this.keys, this.newId, this.statement);
+}
 
 /// Owns the local identity: long-term keys (secure storage) and the
 /// profile record (encrypted database). If the database is ever reset the
@@ -132,6 +141,35 @@ class IdentityService extends ChangeNotifier {
   /// Safety number between us and a pinned peer.
   Future<String> safetyNumberWith(PinnedPeer peer) async =>
       NyxId.safetyNumber(await fingerprint(), await peer.fingerprint());
+
+  /// Step 1 of key rotation: generate the new key set and the signed
+  /// transition statement, without switching yet (so the statement can be
+  /// delivered over existing sessions first).
+  Future<PendingRotation> prepareRotation() async {
+    final current = _identity;
+    if (current == null) throw StateError('no identity');
+    final fresh = await KeyManager.generateEphemeral();
+    final newId = await NyxId.derive(
+      signingPublicKey: fresh.signingPublicKey,
+      identityPublicKey: fresh.identityPublicKey,
+    );
+    final statement = await KeyTransition.create(
+      oldKeys: _keyManager, oldId: current.nyxChatId, newKeys: fresh, newId: newId,
+    );
+    return PendingRotation(fresh, newId, statement);
+  }
+
+  /// Step 2: persist the new keys and profile. The app must restart
+  /// afterwards so that every service picks up the new handle.
+  Future<void> commitRotation(PendingRotation r) async {
+    final current = _identity;
+    if (current == null) throw StateError('no identity');
+    await _keyManager.replaceWith(r.keys);
+    _identity = await _buildIdentity(current.displayName);
+    await _storage.saveUserIdentity(_identity!);
+    notifyListeners();
+    debugPrint('[Identity] rotated ${current.nyxChatId} -> ${r.newId}');
+  }
 
   /// Forget the identity (panic wipe).
   Future<void> destroy() async {

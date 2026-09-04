@@ -22,6 +22,9 @@ class P2PServer {
   List<PeerConnection> get activeConnections => List.unmodifiable(_active);
   bool get isRunning => _serverSocket != null;
 
+  /// The port actually bound (differs from [port] when 0 was requested).
+  int get boundPort => _serverSocket?.port ?? port;
+
   P2PServer({required this.port});
 
   Future<void> start() async {

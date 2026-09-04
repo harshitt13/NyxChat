@@ -19,17 +19,20 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nyxchat/core/crypto/crypto_utils.dart';
 import 'package:nyxchat/core/mesh/mesh_packet.dart';
 import 'package:nyxchat/core/mesh/mesh_router.dart';
 import 'package:nyxchat/core/mesh/mesh_store.dart';
 
 class SimNode {
   final String id;
+  final Uint8List token; // one fixed recipient token (a single epoch)
   final MeshRouter router;
   final MeshStore store;
   double x, y, tx, ty, speed;
-  final List<(MeshPacket, String?)> outbox = [];
-  SimNode(this.id, this.router, this.store, this.x, this.y, this.tx, this.ty, this.speed);
+  final List<(MeshPacket, Uint8List?)> outbox = [];
+  SimNode(this.id, this.token, this.router, this.store, this.x, this.y, this.tx, this.ty, this.speed);
+  String get relayHex => router.relayIdHex;
 }
 
 class Result {
@@ -72,15 +75,17 @@ Future<Result> run({
     );
     final id = 'NC-${i.toRadixString(16).padLeft(16, '0').toUpperCase()}';
     await router.init(id);
-    final n = SimNode(id, router, store, rng.nextDouble() * arena,
+    final token = Uint8List(16)..setRange(0, 16, List.generate(16, (k) => (i * 7 + k * 13 + 1) & 0xff));
+    final n = SimNode(id, token, router, store, rng.nextDouble() * arena,
         rng.nextDouble() * arena, rng.nextDouble() * arena,
         rng.nextDouble() * arena, 0.5 + rng.nextDouble() * 1.5);
+    router.isForMe = (p) => CryptoUtils.constantTimeEquals(p.to, token);
     router.onForwardPacket = (p, next) => n.outbox.add((p, next));
     nodes.add(n);
   }
-  final byHash = <String, SimNode>{};
+  final byRelay = <String, SimNode>{};
   for (final n in nodes) {
-    byHash[n.router.myHash!] = n;
+    byRelay[n.relayHex] = n;
   }
 
   final sentAt = <String, int>{};
@@ -119,7 +124,7 @@ Future<Result> run({
       }
       final key = 'm${sentAt.length}';
       sentAt[key] = currentTick;
-      await a.router.send(recipientId: b.id, payload: Uint8List.fromList(utf8.encode(key)));
+      await a.router.send(to: b.token, replyTo: a.token, payload: Uint8List.fromList(utf8.encode(key)));
     }
     // Neighbour exchange: flush outboxes and offer stored packets on contact.
     for (final n in nodes) {
@@ -132,8 +137,9 @@ Future<Result> run({
       final pending = List.of(n.outbox);
       n.outbox.clear();
       for (final (packet, nextHop) in pending) {
-        final targets = nextHop != null && byHash[nextHop] != null && neighbours.contains(byHash[nextHop])
-            ? [byHash[nextHop]!]
+        final hopNode = nextHop == null ? null : byRelay[CryptoUtils.toHex(nextHop)];
+        final targets = hopNode != null && neighbours.contains(hopNode)
+            ? [hopNode]
             : (strategy == 'epidemic' ? neighbours : neighbours.take(n.router.sprayCount).toList());
         for (final t in targets) {
           transmissions++;
