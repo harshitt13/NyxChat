@@ -302,11 +302,18 @@ class SecurityScreen extends StatelessWidget {
 
   Widget _card(BuildContext context, List<Widget> children) => Container(
         decoration: context.nyx.glass(opacity: 0.04, borderRadius: 14),
-        child: Column(children: [
-          for (var i = 0; i < children.length; i++) ...[
-            children[i],
-            if (i < children.length - 1) Divider(height: 1, color: context.nyx.hairline(0.04)),
-          ],
-        ]),
+        clipBehavior: Clip.antiAlias,
+        // ListTiles paint their ink on the nearest Material; give them one
+        // below the decorated box so the splash is visible (newer Flutter
+        // asserts on a DecoratedBox between a ListTile and its Material).
+        child: Material(
+          type: MaterialType.transparency,
+          child: Column(children: [
+            for (var i = 0; i < children.length; i++) ...[
+              children[i],
+              if (i < children.length - 1) Divider(height: 1, color: context.nyx.hairline(0.04)),
+            ],
+          ]),
+        ),
       );
 }
