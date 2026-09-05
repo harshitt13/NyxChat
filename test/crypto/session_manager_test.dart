@@ -243,6 +243,27 @@ void main() {
           throwsA(isA<SessionCollisionException>()));
     });
 
+    test('a replayed old initiation cannot displace a recovered session', () async {
+      // Found by machine-checking the collision model: only the latest
+      // accepted init was deduplicated, so an older one, replayed, took the
+      // recovery path and rebuilt a session the peer no longer has.
+      final a = await _Party.create();
+      final b = await _Party.create();
+      final first = await a.sessions.encrypt(peerId: b.id,
+          message: InnerMessage.text(id: '1', text: 'one'), pinned: b.pinned());
+      expect((await b.sessions.decrypt(_wire(first), pinned: a.pinned())).text, 'one');
+      // a loses its state and starts over; b recovers onto the new init.
+      await a.sessions.reset(b.id);
+      final second = await a.sessions.encrypt(peerId: b.id,
+          message: InnerMessage.text(id: '2', text: 'two'), pinned: b.pinned());
+      expect((await b.sessions.decrypt(_wire(second), pinned: a.pinned())).text, 'two');
+      // The first initiation is replayed: it must not rebuild the old session.
+      await expectLater(b.sessions.decrypt(_wire(first), pinned: a.pinned()), throwsA(anything));
+      final third = await a.sessions.encrypt(peerId: b.id,
+          message: InnerMessage.text(id: '3', text: 'three'));
+      expect((await b.sessions.decrypt(_wire(third))).text, 'three');
+    });
+
     test('peer that lost its session is re-bootstrapped', () async {
       final a = await _Party.create();
       final b = await _Party.create();

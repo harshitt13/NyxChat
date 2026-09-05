@@ -63,6 +63,12 @@ class SessionRecord {
   /// repeated init blocks from the same initiator).
   String? acceptedInitEph;
 
+  /// Every init ephemeral this record (and the records it replaced) has
+  /// accepted, newest last, at most eight. A replayed copy of any of them
+  /// takes the fast path and can never re-derive a session through the
+  /// recovery branch (found by the Tamarin model: acceptedInitsDeduplicated).
+  final List<String> acceptedInitEphs;
+
   /// Init ephemerals we deliberately ignored (we won a collision). A
   /// stale message carrying one of them must never replace the session.
   final List<String> ignoredInitEphs;
@@ -91,11 +97,14 @@ class SessionRecord {
     this.prekeyId,
     this.pendingInit,
     this.acceptedInitEph,
+    List<String>? acceptedInitEphs,
     List<String>? ignoredInitEphs,
     this.abandonedInitEph,
     DateTime? createdAt,
     DateTime? updatedAt,
   })  : ignoredInitEphs = ignoredInitEphs ?? [],
+        acceptedInitEphs = acceptedInitEphs ??
+            [?acceptedInitEph],
         createdAt = createdAt ?? DateTime.now().toUtc(),
         updatedAt = updatedAt ?? DateTime.now().toUtc();
 
@@ -103,6 +112,7 @@ class SessionRecord {
         'ratchet': ratchet.toJson(),
         if (pendingInit != null) 'pendingInit': pendingInit!.toJson(),
         if (acceptedInitEph != null) 'acceptedInitEph': acceptedInitEph,
+        if (acceptedInitEphs.isNotEmpty) 'acceptedInits': acceptedInitEphs,
         if (ignoredInitEphs.isNotEmpty) 'ignoredInit': ignoredInitEphs,
         if (abandonedInitEph != null) 'abandonedInit': abandonedInitEph,
         if (prekeyId != null) 'prekey': prekeyId,
@@ -119,6 +129,7 @@ class SessionRecord {
             : SessionInitBlock.fromJson(
                 j['pendingInit'] as Map<String, dynamic>),
         acceptedInitEph: j['acceptedInitEph'] as String?,
+        acceptedInitEphs: (j['acceptedInits'] as List<dynamic>?)?.cast<String>().toList(),
         ignoredInitEphs: (j['ignoredInit'] as List<dynamic>?)?.cast<String>().toList(),
         abandonedInitEph: j['abandonedInit'] as String?,
         prekeyId: j['prekey'] as String?,
@@ -131,6 +142,9 @@ class SessionRecord {
   /// long-term KEM key because no one-time prekey was available: its root
   /// gains post-quantum forward secrecy only at the peer's first reply.
   bool get isAsyncFallback => origin == 'async' && prekeyId == null;
+
+  bool hasAccepted(String eph) =>
+      acceptedInitEph == eph || acceptedInitEphs.contains(eph);
 }
 
 /// Owns every pairwise Double Ratchet session, decides how sessions are
@@ -260,7 +274,7 @@ class SessionManager {
 
     // Fast path: use the existing session.
     if (existing != null &&
-        (init == null || existing.acceptedInitEph == init.ephemeralHex)) {
+        (init == null || existing.hasAccepted(init.ephemeralHex))) {
       final plain =
           await existing.ratchet.decrypt(ratchetMsg, associatedData: ad);
       existing.pendingInit = null; // we heard from them: they have our key
@@ -331,14 +345,20 @@ class SessionManager {
         origin: 'async',
         prekeyId: own?.id,
         acceptedInitEph: init.ephemeralHex,
+        acceptedInitEphs: _capped([...?existing?.acceptedInitEphs, init.ephemeralHex]),
         // If we were mid-initiation ourselves we lost the collision: tell
         // the peer which ephemeral to blacklist. Keep what we already ignore.
-        abandonedInitEph: existing?.pendingInit?.ephemeralHex,
+        // A recovery must keep announcing an ephemeral we abandoned earlier
+        // until the peer has demonstrably heard it.
+        abandonedInitEph: existing?.pendingInit?.ephemeralHex ?? existing?.abandonedInitEph,
         ignoredInitEphs: existing?.ignoredInitEphs,
       ),
     );
     return InnerMessage.fromBytes(Padding.unpad(plain));
   }
+
+  static List<String> _capped(List<String> l) =>
+      l.length > 8 ? l.sublist(l.length - 8) : l;
 
   static void _remember(List<String> list, String eph) {
     if (list.contains(eph)) return;

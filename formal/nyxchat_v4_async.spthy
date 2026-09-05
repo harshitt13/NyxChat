@@ -266,6 +266,16 @@ rule Async_Respond_OPK [no_derivcheck]:
 restriction IgnoredInitsDropped:
   "All X Y e #i #j. NotIgnored(X, Y, e) @i & Ignored(X, Y, e) @j & #j < #i ==> F"
 
+/* SessionManager.decrypt fast path: an init block whose ephemeral we have
+ * already accepted (acceptedInitEphs) is decrypted with the existing
+ * session and never re-derives one, so a replayed copy of an accepted
+ * initiation cannot take the recovery path. Machine-checking found the
+ * missing dedup: without it a replay of the winner's own init to the loser
+ * re-ran recovery, which reset the loser's abandoned-init announcement
+ * before the winner had blacklisted it (abandoned_init_blacklisted). */
+restriction AcceptedInitsDeduplicated:
+  "All X Y e #i #j. Recover(X, Y, e) @i & AcceptedInit(X, Y, e) @j & #j < #i ==> F"
+
 rule Collision_Setup:
   [ Fr(~ika), Fr(~kka), Fr(~ikb), Fr(~kkb) ]
   --[ OnlyOnce('collision_setup') ]->
@@ -302,7 +312,7 @@ rule C_Adopt_From_Idle [no_derivcheck]:
   in
   [ Idle(X, Y), !CLtk(X, ~ikX, ~kkX), !CPk(Y, pkIKY, pkKPKY)
   , In(<'init', Y, ekY, kct, c>) ]
-  --[ Eq(sdec(c, mk), 'session_open'), Adopted(X, Y, root) ]->
+  --[ Eq(sdec(c, mk), 'session_open'), AcceptedInit(X, Y, ekY), Adopted(X, Y, root) ]->
   [ Final(X, Y, root, 'none') ]
 
 /* decrypt(): own init pending AND incoming init AND my handle is smaller
@@ -326,7 +336,7 @@ rule C_Collision_Adopt [no_derivcheck]:
   in
   [ Pending(X, Y, root, ekX), !Less(Y, X), !CLtk(X, ~ikX, ~kkX), !CPk(Y, pkIKY, pkKPKY)
   , In(<'init', Y, ekY, kct, c>) ]
-  --[ Eq(sdec(c, mk), 'session_open'), NotIgnored(X, Y, ekY)
+  --[ Eq(sdec(c, mk), 'session_open'), NotIgnored(X, Y, ekY), AcceptedInit(X, Y, ekY)
     , Abandoned(X, Y, ekX), Adopted(X, Y, root2) ]->
   [ Final(X, Y, root2, ekX) ]
 
@@ -356,7 +366,11 @@ rule C_Recv_Reply_Final:
 /* decrypt() recovery path: a settled session (pendingInit == null) that
  * receives an init block with a new ephemeral that is not blacklisted
  * re-derives and REPLACES its session if the message decrypts. Meant for
- * a peer that lost its state. The blacklist is carried over. */
+ * a peer that lost its state. The blacklist and our own abandoned-init
+ * announcement are carried over (SessionRecord copies ignoredInitEphs and
+ * abandonedInitEph); an init whose ephemeral was already accepted takes
+ * the fast path instead (acceptedInitEphs), see the restriction
+ * AcceptedInitsDeduplicated. */
 rule C_Recover [no_derivcheck]:
   let pkIKY = 'g'^~ikY   /* pinned-key shape, see the machine-checking note above */
       dh1   = pkIKY^~ikX
@@ -367,9 +381,9 @@ rule C_Recover [no_derivcheck]:
   in
   [ Final(X, Y, root, ab), !CLtk(X, ~ikX, ~kkX), !CPk(Y, pkIKY, pkKPKY)
   , In(<'init', Y, ekY, kct, c>) ]
-  --[ Eq(sdec(c, mk), 'session_open'), NotIgnored(X, Y, ekY)
+  --[ Eq(sdec(c, mk), 'session_open'), NotIgnored(X, Y, ekY), AcceptedInit(X, Y, ekY)
     , Recover(X, Y, ekY), Adopted(X, Y, root2) ]->
-  [ Final(X, Y, root2, 'none') ]
+  [ Final(X, Y, root2, ab) ]
 /* ------------------------------------------------------------------ */
 /* Lemmas: asynchronous initiation                                     */
 /* ------------------------------------------------------------------ */
