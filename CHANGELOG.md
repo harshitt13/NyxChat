@@ -12,6 +12,11 @@
   a 45-second re-request; concurrent chunk writes collided on the open
   file; mesh forward timers fired into disposed routers. All three were
   found by the new media integration tests.
+- Session recovery deduplicated only the most recently accepted
+  initiation, so a replayed copy of an older initiation could rebuild a
+  session the peer no longer held (found by machine-checking the
+  collision model). Every accepted initiation ephemeral is now remembered
+  and the abandoned-init announcement survives a recovery.
 
 ### Verification
 - The Tamarin models are machine-checked (Tamarin 1.12.0 / Maude 3.5.1);

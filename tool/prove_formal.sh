@@ -39,7 +39,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ ${#MODELS[@]} -eq 0 ]; then
-  MODELS=(nyxchat_v4_handshake.spthy nyxchat_v4_async.spthy)
+  MODELS=(nyxchat_v4_handshake.spthy nyxchat_v4_async.spthy nyxchat_v4_collision.spthy)
 fi
 for tool in tamarin-prover maude timeout; do
   command -v "$tool" >/dev/null 2>&1 || { echo "prove_formal: $tool not on PATH" >&2; exit 2; }

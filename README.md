@@ -170,7 +170,7 @@ lib/
 native/mlkem/    PQClean ML-KEM-768 sources + nyxpq wrapper + CMake
 android/app/src/main/kotlin/com/nyxchat/nyxchat/
                  MainActivity, BlePeripheral (GATT server), LocationChannel
-formal/          Tamarin models of the handshake and asynchronous initiation
+formal/          Tamarin models (handshake, asynchronous initiation, collision rule), RESULTS.md
 test/crypto/     ratchet, handshake, ML-KEM KATs, sender keys, sessions, pair keys,
                  beacons, mesh packets, key transition, trust store, outbox
 test/fuzz/       seeded parser fuzzing
@@ -203,7 +203,7 @@ flutter test benchmark/mesh_sim_test.dart --dart-define=SIM_SEEDS=5 --dart-defin
 
 ## Status and roadmap
 
-Protocol v4 is a clean break from 3.0 (mesh packet and beacon formats, KEM). The cryptographic core, session logic, parsers and the end-to-end stack are covered by automated tests, and the handshake is modelled in Tamarin, but the Bluetooth, Wi-Fi Direct and Wi-Fi Aware paths have not yet been measured on a fleet of physical devices; treat them as beta and report what you see. iOS is not supported (no CoreBluetooth peripheral yet).
+Protocol v4 is a clean break from 3.0 (mesh packet and beacon formats, KEM). The cryptographic core, session logic, parsers and the end-to-end stack are covered by automated tests, and the handshake and asynchronous initiation are machine-checked in Tamarin (formal/RESULTS.md), but the Bluetooth, Wi-Fi Direct and Wi-Fi Aware paths have not yet been measured on a fleet of physical devices; treat them as beta and report what you see. iOS is not supported (no CoreBluetooth peripheral yet).
 
 Planned: field measurements on real phones, header encryption for the ratchet, an indexed message store for very long histories, and an external audit.
 

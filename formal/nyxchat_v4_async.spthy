@@ -2,13 +2,14 @@
  * NyxChat asynchronous session initiation -- Tamarin model
  * =======================================================
  *
- * Part 1 models Handshake.asyncInitiate / Handshake.asyncRespond as driven
+ * This theory models Handshake.asyncInitiate / Handshake.asyncRespond as driven
  * by SessionManager.encrypt / SessionManager.decrypt (lib/core/crypto/),
  * in both variants: encapsulating to a one-time ML-KEM prekey of B that B
  * registered with A over an authenticated link (PrekeyStore,
  * PrekeyExchange), and the last-resort fallback to B's long-term KEM key.
- * Part 2 models the concurrent-initiation collision rule of
- * SessionManager.decrypt with two fixed parties whose handles are ordered.
+ * The concurrent-initiation collision rule of SessionManager.decrypt is a
+ * separate theory, formal/nyxchat_v4_collision.spthy, so that each proof
+ * search only sees the rules it needs.
  *
  *   A -> B : 'init_opk', A, EK_A, kct, senc('session-open', mk)
  *   kct  = KEM.Encaps(OPK_B) carrying fresh secret kem     (prekey path)
@@ -62,10 +63,6 @@ restriction Inequality:
 
 restriction UniqueKeys:
   "All A #i #j. KeyGen(A) @i & KeyGen(A) @j ==> #i = #j"
-
-/* The two-party collision world is set up exactly once. */
-restriction OnlyOnce:
-  "All x #i #j. OnlyOnce(x) @i & OnlyOnce(x) @j ==> #i = #j"
 
 /* ------------------------------------------------------------------ */
 /* PART 1: asynchronous initiation between arbitrary pinned contacts   */
@@ -235,156 +232,6 @@ rule Async_Respond_OPK [no_derivcheck]:
 
 
 /* ------------------------------------------------------------------ */
-/* PART 2: concurrent-initiation collision rule (SessionManager.decrypt) */
-/* ------------------------------------------------------------------ */
-/* Two fixed parties named by their handles 'a' < 'b'. Each keeps one
- * state fact per peer: Idle (no session), Pending(root, ek) (initiated
- * with ephemeral ek, pendingInit set, no reply seen yet) or
- * Final(root, ab) (settled; ab is the ephemeral of the init this party
- * abandoned when it lost a collision, SessionRecord.abandonedInitEph, or
- * 'none'). The adversary controls the network but holds no private key in
- * this sub-model; it can delay, reorder, replay and drop. Reveal rules
- * above do not apply here (separate !CLtk facts).
- *
- * Blacklist (SessionRecord.ignoredInitEphs): the action Ignored(X, Y, e)
- * marks every point where the code appends e to the list; the action
- * NotIgnored(X, Y, e) marks the rules that would derive a session from an
- * init with ephemeral e; the restriction below forbids the latter after
- * the former. Being action history, the list is automatically carried
- * over when a session is replaced (the code copies it explicitly). The
- * real list keeps 8 entries; the model keeps all.
- *
- * Abandoned-init announcement: a party that loses a collision stores the
- * ephemeral of its own pending init and sends it with every message
- * ('ab' field) until it receives a message without an init block from the
- * winner; a receiver records every 'ab' it sees on a successful fast-path
- * decrypt. 'ab' is modelled INSIDE the authenticated payload; the code
- * sends it as a plaintext envelope field that Envelope.associatedDataFor
- * binds into the AEAD associated data of every envelope (length-prefixed,
- * empty when absent), which is the equivalent -- see README, finding 6. */
-
-restriction IgnoredInitsDropped:
-  "All X Y e #i #j. NotIgnored(X, Y, e) @i & Ignored(X, Y, e) @j & #j < #i ==> F"
-
-/* SessionManager.decrypt fast path: an init block whose ephemeral we have
- * already accepted (acceptedInitEphs) is decrypted with the existing
- * session and never re-derives one, so a replayed copy of an accepted
- * initiation cannot take the recovery path. Machine-checking found the
- * missing dedup: without it a replay of the winner's own init to the loser
- * re-ran recovery, which reset the loser's abandoned-init announcement
- * before the winner had blacklisted it (abandoned_init_blacklisted). */
-restriction AcceptedInitsDeduplicated:
-  "All X Y e #i #j. Recover(X, Y, e) @i & AcceptedInit(X, Y, e) @j & #j < #i ==> F"
-
-rule Collision_Setup:
-  [ Fr(~ika), Fr(~kka), Fr(~ikb), Fr(~kkb) ]
-  --[ OnlyOnce('collision_setup') ]->
-  [ !CLtk('a', ~ika, ~kka), !CPk('a', 'g'^~ika, kempk(~kka))
-  , !CLtk('b', ~ikb, ~kkb), !CPk('b', 'g'^~ikb, kempk(~kkb))
-  , !Less('a', 'b')
-  , Idle('a', 'b'), Idle('b', 'a')
-  , Out(<'g'^~ika, kempk(~kka), 'g'^~ikb, kempk(~kkb)>) ]
-
-/* SessionManager.encrypt with no session: start an async session and
- * remember it as pendingInit (attached to every envelope until a reply). */
-rule C_Initiate [no_derivcheck]:
-  let pkIKY = 'g'^~ikY   /* pinned-key shape, see the machine-checking note above */
-      dh1  = pkIKY^~ikX
-      ekX  = 'g'^~ekX
-      dh2  = pkIKY^~ekX
-      kct  = kemenc(pkKPKY, ~kem)
-      root = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, ~kem>)
-      mk   = kdf(<'NyxChat_DR_Root_v3', root>)
-  in
-  [ Idle(X, Y), !CLtk(X, ~ikX, ~kkX), !CPk(Y, pkIKY, pkKPKY), Fr(~ekX), Fr(~kem) ]
-  --[ CInit(X, Y, root) ]->
-  [ Pending(X, Y, root, ekX)
-  , Out(<'init', X, ekX, kct, senc('session_open', mk)>) ]
-
-/* decrypt(): no session, init block present -> respond and adopt. */
-rule C_Adopt_From_Idle [no_derivcheck]:
-  let pkIKY = 'g'^~ikY   /* pinned-key shape, see the machine-checking note above */
-      dh1  = pkIKY^~ikX
-      dh2  = ekY^~ikX
-      kem  = kemdec(kct, ~kkX)
-      root = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)
-      mk   = kdf(<'NyxChat_DR_Root_v3', root>)
-  in
-  [ Idle(X, Y), !CLtk(X, ~ikX, ~kkX), !CPk(Y, pkIKY, pkKPKY)
-  , In(<'init', Y, ekY, kct, c>) ]
-  --[ Eq(sdec(c, mk), 'session_open'), AcceptedInit(X, Y, ekY), Adopted(X, Y, root) ]->
-  [ Final(X, Y, root, 'none') ]
-
-/* decrypt(): own init pending AND incoming init AND my handle is smaller
- * -> record the ignored ephemeral, SessionCollisionException, keep my
- * session (state otherwise unchanged). */
-rule C_Collision_Ignore:
-  [ Pending(X, Y, root, ekX), !Less(X, Y), In(<'init', Y, ekY, kct, c>) ]
-  --[ CollisionIgnored(X, Y), Ignored(X, Y, ekY), Adopted(X, Y, root) ]->
-  [ Pending(X, Y, root, ekX) ]
-
-/* decrypt(): own init pending AND incoming init AND my handle is larger
- * -> derive the peer's session, adopt it if the message decrypts, and
- * remember my own abandoned ephemeral to announce it. */
-rule C_Collision_Adopt [no_derivcheck]:
-  let pkIKY = 'g'^~ikY   /* pinned-key shape, see the machine-checking note above */
-      dh1   = pkIKY^~ikX
-      dh2   = ekY^~ikX
-      kem   = kemdec(kct, ~kkX)
-      root2 = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)
-      mk    = kdf(<'NyxChat_DR_Root_v3', root2>)
-  in
-  [ Pending(X, Y, root, ekX), !Less(Y, X), !CLtk(X, ~ikX, ~kkX), !CPk(Y, pkIKY, pkKPKY)
-  , In(<'init', Y, ekY, kct, c>) ]
-  --[ Eq(sdec(c, mk), 'session_open'), NotIgnored(X, Y, ekY), AcceptedInit(X, Y, ekY)
-    , Abandoned(X, Y, ekX), Adopted(X, Y, root2) ]->
-  [ Final(X, Y, root2, ekX) ]
-
-/* A settled party sends a message (no init block) under its session,
- * carrying its abandoned ephemeral ('ab') while it has one. */
-rule C_Reply:
-  [ Final(X, Y, root, ab) ]
-  --[ Replied(X, Y, root, ab) ]->
-  [ Final(X, Y, root, ab), Out(senc(<'reply', ab>, kdf(<'NyxChat_DR_Reply', root>))) ]
-
-/* decrypt() fast path for a pending initiator: a message from the peer
- * under its own session clears pendingInit (session confirmed) and
- * blacklists the announced abandoned ephemeral. */
-rule C_Confirm:
-  [ Pending(X, Y, root, ekX), In(senc(<'reply', ab>, kdf(<'NyxChat_DR_Reply', root>))) ]
-  --[ Confirmed(X, Y, root), Ignored(X, Y, ab), Adopted(X, Y, root) ]->
-  [ Final(X, Y, root, 'none') ]
-
-/* decrypt() fast path for a settled party: a message without an init
- * block proves the peer has heard from us, so our own announcement stops
- * (abandonedInitEph cleared); the peer's announcement is blacklisted. */
-rule C_Recv_Reply_Final:
-  [ Final(X, Y, root, ab), In(senc(<'reply', ab2>, kdf(<'NyxChat_DR_Reply', root>))) ]
-  --[ Ignored(X, Y, ab2), AbCleared(X, Y) ]->
-  [ Final(X, Y, root, 'none') ]
-
-/* decrypt() recovery path: a settled session (pendingInit == null) that
- * receives an init block with a new ephemeral that is not blacklisted
- * re-derives and REPLACES its session if the message decrypts. Meant for
- * a peer that lost its state. The blacklist and our own abandoned-init
- * announcement are carried over (SessionRecord copies ignoredInitEphs and
- * abandonedInitEph); an init whose ephemeral was already accepted takes
- * the fast path instead (acceptedInitEphs), see the restriction
- * AcceptedInitsDeduplicated. */
-rule C_Recover [no_derivcheck]:
-  let pkIKY = 'g'^~ikY   /* pinned-key shape, see the machine-checking note above */
-      dh1   = pkIKY^~ikX
-      dh2   = ekY^~ikX
-      kem   = kemdec(kct, ~kkX)
-      root2 = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)
-      mk    = kdf(<'NyxChat_DR_Root_v3', root2>)
-  in
-  [ Final(X, Y, root, ab), !CLtk(X, ~ikX, ~kkX), !CPk(Y, pkIKY, pkKPKY)
-  , In(<'init', Y, ekY, kct, c>) ]
-  --[ Eq(sdec(c, mk), 'session_open'), NotIgnored(X, Y, ekY), AcceptedInit(X, Y, ekY)
-    , Recover(X, Y, ekY), Adopted(X, Y, root2) ]->
-  [ Final(X, Y, root2, ab) ]
-/* ------------------------------------------------------------------ */
 /* Lemmas: asynchronous initiation                                     */
 /* ------------------------------------------------------------------ */
 
@@ -503,54 +350,5 @@ lemma async_pq_forward_secrecy_initiator:
      AsyncInitOPK(A, B, r, pk) @i
    & not (Ex #j. RevealOPK(B, pk) @j)
    ==> not (Ex #k. K(r) @k)"
-
-/* ------------------------------------------------------------------ */
-/* Lemmas: collision rule                                              */
-/* ------------------------------------------------------------------ */
-
-/* Sanity: both parties initiate concurrently, the smaller handle ignores
- * the incoming init, and both end up settled. */
-lemma collision_executable:
-  exists-trace
-  "Ex X Y rX rY r1 r2 #i #j #k #l.
-     CInit(X, Y, rX) @i & CInit(Y, X, rY) @j
-   & CollisionIgnored(X, Y) @k & Adopted(X, Y, r1) @k
-   & Adopted(Y, X, r2) @l
-   & #i < #k & #j < #l"
-
-/* Consistency, recovery path included: whenever both parties have
- * settled on a session with each other, they hold the same root.
- *
- * History. Without ignoredInitEphs a stale copy of the loser's init,
- * delivered after the winner had settled, took the recovery path and made
- * the winner replace its session while the loser kept the winner's.
- * ignoredInitEphs alone closed only the ordering in which the winner saw
- * the loser's init (and ignored it) before the loser's first reply; when
- * the reply arrived first, the winner cleared pendingInit without having
- * ignored anything and the stale init still won. The abandoned-init
- * announcement closes that ordering too: the winner can only leave
- * Pending by decrypting a message from the loser, every such message
- * carries the abandoned ephemeral until the loser has proof the winner
- * heard it, so the winner blacklists it no later than the moment it
- * clears pendingInit. Both orderings are covered by this lemma. */
-lemma collision_consistency:
-  "All X Y r1 r2 #i #j.
-     Adopted(X, Y, r1) @i & Adopted(Y, X, r2) @j
-   ==> r1 = r2"
-
-/* The announcement mechanism itself: if Y lost a collision against X and
- * abandoned ephemeral e, then by the time X confirms its own session it
- * has blacklisted e. */
-lemma abandoned_init_blacklisted:
-  "All X Y e r #j #i.
-     Abandoned(Y, X, e) @j & Confirmed(X, Y, r) @i
-   ==> Ex #k. Ignored(X, Y, e) @k & not (#i < #k)"
-
-/* The previously found trace is gone: an init that its sender abandoned
- * never re-enters through the recovery path at the winner. */
-lemma abandoned_init_never_adopted:
-  "All X Y e #j #i.
-     Abandoned(Y, X, e) @j & Recover(X, Y, e) @i
-   ==> F"
 
 end

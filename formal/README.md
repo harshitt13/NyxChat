@@ -101,23 +101,23 @@ constraints, stopping precomputation` that Tamarin prints while checking
 the handshake model comes from the message-derivation checker's own
 precomputation, not from the proof's; it is harmless.
 
-## Expected outcome
+## Outcome
 
 Every lemma has a comment in the file stating what it means. The table
-lists what the author expects Tamarin to report; a different result is
-either a modelling error or a genuine finding and should be recorded.
+lists what Tamarin 1.12.0 reported (details, timings and command lines in
+`RESULTS.md`).
 
-| File | Lemma | Kind | Expected |
+| File | Lemma | Kind | Outcome |
 |---|---|---|---|
 | handshake | `executable` | exists-trace | trace found |
 | handshake | `secrecy_master` | all-traces | verified |
 | handshake | `forward_secrecy` | all-traces | verified |
 | handshake | `kem_only_secrecy` | all-traces | verified |
-| handshake | `kem_only_forward_secrecy` | all-traces | verified (post-quantum forward secrecy, new with the per-handshake KEM key) |
+| handshake | `kem_only_forward_secrecy` | all-traces | verified (post-quantum forward secrecy via the per-handshake KEM key) |
 | handshake | `dh_only_secrecy` | all-traces | verified |
-| handshake | `mutual_auth_initiator` | all-traces | verified (full injective agreement, new with `ih`) |
-| handshake | `mutual_auth_responder` | all-traces | verified (injective per responder, new with the nonce cache) |
-| handshake | `replay_resistance` | all-traces | verified (follows from the `NonceCache` restriction) |
+| handshake | `mutual_auth_initiator` | all-traces | verified (full injective agreement) |
+| handshake | `mutual_auth_responder` | all-traces | verified (injective per responder) |
+| handshake | `replay_resistance` | all-traces | verified |
 | handshake | `response_replay_resistance` | all-traces | verified |
 | handshake | `hello_accepted_by_two_responders` | exists-trace | trace found (documents a harmless residual) |
 | handshake | `key_agreement_consistency` | all-traces | verified |
@@ -126,14 +126,14 @@ either a modelling error or a genuine finding and should be recorded.
 | async | `async_secrecy_responder` | all-traces | verified |
 | async | `async_kem_only_secrecy` | all-traces | verified |
 | async | `async_dh_only_secrecy` | all-traces | verified |
-| async | `async_agreement` | all-traces | verified (both the prekey and the fallback path) |
+| async | `async_agreement` | all-traces | verified (prekey and fallback path) |
 | async | `async_executable_opk` | exists-trace | trace found |
-| async | `async_pq_forward_secrecy` | all-traces | verified (post-quantum forward secrecy of asynchronous sessions, new with one-time prekeys; every DH secret and every long-term key of both parties may leak after acceptance, B's long-term KEM key at any time) |
-| async | `async_pq_forward_secrecy_initiator` | all-traces | verified (KEM-only: nothing but the used prekey's private half, which is deleted on use, protects the initiator's root) |
-| async | `collision_executable` | exists-trace | trace found |
-| async | `collision_consistency` | all-traces | verified (unconditional, recovery path included) |
-| async | `abandoned_init_blacklisted` | all-traces | verified (the announcement reaches the winner before it settles) |
-| async | `abandoned_init_never_adopted` | all-traces | verified (the stale-init trace no longer exists) |
+| async | `async_pq_forward_secrecy` | all-traces | verified (post-quantum forward secrecy of asynchronous sessions with one-time prekeys) |
+| async | `async_pq_forward_secrecy_initiator` | all-traces | verified (KEM-only variant) |
+| collision | `collision_executable` | exists-trace | trace found |
+| collision | `collision_consistency` | all-traces | undecided within 5 min (no counterexample; tagged `long`) |
+| collision | `abandoned_init_blacklisted` | all-traces | undecided within 5 min (falsified on the pre-fix model, see `RESULTS.md`) |
+| collision | `abandoned_init_never_adopted` | all-traces | undecided within 5 min (no counterexample; tagged `long`) |
 
 ## Mapping from model symbols to code
 

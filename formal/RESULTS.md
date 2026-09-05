@@ -1,6 +1,6 @@
 # Machine-check results for `formal/`
 
-Both Tamarin models were run through `tamarin-prover` on 2026-09-04/05.
+The three Tamarin theories were run through `tamarin-prover` on 2026-09-04/05.
 This file records the environment, the exact command lines, the outcome of
 every lemma, the changes that had to be made to the models, and what the
 results mean. The expected-outcome table in `README.md` has been replaced by
@@ -73,9 +73,71 @@ All twelve outcomes match the author's expectations. No lemma was
 falsified, so no protocol issue was found in the direct-link handshake.
 ## Results: `nyxchat_v4_async.spthy`
 
-Well-formedness: `All wellformedness checks were successful` (32 s).
+Well-formedness: `All wellformedness checks were successful` (2 s after the
+split, see "Model fixes" item 5). The theory covers the prekey path and the
+long-term fallback (20 rules, 9 lemmas).
 
-<!-- ASYNC_TABLE -->
+| Lemma | Kind | Outcome | Time (s) | Steps | Notes |
+|---|---|---|---|---|---|
+| `async_executable` | exists-trace | trace found (verified) | 5 | 10 | fallback path, honest run |
+| `async_secrecy` | all-traces | verified | 5 | 22 | |
+| `async_secrecy_responder` | all-traces | verified | 11 | 104 | exact condition under which the fallback root leaks |
+| `async_kem_only_secrecy` | all-traces | verified | 6 | 8 | |
+| `async_dh_only_secrecy` | all-traces | verified | 5 | 26 | |
+| `async_agreement` | all-traces | verified | 7 | 46 | prekey and fallback path |
+| `async_executable_opk` | exists-trace | trace found (verified) | 6 | 12 | prekey path, honest run |
+| `async_pq_forward_secrecy` | all-traces | verified | 10 | 57 | post-quantum forward secrecy with a one-time prekey: every DH secret and every long-term key of both parties may leak after acceptance |
+| `async_pq_forward_secrecy_initiator` | all-traces | verified | 6 | 8 | KEM-only variant |
+
+All nine outcomes match the expectations. The same lemmas did not
+terminate within 5 minutes while the collision rule lived in the same
+theory (see "Model fixes", item 5).
+
+## Results: `nyxchat_v4_collision.spthy`
+
+Well-formedness: `All wellformedness checks were successful` (10 s).
+
+| Lemma | Kind | Outcome | Time (s) | Steps | Notes |
+|---|---|---|---|---|---|
+| `collision_executable` | exists-trace | trace found (verified) | 114 | 32 | both parties initiate, `a` ignores, `b` adopts and replies, `a` confirms |
+| `collision_consistency` | all-traces | undecided | > 293 (5 min budget) | - | no counterexample found within the budget; see below |
+| `abandoned_init_blacklisted` | all-traces | undecided | > 293 (5 min budget) | - | falsified in 85 s on the model BEFORE fix 6 (see "Finding"); no counterexample found since |
+| `abandoned_init_never_adopted` | all-traces | undecided | > 291 (5 min budget) | - | no counterexample found within the budget |
+
+The three all-traces lemmas of the collision theory are the only open
+items. A longer run (45 minutes per lemma) was started after this table
+was written; if it terminates its outcome is appended under "Long-run
+addendum". Until then the guarantee they state rests on the reasoning in
+the comments of the file plus the regression tests in
+test/crypto/session_manager_test.dart (`a stale init from a lost
+collision cannot replace a confirmed session`, `a stale init arriving
+after the adopted reply is still rejected`, `a replayed old initiation
+cannot displace a recovered session`). They are tagged `long` in
+`formal/lemmas.conf` and skipped in CI.
+
+## Finding from machine-checking: replayed accepted init (fixed)
+
+On the model as first merged, `abandoned_init_blacklisted` was
+**falsified in 85 s**. Trace, in code terms: `a` (smaller handle) and `b`
+both initiate; `b` adopts `a`'s init and records its abandoned ephemeral
+`e_b`; the adversary replays `a`'s own init to `b`; the model had no
+memory of the ephemeral `b` had already accepted, so the replay took the
+recovery path, re-derived the same root and **reset `b`'s announcement**
+(`Final(..., 'none')`); `b`'s later reply therefore carried no `ab`, `a`
+confirmed without blacklisting `e_b`, and a stale copy of `b`'s init could
+still take `a`'s recovery path.
+
+In the code the replay of the *latest* accepted init already took the fast
+path (`acceptedInitEph`), so this exact trace was a modelling artifact,
+but the same trace with an *older* accepted init was real: after a genuine
+recovery `acceptedInitEph` pointed at the new ephemeral and a replayed copy
+of the previous initiation (whose first message decrypts under a freshly
+derived session) rebuilt a session the peer no longer had. Fix 6 below and
+`SessionRecord.acceptedInitEphs` (every accepted ephemeral, max 8, all of
+them fast-path) close both; the recovery path also carries
+`abandonedInitEph` over. Regression test: `a replayed old initiation
+cannot displace a recovered session`.
+
 
 ## Model fixes
 
@@ -132,8 +194,26 @@ edit is listed so it can be re-applied to a merged file.
    as "17 cases, deconstructions complete", so the lemma was unnecessary
    and the final files contain no `sources` lemma.
 
-No lemma statement, restriction, rule premise, action or conclusion was
-changed.
+
+5. **Theory split** (performance). The asynchronous-initiation rules and
+   the collision rules were one theory; with both present, every
+   all-traces lemma of Part 1 timed out at 5 minutes because each proof
+   search had to consider the collision rules as message sources. The
+   collision rule now lives in `nyxchat_v4_collision.spthy` (its own
+   `theory NyxChat_Collision`, same builtins, functions, equations and
+   generic restrictions, its two specific restrictions, the eight `C_*`
+   rules and its four lemmas). After the split the nine initiation
+   lemmas verify in 5-11 s each.
+
+6. **Accepted-init deduplication** (model AND code, see the finding
+   above). New action `AcceptedInit(X, Y, ekY)` on `C_Adopt_From_Idle`,
+   `C_Collision_Adopt` and `C_Recover`, restriction
+   `AcceptedInitsDeduplicated` (no `Recover` for an ephemeral accepted
+   earlier), and `C_Recover` now keeps `ab` instead of resetting it to
+   `'none'`, mirroring `SessionRecord.abandonedInitEph` being carried over.
+
+Apart from item 6, no lemma statement, restriction, rule premise, action or
+conclusion was changed.
 
 ### Re-applying the async edits on a merged file
 
@@ -175,4 +255,20 @@ not listed in the block below.
 
 None.
 
-<!-- CONCLUSIONS -->
+## Conclusions
+
+* Direct-link handshake: all 12 lemmas hold (secrecy, forward secrecy
+  including the post-quantum variant, mutual injective agreement, replay
+  resistance on both sides, consistency), plus the documented residual.
+* Asynchronous initiation: all 9 lemmas hold, including post-quantum
+  forward secrecy through one-time prekeys and agreement on both paths.
+* Collision rule: the executable trace exists; the three consistency
+  lemmas are undecided within a 5-minute budget (no counterexample found).
+  Machine-checking this theory found one real replay issue that is fixed
+  in 3.2.0.
+* Total: 25 lemmas, 22 verified (12 + 9 + 1 exists-trace), 3 undecided.
+
+## Long-run addendum
+
+(filled in when the 45-minute run of the three collision lemmas
+terminates; absent means still undecided)
