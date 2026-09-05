@@ -27,7 +27,7 @@
 
 NyxChat has no servers and no accounts. Your identity is a set of keys generated on your phone. Messages travel directly between devices over Wi-Fi, over a Bluetooth Low Energy mesh when there is no network at all, through public Nostr relays if you opt in, or wait in an encrypted outbox until a path appears. Every message is end-to-end encrypted with the Signal Double Ratchet on top of a hybrid X25519 + ML-KEM-768 handshake. Nearby strangers cannot even tell that you are running the app: presence beacons and mesh addresses are rotating tokens that only your contacts can recognise.
 
-This README describes what the code does. The security properties and their limits are stated precisely in [SECURITY.md](SECURITY.md); the version history is in [CHANGELOG.md](CHANGELOG.md); Tamarin models of the handshake live in [formal/](formal/); the research paper is in [paper/](paper/).
+This README describes what the code does. The security properties and their limits are stated precisely in [SECURITY.md](SECURITY.md); the version history is in [CHANGELOG.md](CHANGELOG.md); Tamarin models of the handshake and of asynchronous initiation, machine-checked (outcomes in [formal/RESULTS.md](formal/RESULTS.md)), live in [formal/](formal/); the research paper is in [paper/](paper/).
 
 ## Contents
 

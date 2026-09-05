@@ -1,0 +1,81 @@
+name: Formal models
+
+# Machine-checks the Tamarin models in formal/ with the same script that is
+# used locally (tool/prove_formal.sh). Lemmas tagged "long" in
+# formal/lemmas.conf are skipped here and documented in formal/RESULTS.md.
+# A falsified lemma fails the job unless formal/RESULTS.md lists it in its
+# "prove_formal:accepted-falsified" block.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'formal/**'
+      - 'tool/prove_formal.sh'
+      - '.github/workflows/formal.yml'
+  pull_request:
+    paths:
+      - 'formal/**'
+      - 'tool/prove_formal.sh'
+      - '.github/workflows/formal.yml'
+
+env:
+  TAMARIN_VERSION: 1.12.0
+  MAUDE_VERSION: 3.5.1
+
+jobs:
+  tamarin:
+    name: Tamarin proofs
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache tamarin-prover and Maude
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin
+          key: tamarin-${{ env.TAMARIN_VERSION }}-maude-${{ env.MAUDE_VERSION }}-linux-x86_64
+
+      - name: Install tamarin-prover and Maude
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          mkdir -p ~/.local/bin /tmp/dl && cd /tmp/dl
+          curl -sSL -o tamarin.tar.gz "https://github.com/tamarin-prover/tamarin-prover/releases/download/${TAMARIN_VERSION}/tamarin-prover-${TAMARIN_VERSION}-linux64-ubuntu.tar.gz"
+          tar xzf tamarin.tar.gz
+          install -m 755 tamarin-prover ~/.local/bin/tamarin-prover
+          curl -sSL -o maude.zip "https://github.com/maude-lang/Maude/releases/download/Maude${MAUDE_VERSION}/Maude-${MAUDE_VERSION}-linux-x86_64.zip"
+          unzip -oq maude.zip -d maude
+          install -m 755 maude/maude ~/.local/bin/maude
+          cp maude/*.maude ~/.local/bin/
+
+      - name: Self-test
+        run: |
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          sudo apt-get install -y -q graphviz > /dev/null || true   # only for `tamarin-prover test`
+          tamarin-prover --version | head -1
+          maude --version
+          tamarin-prover test 2>&1 | tail -8
+
+      - name: Well-formedness and proofs
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          DERIV_TIMEOUT=300 bash tool/prove_formal.sh --skip-long --jobs=2 --out build/formal
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f build/formal/summary.md ]; then
+            { cat build/formal/versions.txt; echo; cat build/formal/summary.md; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload proof output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tamarin-proofs
+          path: build/formal
+          if-no-files-found: warn

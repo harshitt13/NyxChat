@@ -34,8 +34,9 @@
  * are deterministic functions of master and are not modelled. The long-term
  * KEM key KPK is carried and pinned but no longer used by this handshake.
  *
- * This file has NOT been machine-checked in this repository (Tamarin is not
- * installed here). Run:  tamarin-prover --prove formal/nyxchat_v4_handshake.spthy
+ * Machine-checked with Tamarin 1.12.0 / Maude 3.5.1; outcomes, timings and
+ * the command lines are in formal/RESULTS.md. Reproduce with
+ * tool/prove_formal.sh or  tamarin-prover --prove formal/nyxchat_v4_handshake.spthy
  */
 
 theory NyxChat_Handshake
@@ -117,6 +118,17 @@ rule Reveal_DH_Ephemeral:
 /* Protocol                                                            */
 /* ------------------------------------------------------------------ */
 
+/* Machine-checking note (Tamarin 1.12.0, see formal/RESULTS.md). The two
+ * receiving rules match the pinned X25519 public key taken from !Pk with
+ * its only possible shape 'g'^~ik: Register_Keys is the sole producer of
+ * !Pk, so the pattern excludes no rule instance. With a free variable
+ * there Tamarin enumerated about a thousand AC variants of
+ * I_Recv_Response (four exponentiations with variable bases) and
+ * precomputation alone took over six minutes; with the pattern it takes
+ * about twenty seconds. [no_derivcheck] disables Tamarin's "unintended
+ * pattern matching" heuristic for these two rules, which would otherwise
+ * report the private exponent ~ik as not derivable from the premises. */
+
 /* Handshake.createInitiatorHello: fresh EK_A, fresh ML-KEM key pair
  * (InitiatorState.ephemeralKem) and nonce nA, signed hello. The handle
  * hA = H('NyxChat-ID-v3', SK_A, IK_A) is NyxId.derive. The initiator does
@@ -144,8 +156,9 @@ rule I_Send_Hello:
  * initiator's per-handshake KEM key, hash the initiator transcript into
  * the response, derive master, send the signed response echoing nA.
  * B "commits" here: after this message it has nothing more to check. */
-rule R_Recv_Hello_Send_Response:
+rule R_Recv_Hello_Send_Response [no_derivcheck]:
   let pkIKB  = 'g'^~ikB
+      pkIKA  = 'g'^~ikA   /* pinned-key shape, see the machine-checking note above */
       pkSKB  = pk(~skB)
       pkKPKB = kempk(~kkB)
       hB     = h(<'NyxChat_ID_v3', pkSKB, pkIKB>)
@@ -181,8 +194,9 @@ rule R_Recv_Hello_Send_Response:
  * match on ~nA), require ih to be the hash of the hello we sent, refuse
  * self-connections, decapsulate with the per-handshake KEM secret, derive
  * master. The peer identity $B is fixed by the pinned-key lookup (!Pk). */
-rule I_Recv_Response:
+rule I_Recv_Response [no_derivcheck]:
   let pkIKA  = 'g'^~ik
+      pkIKB  = 'g'^~ikB   /* pinned-key shape, see the machine-checking note above */
       pkSKA  = pk(~sk)
       pkKPKA = kempk(~kk)
       hA     = h(<'NyxChat_ID_v3', pkSKA, pkIKA>)

@@ -34,30 +34,49 @@ brew install tamarin-prover/tap/tamarin-prover
 
 This pulls in Maude and GraphViz.
 
-**Linux**
+**Linux** (the recipe used for `RESULTS.md` and by `.github/workflows/formal.yml`;
+no root needed)
 
-1. Download the `tamarin-prover-<version>-linux64-ubuntu.tar.gz` release from
-   <https://github.com/tamarin-prover/tamarin-prover/releases> and put the
-   binary on `PATH`.
-2. Install Maude 3.x: either the distribution package (`apt install maude`
-   on Debian/Ubuntu, then check `maude --version` is >= 3.1) or the binary
-   from <https://github.com/maude-lang/Maude/releases>; the executable must
-   be named `maude` and be on `PATH`.
-3. `apt install graphviz` (only for the GUI).
+```
+mkdir -p ~/.local/bin && cd /tmp
+curl -sSL -o tamarin.tar.gz https://github.com/tamarin-prover/tamarin-prover/releases/download/1.12.0/tamarin-prover-1.12.0-linux64-ubuntu.tar.gz
+tar xzf tamarin.tar.gz && install -m 755 tamarin-prover ~/.local/bin/
+curl -sSL -o maude.zip https://github.com/maude-lang/Maude/releases/download/Maude3.5.1/Maude-3.5.1-linux-x86_64.zip
+unzip -oq maude.zip -d maude && install -m 755 maude/maude ~/.local/bin/ && cp maude/*.maude ~/.local/bin/
+export PATH=$HOME/.local/bin:$PATH
+```
+
+Maude looks for `prelude.maude` next to its binary, hence the `cp`. Any
+Maude 3.x works; the distribution package (`apt install maude`) is fine if
+`maude --version` reports 3.1 or newer. `apt install graphviz` is needed only
+for the interactive GUI and for the GraphViz line of `tamarin-prover test`.
 
 **Windows**: use WSL2 and follow the Linux steps. The Tamarin manual
 (<https://tamarin-prover.com/manual/>) has the authoritative instructions.
 
-Check the installation with `tamarin-prover test`.
+Check the installation with `tamarin-prover test` (without GraphViz it ends
+with "Some tests failed"; the 55 unification cases must all pass).
 
 ## Running
 
-From the repository root:
+The script used locally and by CI runs the well-formedness pass and then
+every lemma of `formal/lemmas.conf` under its own time limit, writes one
+log per lemma plus `summary.md` to `build/formal/`, and exits non-zero on a
+timeout or on a falsified lemma that `RESULTS.md` does not list as accepted:
 
 ```
-# Parse, type-check and report well-formedness warnings (no proving):
-tamarin-prover formal/nyxchat_v4_handshake.spthy
-tamarin-prover formal/nyxchat_v4_async.spthy
+tool/prove_formal.sh                      # everything, one lemma at a time
+tool/prove_formal.sh --jobs 2 --skip-long # what CI runs
+tool/prove_formal.sh --only secrecy       # lemmas matching a regex
+```
+
+By hand, from the repository root:
+
+```
+# Parse, type-check and report well-formedness warnings (no proving).
+# The message-derivation check needs more than its default 5 s here:
+tamarin-prover --derivcheck-timeout=120 formal/nyxchat_v4_handshake.spthy
+tamarin-prover --derivcheck-timeout=120 formal/nyxchat_v4_async.spthy
 
 # Prove every lemma (the summary at the end lists verified / falsified):
 tamarin-prover --prove formal/nyxchat_v4_handshake.spthy
@@ -70,18 +89,17 @@ tamarin-prover --prove=forward_secrecy formal/nyxchat_v4_handshake.spthy
 tamarin-prover interactive formal/
 ```
 
-Use `tamarin-prover --prove +RTS -N4 -RTS file.spthy` to run on 4 cores.
-If a proof does not terminate within a few minutes, open the lemma in the
-interactive mode and inspect the open goals; the DH + signature + KEM
-combination here is small and should be in reach of the default `smart`
-heuristic, but this has not been confirmed.
+Tamarin uses all cores by default; a single `--prove` run of one lemma
+took up to about 3 GB of RAM here, so run at most two or three lemmas in
+parallel on an 8 GB machine.
 
-If the well-formedness check reports **partial deconstructions**, add a
-`sources` lemma (see the manual, "Sources lemmas") for the offending term;
-the most likely candidates are the nonce `nA` and the hash `ih` that the
-responder echoes, or the ciphertext `c` in the async model. None is
-included, because writing a correct sources lemma blind is more likely to
-hide a problem than fix one.
+**Sources.** No `sources` lemma is needed: with the pinned-key pattern
+described under "Abstractions" the raw sources of both theories are
+complete ("17 cases, deconstructions complete" for the handshake model in
+the interactive view). The message `[Open Chains] Too many chain
+constraints, stopping precomputation` that Tamarin prints while checking
+the handshake model comes from the message-derivation checker's own
+precomputation, not from the proof's; it is harmless.
 
 ## Expected outcome
 
@@ -212,7 +230,16 @@ either a modelling error or a genuine finding and should be recorded.
   compromise; each party initiates at most once toward the other (as in the
   code: a session, once present, is reused). Session reset and identity
   rotation are not modelled.
-* **Sources.** No `sources` lemma is included; see "Running".
+* **Pinned-key pattern.** Every rule that exponentiates a pinned X25519
+  public key from `!Pk` / `!CPk` matches it as `'g'^~ik` instead of a free
+  variable (`Register_Keys` / `Collision_Setup` are the only producers of
+  those facts, so no rule instance is lost). Without it Tamarin enumerated
+  about a thousand AC variants of `I_Recv_Response` and precomputation took
+  6-8 minutes per theory; with it, about 20 s. Those rules carry
+  `[no_derivcheck]` because Tamarin's "unintended pattern matching"
+  heuristic would otherwise flag `~ik` as underivable from the premises,
+  which is exactly the intended match. See `RESULTS.md`, "Model fixes".
+* **Sources.** No `sources` lemma is needed; see "Running".
 
 ## Findings and caveats from writing the models
 

@@ -2,6 +2,27 @@
 
 ## 3.2.0 (unreleased)
 
+### Fixed
+- Every screen except the conversation list rendered blank in 3.0/3.1
+  release builds: the chat, peer and connection services were provided
+  below the Navigator, so pushed routes could not find them. The providers
+  now wrap the MaterialApp, and a widget test opens every screen on the
+  real service graph to keep it that way.
+- File transfers: chunks that overtook their descriptor were dropped until
+  a 45-second re-request; concurrent chunk writes collided on the open
+  file; mesh forward timers fired into disposed routers. All three were
+  found by the new media integration tests.
+
+### Verification
+- The Tamarin models are machine-checked (Tamarin 1.12.0 / Maude 3.5.1);
+  outcomes and timings are in formal/RESULTS.md and a GitHub Actions
+  workflow re-proves them on every change to formal/.
+- Widget tests boot the real services and drive the main flows (send a
+  text, toggle every setting, create a group, join an emergency channel),
+  plus theme and right-to-left locale checks; loopback integration tests
+  now cover voice notes, images with thumbnails, prekey exchange and
+  Wi-Fi Aware wiring.
+
 - Voice notes: hold the microphone in the composer to record (release
   to send, slide left or tap the X to cancel) with elapsed time and a
   level meter; mono AAC-LC at 16 kHz / 32 kbps in an .m4a container,

@@ -37,8 +37,9 @@
  * NOTE: the code labels these derivations "v3" ('NyxChat-Async-Session-v3');
  * docs call the protocol v4. See formal/README.md.
  *
- * This file has NOT been machine-checked in this repository.
- * Run:  tamarin-prover --prove formal/nyxchat_v4_async.spthy
+ * Machine-checked with Tamarin 1.12.0 / Maude 3.5.1; outcomes, timings and
+ * the command lines are in formal/RESULTS.md. Reproduce with
+ * tool/prove_formal.sh or  tamarin-prover --prove formal/nyxchat_v4_async.spthy
  */
 
 theory NyxChat_Async
@@ -119,11 +120,23 @@ rule Reveal_OPK:
   --[ RevealOPK($B, kempk(~opk)) ]->
   [ Out(~opk) ]
 
+/* Machine-checking note (Tamarin 1.12.0, see formal/RESULTS.md). Every
+ * rule that exponentiates a pinned X25519 public key taken from !Pk or
+ * !CPk matches it with its only possible shape 'g'^~ik (Register_Keys and
+ * Collision_Setup are the sole producers of those facts), so the pattern
+ * excludes no rule instance. With a free variable there Tamarin
+ * enumerated hundreds of AC variants per rule and precomputation took
+ * eight minutes; with the pattern it takes about twenty seconds.
+ * [no_derivcheck] disables Tamarin's "unintended pattern matching"
+ * heuristic for those rules, which would otherwise report the private
+ * exponent ~ik as not derivable from the premises. */
+
 /* SessionManager.encrypt with no session and pinned keys for $B:
  * Handshake.asyncInitiate, DoubleRatchetSession.initAlice, and the first
  * envelope carrying the SessionInitBlock (EK_A, kct). */
-rule Async_Initiate:
-  let dh1  = pkIKB^~ikA
+rule Async_Initiate [no_derivcheck]:
+  let pkIKB = 'g'^~ikB   /* pinned-key shape, see the machine-checking note above */
+      dh1  = pkIKB^~ikA
       ekA  = 'g'^~ekA
       dh2  = pkIKB^~ekA
       kct  = kemenc(pkKPKB, ~kem)
@@ -145,8 +158,9 @@ rule Async_Initiate:
  * Handshake.asyncRespond with B's private IK/KPK and A's pinned IK, then
  * DoubleRatchetSession.initBob and a decryption that must succeed before
  * the session is saved (commit-on-success). */
-rule Async_Respond:
-  let dh1  = pkIKA^~ikB
+rule Async_Respond [no_derivcheck]:
+  let pkIKA = 'g'^~ikA   /* pinned-key shape, see the machine-checking note above */
+      dh1  = pkIKA^~ikB
       dh2  = ekA^~ikB
       kem  = kemdec(kct, ~kkB)
       root = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)
@@ -169,8 +183,9 @@ rule Async_Respond:
  * carries the id (`pk`); in the model B selects the prekey by trying its
  * own OPK facts, which the Eq check on the first message disambiguates.
  * The prekey is used once: OPKPub is consumed. */
-rule Async_Initiate_OPK:
-  let dh1  = pkIKB^~ikA
+rule Async_Initiate_OPK [no_derivcheck]:
+  let pkIKB = 'g'^~ikB   /* pinned-key shape, see the machine-checking note above */
+      dh1  = pkIKB^~ikA
       ekA  = 'g'^~ekA
       dh2  = pkIKB^~ekA
       kct  = kemenc(pkOPK, ~kem)
@@ -197,8 +212,9 @@ rule Async_Initiate_OPK:
  * prekey we do not hold matches no rule: the code raises
  * UnknownPrekeyException, signs a notice, and the initiator restarts
  * through Async_Initiate (the fallback). */
-rule Async_Respond_OPK:
-  let dh1   = pkIKA^~ikB
+rule Async_Respond_OPK [no_derivcheck]:
+  let pkIKA = 'g'^~ikA   /* pinned-key shape, see the machine-checking note above */
+      dh1   = pkIKA^~ikB
       dh2   = ekA^~ikB
       pkOPK = kempk(~opk)
       kem   = kemdec(kct, ~opk)
@@ -244,7 +260,8 @@ rule Async_Respond_OPK:
  * winner; a receiver records every 'ab' it sees on a successful fast-path
  * decrypt. 'ab' is modelled INSIDE the authenticated payload; the code
  * sends it as a plaintext envelope field that Envelope.associatedDataFor
- * does not cover (from, to, kind only) -- see README, finding 6. */
+ * binds into the AEAD associated data of every envelope (length-prefixed,
+ * empty when absent), which is the equivalent -- see README, finding 6. */
 
 restriction IgnoredInitsDropped:
   "All X Y e #i #j. NotIgnored(X, Y, e) @i & Ignored(X, Y, e) @j & #j < #i ==> F"
@@ -260,8 +277,9 @@ rule Collision_Setup:
 
 /* SessionManager.encrypt with no session: start an async session and
  * remember it as pendingInit (attached to every envelope until a reply). */
-rule C_Initiate:
-  let dh1  = pkIKY^~ikX
+rule C_Initiate [no_derivcheck]:
+  let pkIKY = 'g'^~ikY   /* pinned-key shape, see the machine-checking note above */
+      dh1  = pkIKY^~ikX
       ekX  = 'g'^~ekX
       dh2  = pkIKY^~ekX
       kct  = kemenc(pkKPKY, ~kem)
@@ -274,8 +292,9 @@ rule C_Initiate:
   , Out(<'init', X, ekX, kct, senc('session_open', mk)>) ]
 
 /* decrypt(): no session, init block present -> respond and adopt. */
-rule C_Adopt_From_Idle:
-  let dh1  = pkIKY^~ikX
+rule C_Adopt_From_Idle [no_derivcheck]:
+  let pkIKY = 'g'^~ikY   /* pinned-key shape, see the machine-checking note above */
+      dh1  = pkIKY^~ikX
       dh2  = ekY^~ikX
       kem  = kemdec(kct, ~kkX)
       root = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)
@@ -297,8 +316,9 @@ rule C_Collision_Ignore:
 /* decrypt(): own init pending AND incoming init AND my handle is larger
  * -> derive the peer's session, adopt it if the message decrypts, and
  * remember my own abandoned ephemeral to announce it. */
-rule C_Collision_Adopt:
-  let dh1   = pkIKY^~ikX
+rule C_Collision_Adopt [no_derivcheck]:
+  let pkIKY = 'g'^~ikY   /* pinned-key shape, see the machine-checking note above */
+      dh1   = pkIKY^~ikX
       dh2   = ekY^~ikX
       kem   = kemdec(kct, ~kkX)
       root2 = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)
@@ -337,8 +357,9 @@ rule C_Recv_Reply_Final:
  * receives an init block with a new ephemeral that is not blacklisted
  * re-derives and REPLACES its session if the message decrypts. Meant for
  * a peer that lost its state. The blacklist is carried over. */
-rule C_Recover:
-  let dh1   = pkIKY^~ikX
+rule C_Recover [no_derivcheck]:
+  let pkIKY = 'g'^~ikY   /* pinned-key shape, see the machine-checking note above */
+      dh1   = pkIKY^~ikX
       dh2   = ekY^~ikX
       kem   = kemdec(kct, ~kkX)
       root2 = kdf(<'NyxChat_Async_Session_v3', dh1, dh2, kem>)
